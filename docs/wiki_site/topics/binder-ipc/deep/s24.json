@@ -1,0 +1,51 @@
+{
+  "step": "s24",
+  "title": "线程池容量与并发语义",
+  "tldr": "服务端并发上限取决于 joinThreadPool 的线程数；线程不足时同步调用会在对端排队，看起来像「服务慢」。",
+  "why": "这是最常见的误判之一：「某个 binder 调用要 200ms」往往不是方法本身慢，而是等一个空闲池线程。判断方法很简单：看对端线程池是否全都在 executeCommand 里，以及调用方的 binder 事务是否在「已发送未执行」状态停留。所以调优 binder 性能时，先看并发度，再看单次耗时。",
+  "concepts": [
+    {
+      "term": "startThreadPool",
+      "text": "启动线程池。"
+    },
+    {
+      "term": "并发数",
+      "text": "池里同时跑 joinThreadPool 的线程数。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void ProcessState::startThreadPool()",
+      "ref": "native/libs/binder/ProcessState.cpp:168",
+      "what": "启动入口。"
+    },
+    {
+      "call": "result = getAndExecuteCommand();",
+      "ref": "native/libs/binder/IPCThreadState.cpp:854",
+      "what": "每个线程的执行体。"
+    },
+    {
+      "call": "mProcess->spawnPooledThread(false);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:273",
+      "what": "按需扩容。"
+    }
+  ],
+  "state": [
+    {
+      "field": "池线程数",
+      "before": "初始值",
+      "after": "按需增长到上限",
+      "note": "上限由进程配置。"
+    }
+  ],
+  "threads": "服务线程。",
+  "pitfalls": [
+    "把排队当服务慢。",
+    "盲目加线程：会加剧锁竞争。"
+  ],
+  "debug": [
+    "trace 里看池线程是否都在忙。",
+    "dumpsys 的线程列表能数出 binder 线程。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 render-thread-to-sf 看 binder 在渲染链路里的位置。"
+}

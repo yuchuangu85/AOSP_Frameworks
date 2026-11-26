@@ -1,0 +1,51 @@
+{
+  "step": "s01",
+  "title": "调用方：拿到 IBinder 代理",
+  "tldr": "跨进程拿到的是 BinderProxy（持 native 指针），同进程拿到的是 Binder；两者 transact 最终都进 native。",
+  "why": "这条区分解释了很多「为什么同一个接口行为不同」的现象：同进程调用不经过驱动，没有序列化、没有线程切换、也没有 DEAD_OBJECT——所以它在测试里看起来「同步且可靠」，一跨进程就出现数据拷贝、线程池排队、死亡等一堆新问题。理解代理与实体的区别，是理解 binder 的第一步。",
+  "concepts": [
+    {
+      "term": "BinderProxy",
+      "text": "Java 侧代理：持有 mRemote 指针，transact 是 native 方法。"
+    },
+    {
+      "term": "Binder",
+      "text": "Java 侧实体：onTransact 由 native 回调。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public boolean transact(int code, Parcel data, Parcel reply, int flags)",
+      "ref": "base/core/java/android/os/BinderProxy.java:568",
+      "what": "代理侧：参数检查后转 native。"
+    },
+    {
+      "call": "public final boolean transact(int code, Parcel data, Parcel reply,",
+      "ref": "base/core/java/android/os/Binder.java:1223",
+      "what": "实体侧：同进程直接走 onTransact。"
+    },
+    {
+      "call": "public native boolean transactNative(int code, Parcel data, Parcel reply,",
+      "ref": "base/core/java/android/os/BinderProxy.java:658",
+      "what": "native 声明。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mRemote",
+      "before": "有效指针",
+      "after": "对端死亡后置空",
+      "note": "之后调用抛 DeadObjectException。"
+    }
+  ],
+  "threads": "Java 调用线程。",
+  "pitfalls": [
+    "以为跨进程与同进程行为一致：跨进程多出序列化、线程池、死亡语义。",
+    "忽略同进程调用不经过驱动。"
+  ],
+  "debug": [
+    "日志里看 BinderProxy.transact 的目标 code。",
+    "Perfetto 里同进程调用没有 binder 轨道。"
+  ],
+  "next": "参数是怎么编组的？见第 2 步。"
+}

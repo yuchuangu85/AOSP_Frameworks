@@ -1,0 +1,35 @@
+{
+  "step": "s17",
+  "title": "DrawFrameTask::run 开始同步",
+  "tldr": "打 DrawFrames trace、算同步延迟、构造 TreeInfo 并调 syncFrameState，两个返回值决定后续走向。",
+  "why": "run() 是 RT 侧一帧的总入口，也是排查「UI 卡在 nSyncAndDrawFrame」时应该看的对方。它做的第一件事不是画，而是把本帧的元数据落地：vsyncId 进 trace、排队延迟交给 CanvasContext、TreeInfo 承载本次同步的产出与判断。两个返回值非常关键：canUnblockUiThread 决定能不能提前放走 UI，canDrawThisFrame 决定本帧是否真的有内容可画。把这两个布尔理解错，就会把「跳帧」和「卡住」混为一谈。",
+  "concepts": [
+    { "term": "TreeInfo(MODE_FULL)", "text": "本次同步的上下文对象，负责收集 skippedFrameReason、hasAnimations 等回传字段。" },
+    { "term": "canUnblockUiThread", "text": "syncFrameState 的返回值：为真表示可以立刻放走 UI，为假表示 UI 要继续等。" },
+    { "term": "canDrawThisFrame", "text": "由 skippedFrameReason 是否为空推出来：为空才真正进入绘制。" }
+  ],
+  "walk": [
+    { "call": "void DrawFrameTask::run() {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:89", "what": "RT 侧一帧的入口。" },
+    { "call": "const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:90", "what": "从 FrameInfo 取时间线标识。" },
+    { "call": "ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:91", "what": "开 DrawFrames 切片，带上 vsyncId。" },
+    { "call": "TreeInfo info(TreeInfo::MODE_FULL, *mContext);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:103", "what": "构造本次同步的上下文。" },
+    { "call": "canUnblockUiThread = syncFrameState(info);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:106", "what": "同步阶段；返回值决定 UI 能否提前放行。" },
+    { "call": "canDrawThisFrame = !info.out.skippedFrameReason.has_value();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:107", "what": "没有跳过原因才画。" }
+  ],
+  "state": [
+    { "field": "mSyncResult", "before": "OK", "after": "可能带上 LostSurface/ContextIsStopped/FrameDropped", "note": "最终由 Java 侧按位解析。" },
+    { "field": "mContext 的 sync 延迟统计", "before": "上一次值", "after": "本帧 systemTime - mSyncQueued", "note": "对应 FrameTimeline 的 SyncQueued/SyncStart。" }
+  ],
+  "threads": "RenderThread。这里是 RT 上一切工作的起点，后续回放与 swap 都在这条线程继续。",
+  "pitfalls": [
+    "以为 run 一开始就画：它先做同步，画要等 syncFrameState 与放行之后。",
+    "把 skippedFrameReason 当成错误：它是正常的「本帧无内容可画」。",
+    "忽略 canUnblockUiThread 为假的情况：此时 UI 会一直等到整个任务收尾。"
+  ],
+  "debug": [
+    "trace 里 DrawFrames 切片内，同步段（到 unblockUiThread）与绘制段宽度分别反映两侧成本。",
+    "看 mSyncResult 的位组合，可区分 surface 丢失与 context 停止。",
+    "在 106 行下断点，观察 syncFrameState 内部耗时分布。"
+  ],
+  "next": "syncFrameState 具体做了什么、为什么它会卡住 UI？见第 18 步。"
+}

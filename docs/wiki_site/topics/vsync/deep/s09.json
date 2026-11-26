@@ -1,0 +1,51 @@
+{
+  "step": "s09",
+  "title": "VsyncModulator：动态切换三套配置",
+  "tldr": "early/earlyGpu/late 三套配置按「是否有事务在等、是否走 GPU 合成、刷新率是否切换」切换。",
+  "why": "固定相位不能满足所有场景：有事务在等时需要更早唤醒（early），走 GPU 合成时 SF 工作量更大（earlyGpu），刷新率切换期间还要额外前移。VsyncModulator 就是把这些场景映射到三套预设的开关。它的调用点分散在事务提交、显示刷新、刷新率切换等处，因此「相位在运行中变了」是常态而不是异常——排查抖动时要先确认当时用的是哪套配置。",
+  "concepts": [
+    {
+      "term": "VsyncConfigSet",
+      "text": "early / earlyGpu / late 三套 + hwcMinWorkDuration。"
+    },
+    {
+      "term": "VsyncModulator",
+      "text": "按场景在三套配置间切换的开关。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "VsyncModulator::VsyncConfigOpt VsyncModulator::onTransactionCommit() {",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp:107",
+      "what": "事务提交后回到 Late。"
+    },
+    {
+      "call": "VsyncModulator::VsyncConfigOpt VsyncModulator::onRefreshRateChangeCompleted() {",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp:120",
+      "what": "刷新率切换完成后恢复。"
+    },
+    {
+      "call": "VsyncModulator::VsyncConfigOpt VsyncModulator::onDisplayRefresh(bool usedGpuComposition) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp:126",
+      "what": "每拍按 GPU 合成与否调整。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mTransactionSchedule",
+      "before": "EarlyStart/EarlyEnd",
+      "after": "Late",
+      "note": "提交后回落。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "假设相位恒定：它在运行中会切换。",
+    "忽略 earlyGpu：GPU 合成帧的预算不同。"
+  ],
+  "debug": [
+    "dumpsys --vsync 的 modulator 段。",
+    "trace 里看 work/ready 的变化点。"
+  ],
+  "next": "时长如何变成唤醒点？见第 10 步。"
+}

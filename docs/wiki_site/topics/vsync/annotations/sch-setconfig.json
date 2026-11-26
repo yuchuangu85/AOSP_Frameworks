@@ -1,0 +1,42 @@
+{
+  "id": "sch-setconfig",
+  "title": "Scheduler::setVsyncConfig",
+  "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+  "sig": "void Scheduler::setVsyncConfig",
+  "span": [
+    802,
+    806
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void Scheduler::setVsyncConfig(const VsyncConfig& config) {",
+      "kind": "note",
+      "text": "两条分发线拿到时长的唯一入口。注意它只有 5 行，却决定了整条 vsync 的相位。"
+    },
+    {
+      "at": 2,
+      "quote": "setDuration(/* workDuration */ config.appWorkDuration,",
+      "kind": "call",
+      "text": "**app 线**：workDuration = appWorkDuration，readyDuration = sfWorkDuration。"
+    },
+    {
+      "at": 3,
+      "quote": "/* readyDuration */ config.sfWorkDuration);",
+      "kind": "note",
+      "text": "也就是说 app 的 deadline（唤醒 + work）正好落在 V − sfWorkDuration，与 sf 的唤醒点重合。"
+    },
+    {
+      "at": 4,
+      "quote": "setDuration(config.sfWorkDuration);",
+      "kind": "call",
+      "text": "**sf 线**：只给 workDuration，readyDuration 用默认 0。"
+    },
+    {
+      "at": 5,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。两个 setDuration 作用在同一个 VSyncDispatch 的两条注册上，相位差由此产生。"
+    }
+  ]
+}

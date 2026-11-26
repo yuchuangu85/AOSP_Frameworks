@@ -1,0 +1,33 @@
+{
+  "step": "s06",
+  "title": "performTraversals：决定本帧做什么",
+  "tldr": "relayout、measure、layout、draw 各有独立判据，任意一段都能整帧跳过。",
+  "why": "这是 Android 性能优化的主战场：绝大多数「为什么这帧这么慢」的答案，都可以在这一段里找到证据——本帧是不是做了 relayout？是不是多测了一轮？是不是因为 fullRedraw 把整窗重画了？判据彼此独立意味着三段可以任意组合：只有 invalidate 时通常只走 draw；只有 requestLayout 时通常三段全走。理解这一点，才能判断一次改动到底是「多花了测量」还是「多花了录制」，从而找对优化方向。",
+  "concepts": [
+    { "term": "mLayoutRequested", "text": "有人请求重新布局；为真时本帧要做 relayout + measure + layout。" },
+    { "term": "mViewMeasureDeferred", "text": "上一帧欠了一次测量；为真时本帧必须补上。" },
+    { "term": "fullRedrawNeeded", "text": "要求整窗重画；来源包括滚动、SurfaceSyncGroup、首次绘制等。" }
+  ],
+  "walk": [
+    { "call": "private void performTraversals(long frameTimeNanos)", "ref": "base/core/java/android/view/ViewRootImpl.java:3924", "what": "单帧总控入口，一帧里所有分支判定都在这个方法体内。" },
+    { "call": "performMeasure(", "ref": "base/core/java/android/view/ViewRootImpl.java:4599", "what": "测量分支：由 mViewMeasureDeferred 等条件触发。" },
+    { "call": "performLayout(lp, mWidth, mHeight);", "ref": "base/core/java/android/view/ViewRootImpl.java:4638", "what": "布局分支：由 didLayout 决定。" },
+    { "call": "if (!performDraw(mActiveSurfaceSyncGroup)) {", "ref": "base/core/java/android/view/ViewRootImpl.java:4903", "what": "绘制分支：返回 false 表示本帧没画，需要走同步补偿逻辑。" }
+  ],
+  "state": [
+    { "field": "mLayoutRequested", "before": "可能为 true", "after": "处理后清掉", "note": "清得太早会让本帧的布局被跳过。" },
+    { "field": "mFullRedrawNeeded", "before": "可能为 true", "after": "在 performDraw 里取走并清", "note": "滚动、SurfaceSyncGroup、首帧都会置位。" }
+  ],
+  "threads": "UI 线程。performTraversals 是 UI 线程上一帧耗时最大的单一方法，trace 里通常占据最大一块。",
+  "pitfalls": [
+    "以为 requestLayout 一定触发 measure：若布局标志已被上游清掉，可能整段跳过。",
+    "以为 invalidate 也会重新布局：不会，只有 requestLayout 类请求才会进 measure/layout。",
+    "在 onLayout 里改尺寸又立刻请求布局：会把一帧拖成两次布局（见第 8 步）。"
+  ],
+  "debug": [
+    "trace 里 measure / layout / draw 三个切片的相对宽度，直接对应三段的耗时。",
+    "Layout Inspector 或 dumpViewHierarchy 可确认每次 traversal 是否真的做了布局。",
+    "在 performMeasure/performLayout 的调用点（4599/4638/4903）下断点，看本帧的判据组合。"
+  ],
+  "next": "measure 段具体做了什么？见第 7 步。"
+}

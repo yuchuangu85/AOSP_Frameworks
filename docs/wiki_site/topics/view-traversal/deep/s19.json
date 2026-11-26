@@ -1,0 +1,34 @@
+{
+  "step": "s19",
+  "title": "RenderNode::syncDisplayList：staging → display list",
+  "tldr": "先增父引用、再删旧 list、然后 move staging，最后 syncContents；此刻 UI 写的那批 op 才对 RT 可见。",
+  "why": "这个函数是「双槽」设计的落点：UI 线程只写 staging，RT 只读 mDisplayList，syncDisplayList 是两者唯一的交换点。交换之所以不需要加锁，是因为 UI 线程此刻正阻塞在 mSignal 上——一旦 unblockUiThread 被调用，UI 就可能开始写下一帧的 staging，而 RT 只能读已经换出来的 mDisplayList。这个隐式契约一旦被破坏（例如有人在 mSignal 释放后再去改同一个 RenderNode），就会出现这种极难复现的「画面撕裂/闪烁」。",
+  "concepts": [
+    { "term": "staging 槽", "text": "UI 线程录制的落点；由 setStagingDisplayList 写入。" },
+    { "term": "mDisplayList", "text": "RT 回放时读取的那一份；只在 syncDisplayList 里被替换。" },
+    { "term": "syncContents", "text": "把 display list 里的资源（纹理、layer）与本帧上下文对齐。" }
+  ],
+  "walk": [
+    { "call": "void RenderNode::syncDisplayList(TreeObserver& observer, TreeInfo* info) {", "ref": "base/libs/hwui/RenderNode.cpp:431", "what": "交换点入口，只在 RT 的同步阶段被调用。" },
+    { "call": "mStagingDisplayList.updateChildren([](RenderNode* child) { child->incParentRefCount(); });", "ref": "base/libs/hwui/RenderNode.cpp:435", "what": "先给子树增父引用，避免后面删除旧 list 时误伤共享子节点。" },
+    { "call": "deleteDisplayList(observer, info);", "ref": "base/libs/hwui/RenderNode.cpp:437", "what": "删除上一帧的 display list。" },
+    { "call": "mDisplayList = std::move(mStagingDisplayList);", "ref": "base/libs/hwui/RenderNode.cpp:438", "what": "整块的 move：从这一刻起，UI 录的 op 才归 RT 所有。" },
+    { "call": "mDisplayList.syncContents(syncData);", "ref": "base/libs/hwui/RenderNode.cpp:442", "what": "同步内容（含 force-dark 处理），为回放做准备。" }
+  ],
+  "state": [
+    { "field": "mStagingDisplayList", "before": "本帧 UI 录制的内容", "after": "已 move 成空", "note": "UI 下一帧可以重新往里写。" },
+    { "field": "mDisplayList", "before": "上一帧内容", "after": "本帧内容", "note": "RT 回放读的就是它。" }
+  ],
+  "threads": "只在 RT 的同步阶段执行；此刻 UI 线程被 mSignal 挂起，所以不存在并发写。",
+  "pitfalls": [
+    "以为这里有锁保护：没有锁，靠的是 UI 线程被 park 这一隐式契约。",
+    "在帧提交回调里改 RenderNode：可能落在 UI 已经开始写下一帧 staging 之后。",
+    "忘记先增父引用就删除旧 list：共享子节点可能被提前释放。"
+  ],
+  "debug": [
+    "trace 里 prepareTree 内部的 syncDisplayList 调用次数，等于本帧被重建的节点数。",
+    "在 438 行下断点，可确认本帧哪些节点真的换了内容。",
+    "若回放内容与 UI 显示不一致，优先怀疑这条交换契约被破坏。"
+  ],
+  "next": "交换完成后，RT 怎样放走 UI？见第 20 步。"
+}

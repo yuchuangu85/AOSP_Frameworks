@@ -1,0 +1,210 @@
+{
+  "id": "tx-parcel",
+  "title": "Transaction::writeToParcel",
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "sig": "status_t SurfaceComposerClient::Transaction::writeToParcel(Parcel* parcel) const",
+  "span": [
+    918,
+    950
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t SurfaceComposerClient::Transaction::writeToParcel(Parcel* parcel) const {",
+      "kind": "note",
+      "text": "显式序列化（用于 delegate 到别的进程）。注意它是 const 但有 const_cast——原因见下面的注释。"
+    },
+    {
+      "at": 2,
+      "quote": "// If we write the Transaction to a parcel, we want to ensure the Buffers are cached",
+      "kind": "note",
+      "text": "注释：序列化前必须先缓存 buffer，否则对端会替我们缓存，而它几乎不会再复用这些 buffer。"
+    },
+    {
+      "at": 3,
+      "quote": "// before crossing the IPC boundary. Otherwise the receiving party will cache the buffers",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 4,
+      "quote": "// but is unlikely to use them again as they are owned by the other process.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 5,
+      "quote": "// You may be asking yourself, is this const cast safe? Const cast is safe up",
+      "kind": "note",
+      "text": "注释：讨论 const_cast 的安全性——要么原本非 const，要么原本 const 且没有 composer state（不会写入）。"
+    },
+    {
+      "at": 6,
+      "quote": "// until the point where you try and write to an object that was originally const at which",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 7,
+      "quote": "// point we enter undefined behavior. In this case we are safe though, because there are",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 8,
+      "quote": "// two possibilities:",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 9,
+      "quote": "//    1. The SurfaceComposerClient::Transaction was originally non-const. Safe.",
+      "kind": "note",
+      "text": "情形一：原本非 const，安全。"
+    },
+    {
+      "at": 10,
+      "quote": "//    2. It was originall const! In this case not only was it useless, but it by definition",
+      "kind": "note",
+      "text": "情形二：原本 const 且没有状态，cacheBuffers 不会写入。"
+    },
+    {
+      "at": 11,
+      "quote": "//       contains no composer states and so cacheBuffers will not perform any writes.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "const_cast<SurfaceComposerClient::Transaction*>(this)->cacheBuffers();",
+      "kind": "call",
+      "text": "**先缓存**再序列化——这是这份代码里唯一一处 const_cast 的正当理由。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "SAFE_PARCEL(mState.writeToParcel, parcel);",
+      "kind": "call",
+      "text": "写 TransactionState 主体（含各层状态与位图）。"
+    },
+    {
+      "at": 16,
+      "quote": "parcel->writeBool(mLogCallPoints);",
+      "kind": "state",
+      "text": "写调试标志。"
+    },
+    {
+      "at": 17,
+      "quote": "parcel->writeStrongBinder(mApplyToken);",
+      "kind": "state",
+      "text": "写 applyToken：**顺序域也跟着跨进程传**。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "parcel->writeUint32(static_cast<uint32_t>(mListenerCallbacks.size()));",
+      "kind": "state",
+      "text": "写 listener 数量。"
+    },
+    {
+      "at": 20,
+      "quote": "for (auto const& [listener, callbackInfo] : mListenerCallbacks) {",
+      "kind": "note",
+      "text": "遍历 listener。"
+    },
+    {
+      "at": 21,
+      "quote": "parcel->writeStrongBinder(ITransactionCompletedListener::asBinder(listener));",
+      "kind": "call",
+      "text": "写 listener 的 binder。"
+    },
+    {
+      "at": 22,
+      "quote": "parcel->writeUint32(static_cast<uint32_t>(callbackInfo.callbackIds.size()));",
+      "kind": "state",
+      "text": "写 callbackIds 数量。"
+    },
+    {
+      "at": 23,
+      "quote": "for (const auto& callbackId : callbackInfo.callbackIds) {",
+      "kind": "note",
+      "text": "遍历 callbackId。"
+    },
+    {
+      "at": 24,
+      "quote": "parcel->writeParcelable(callbackId);",
+      "kind": "call",
+      "text": "逐个写 callbackId。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 26,
+      "quote": "parcel->writeUint32(static_cast<uint32_t>(callbackInfo.surfaceControls.size()));",
+      "kind": "state",
+      "text": "写绑定的 SurfaceControl 数量。"
+    },
+    {
+      "at": 27,
+      "quote": "for (const auto& surfaceControl : callbackInfo.surfaceControls) {",
+      "kind": "note",
+      "text": "遍历 SurfaceControl。"
+    },
+    {
+      "at": 28,
+      "quote": "SAFE_PARCEL(surfaceControl->writeToParcel, *parcel);",
+      "kind": "call",
+      "text": "写 SurfaceControl 句柄。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 30,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 listener 循环。"
+    },
+    {
+      "at": 31,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 32,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "成功返回。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

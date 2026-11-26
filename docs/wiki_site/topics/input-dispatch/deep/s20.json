@@ -1,0 +1,51 @@
+{
+  "step": "s20",
+  "title": "finishDispatchCycleLocked：清计时",
+  "tldr": "出 waitQueue、从 AnrTracker 删除超时项；先前被判 unresponsive 的连接会复查并恢复。",
+  "why": "这是闭环的 dispatcher 侧。它做了两件事：把已确认的事件从 waitQueue 移出，并把对应的超时从 AnrTracker 删除。还有一条容易忽略的分支：如果这个连接之前已被判 unresponsive（ANR 已触发），这里会复查响应性并调用 processConnectionResponsiveLocked——也就是说 ANR 之后如果应用恢复，连接可以被重新标记为响应。",
+  "concepts": [
+    {
+      "term": "waitQueue",
+      "text": "已发出等待确认的事件队列。"
+    },
+    {
+      "term": "isConnectionResponsive",
+      "text": "复查连接是否已恢复响应。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void InputDispatcher::finishDispatchCycleLocked(nsecs_t currentTime,",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4076",
+      "what": "处理 finished 回执。"
+    },
+    {
+      "call": "bool InputDispatcher::isConnectionResponsive(const Connection& connection) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:544",
+      "what": "响应性复查。"
+    },
+    {
+      "call": "void InputDispatcher::processConnectionResponsiveLocked(Connection& connection) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:6955",
+      "what": "恢复连接。"
+    }
+  ],
+  "state": [
+    {
+      "field": "connection->waitQueue",
+      "before": "含该条",
+      "after": "移除",
+      "note": "队列清空是「应用追上进度」的标志。"
+    }
+  ],
+  "threads": "dispatcher 线程（在 pollOnce 的 fd 回调里）。",
+  "pitfalls": [
+    "以为 ANR 是不可逆的：恢复后可被重新标记响应。",
+    "忽略 waitQueue 长期非空：说明应用处理不过来。"
+  ],
+  "debug": [
+    "dumpsys input 的 waitQueue 段。",
+    "atrace 里 finishDispatchCycle 切片。"
+  ],
+  "next": "超时如何被判定成 ANR？见第 21 步。"
+}

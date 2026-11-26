@@ -1,0 +1,1734 @@
+{
+  "id": "bp-exec",
+  "title": "IPCThreadState::executeCommand",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::executeCommand(",
+  "span": [
+    1408,
+    1694
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::executeCommand(int32_t cmd)",
+      "kind": "note",
+      "text": "驱动命令的翻译层：287 行 switch，把内核投上来的每个 BR_* 变成对本地对象的操作。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "BBinder* obj;",
+      "kind": "data",
+      "text": "本地实体对象。"
+    },
+    {
+      "at": 4,
+      "quote": "RefBase::weakref_type* refs;",
+      "kind": "data",
+      "text": "弱引用类型。"
+    },
+    {
+      "at": 5,
+      "quote": "status_t result = NO_ERROR;",
+      "kind": "data",
+      "text": "默认无错。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "switch ((uint32_t)cmd) {",
+      "kind": "decision",
+      "text": "按命令分派。"
+    },
+    {
+      "at": 8,
+      "quote": "case BR_ERROR:",
+      "kind": "branch",
+      "text": "驱动报错。"
+    },
+    {
+      "at": 9,
+      "quote": "result = mIn.readInt32();",
+      "kind": "data",
+      "text": "取出错误码。"
+    },
+    {
+      "at": 10,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "case BR_OK:",
+      "kind": "branch",
+      "text": "无操作确认。"
+    },
+    {
+      "at": 13,
+      "quote": "break;",
+      "kind": "note",
+      "text": "什么都不做。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "case BR_ACQUIRE:",
+      "kind": "branch",
+      "text": "**BR_ACQUIRE**：对端要求强引用。"
+    },
+    {
+      "at": 16,
+      "quote": "refs = (RefBase::weakref_type*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读弱引用对象。"
+    },
+    {
+      "at": 17,
+      "quote": "obj = (BBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读实体对象。"
+    },
+    {
+      "at": 18,
+      "quote": "ALOG_ASSERT(refs->refBase() == obj,",
+      "kind": "note",
+      "text": "断言两者一致——这是跨进程指针配对的正确性检查。"
+    },
+    {
+      "at": 19,
+      "quote": "\"BR_ACQUIRE: object %p does not match cookie %p (expected %p)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 20,
+      "quote": "refs, obj, refs->refBase());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "obj->incStrong(mProcess.get());",
+      "kind": "call",
+      "text": "**原子提升强引用**：这是「对方持有引用」的本地实现。"
+    },
+    {
+      "at": 22,
+      "quote": "IF_LOG_REMOTEREFS() {",
+      "kind": "branch",
+      "text": "远程引用调试日志。"
+    },
+    {
+      "at": 23,
+      "quote": "LOG_REMOTEREFS(\"BR_ACQUIRE from driver on %p\", obj);",
+      "kind": "note",
+      "text": "打印引用计数。"
+    },
+    {
+      "at": 24,
+      "quote": "obj->printRefs();",
+      "kind": "note",
+      "text": "同上。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 26,
+      "quote": "mOut.writeInt32(BC_ACQUIRE_DONE);",
+      "kind": "call",
+      "text": "**回报驱动已处理**：驱动会等这个确认。"
+    },
+    {
+      "at": 27,
+      "quote": "mOut.writePointer((uintptr_t)refs);",
+      "kind": "data",
+      "text": "回弱引用指针。"
+    },
+    {
+      "at": 28,
+      "quote": "mOut.writePointer((uintptr_t)obj);",
+      "kind": "data",
+      "text": "回实体指针。"
+    },
+    {
+      "at": 29,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "case BR_RELEASE:",
+      "kind": "branch",
+      "text": "**BR_RELEASE**：对端释放引用。"
+    },
+    {
+      "at": 32,
+      "quote": "refs = (RefBase::weakref_type*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读弱引用。"
+    },
+    {
+      "at": 33,
+      "quote": "obj = (BBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读实体。"
+    },
+    {
+      "at": 34,
+      "quote": "ALOG_ASSERT(refs->refBase() == obj,",
+      "kind": "note",
+      "text": "一致性断言。"
+    },
+    {
+      "at": 35,
+      "quote": "\"BR_RELEASE: object %p does not match cookie %p (expected %p)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 36,
+      "quote": "refs, obj, refs->refBase());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 37,
+      "quote": "IF_LOG_REMOTEREFS() {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 38,
+      "quote": "LOG_REMOTEREFS(\"BR_RELEASE from driver on %p\", obj);",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 39,
+      "quote": "obj->printRefs();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 41,
+      "quote": "mPendingStrongDerefs.push(obj);",
+      "kind": "call",
+      "text": "**延后释放**：不能在驱动回调里同步析构，先入队列。"
+    },
+    {
+      "at": 42,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 43,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 44,
+      "quote": "case BR_INCREFS:",
+      "kind": "branch",
+      "text": "**BR_INCREFS**：对端要求弱引用。"
+    },
+    {
+      "at": 45,
+      "quote": "refs = (RefBase::weakref_type*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读弱引用。"
+    },
+    {
+      "at": 46,
+      "quote": "obj = (BBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读实体。"
+    },
+    {
+      "at": 47,
+      "quote": "refs->incWeak(mProcess.get());",
+      "kind": "call",
+      "text": "增加弱引用计数。"
+    },
+    {
+      "at": 48,
+      "quote": "mOut.writeInt32(BC_INCREFS_DONE);",
+      "kind": "call",
+      "text": "回报驱动。"
+    },
+    {
+      "at": 49,
+      "quote": "mOut.writePointer((uintptr_t)refs);",
+      "kind": "data",
+      "text": "弱引用指针。"
+    },
+    {
+      "at": 50,
+      "quote": "mOut.writePointer((uintptr_t)obj);",
+      "kind": "data",
+      "text": "实体指针。"
+    },
+    {
+      "at": 51,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 52,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 53,
+      "quote": "case BR_DECREFS:",
+      "kind": "branch",
+      "text": "**BR_DECREFS**：释放弱引用。"
+    },
+    {
+      "at": 54,
+      "quote": "refs = (RefBase::weakref_type*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读弱引用。"
+    },
+    {
+      "at": 55,
+      "quote": "// NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)",
+      "kind": "note",
+      "text": "注释说明下面这行是为了消费指针。"
+    },
+    {
+      "at": 56,
+      "quote": "obj = (BBinder*)mIn.readPointer(); // consume",
+      "kind": "data",
+      "text": "读实体（仅消费）。"
+    },
+    {
+      "at": 57,
+      "quote": "// NOTE: This assertion is not valid, because the object may no",
+      "kind": "note",
+      "text": "注释：这里不能断言对象仍存在，因为可能已被释放。"
+    },
+    {
+      "at": 58,
+      "quote": "// longer exist (thus the (BBinder*)cast above resulting in a different",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 59,
+      "quote": "// memory address).",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 60,
+      "quote": "//ALOG_ASSERT(refs->refBase() == obj,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 61,
+      "quote": "//           \"BR_DECREFS: object %p does not match cookie %p (expected %p)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "//           refs, obj, refs->refBase());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 63,
+      "quote": "mPendingWeakDerefs.push(refs);",
+      "kind": "call",
+      "text": "延后释放弱引用。"
+    },
+    {
+      "at": 64,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 65,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 66,
+      "quote": "case BR_ATTEMPT_ACQUIRE:",
+      "kind": "branch",
+      "text": "**BR_ATTEMPT_ACQUIRE**：尝试提升（可能失败）。"
+    },
+    {
+      "at": 67,
+      "quote": "refs = (RefBase::weakref_type*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读弱引用。"
+    },
+    {
+      "at": 68,
+      "quote": "obj = (BBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读实体。"
+    },
+    {
+      "at": 69,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 70,
+      "quote": "{",
+      "kind": "note",
+      "text": "局部作用域。"
+    },
+    {
+      "at": 71,
+      "quote": "const bool success = refs->attemptIncStrong(mProcess.get());",
+      "kind": "call",
+      "text": "尝试提升强引用。"
+    },
+    {
+      "at": 72,
+      "quote": "ALOG_ASSERT(success && refs->refBase() == obj,",
+      "kind": "note",
+      "text": "断言成功且对象一致。"
+    },
+    {
+      "at": 73,
+      "quote": "\"BR_ATTEMPT_ACQUIRE: object %p does not match cookie %p (expected %p)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 74,
+      "quote": "refs, obj, refs->refBase());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 75,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 76,
+      "quote": "mOut.writeInt32(BC_ACQUIRE_RESULT);",
+      "kind": "call",
+      "text": "回报驱动。"
+    },
+    {
+      "at": 77,
+      "quote": "mOut.writeInt32((int32_t)success);",
+      "kind": "data",
+      "text": "成功与否。"
+    },
+    {
+      "at": 78,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 79,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 80,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 81,
+      "quote": "case BR_TRANSACTION_SEC_CTX:",
+      "kind": "branch",
+      "text": "**BR_TRANSACTION_SEC_CTX**：带安全上下文的调用。"
+    },
+    {
+      "at": 82,
+      "quote": "case BR_TRANSACTION:",
+      "kind": "branch",
+      "text": "**BR_TRANSACTION**：普通调用。"
+    },
+    {
+      "at": 83,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 84,
+      "quote": "binder_transaction_data_secctx tr_secctx;",
+      "kind": "data",
+      "text": "带 secctx 的结构。"
+    },
+    {
+      "at": 85,
+      "quote": "binder_transaction_data& tr = tr_secctx.transaction_data;",
+      "kind": "data",
+      "text": "别名，方便两种命令共用代码。"
+    },
+    {
+      "at": 86,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 87,
+      "quote": "if (cmd == (int) BR_TRANSACTION_SEC_CTX) {",
+      "kind": "branch",
+      "text": "是带 secctx 的版本。"
+    },
+    {
+      "at": 88,
+      "quote": "result = mIn.read(&tr_secctx, sizeof(tr_secctx));",
+      "kind": "call",
+      "text": "读整块结构。"
+    },
+    {
+      "at": 89,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 90,
+      "quote": "result = mIn.read(&tr, sizeof(tr));",
+      "kind": "call",
+      "text": "只读事务数据。"
+    },
+    {
+      "at": 91,
+      "quote": "tr_secctx.secctx = 0;",
+      "kind": "data",
+      "text": "secctx 置空。"
+    },
+    {
+      "at": 92,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 93,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "ALOG_ASSERT(result == NO_ERROR,",
+      "kind": "note",
+      "text": "断言读够数据。"
+    },
+    {
+      "at": 95,
+      "quote": "\"Not enough command data for brTRANSACTION\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 96,
+      "quote": "if (result != NO_ERROR) break;",
+      "kind": "branch",
+      "text": "读失败就跳出。"
+    },
+    {
+      "at": 97,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 98,
+      "quote": "Parcel buffer;",
+      "kind": "data",
+      "text": "**在栈上建 Parcel**，直接挂到驱动的映射区上（零拷贝）。"
+    },
+    {
+      "at": 99,
+      "quote": "buffer.ipcSetDataReference(",
+      "kind": "call",
+      "text": "ipcSetDataReference：buffer 指向内核映射，析构时用 freeBuffer 归还。"
+    },
+    {
+      "at": 100,
+      "quote": "reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),",
+      "kind": "call",
+      "text": "续行。"
+    },
+    {
+      "at": 101,
+      "quote": "tr.data_size,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 102,
+      "quote": "reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 103,
+      "quote": "tr.offsets_size/sizeof(binder_size_t), freeBuffer);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 105,
+      "quote": "const void* origServingStackPointer = mServingStackPointer;",
+      "kind": "data",
+      "text": "保存调用者的「服务栈」指针，用于后续栈追踪。"
+    },
+    {
+      "at": 106,
+      "quote": "mServingStackPointer = __builtin_frame_address(0);",
+      "kind": "state",
+      "text": "记录当前帧地址。"
+    },
+    {
+      "at": 107,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 108,
+      "quote": "const pid_t origPid = mCallingPid;",
+      "kind": "data",
+      "text": "**保存调用者身份**：接下来要改写成本次调用的发起者。"
+    },
+    {
+      "at": 109,
+      "quote": "const char* origSid = mCallingSid;",
+      "kind": "data",
+      "text": "保存 sid。"
+    },
+    {
+      "at": 110,
+      "quote": "const auto origUid = mCallingUid;",
+      "kind": "data",
+      "text": "保存 uid。"
+    },
+    {
+      "at": 111,
+      "quote": "const bool origHasExplicitIdentity = mHasExplicitIdentity;",
+      "kind": "data",
+      "text": "保存显式身份标志。"
+    },
+    {
+      "at": 112,
+      "quote": "const int32_t origStrictModePolicy = mStrictModePolicy;",
+      "kind": "data",
+      "text": "保存 StrictMode 策略。"
+    },
+    {
+      "at": 113,
+      "quote": "const int32_t origTransactionBinderFlags = mLastTransactionBinderFlags;",
+      "kind": "data",
+      "text": "保存事务标志。"
+    },
+    {
+      "at": 114,
+      "quote": "const int32_t origWorkSource = mWorkSource;",
+      "kind": "data",
+      "text": "保存 workSource。"
+    },
+    {
+      "at": 115,
+      "quote": "const bool origPropagateWorkSet = mPropagateWorkSource;",
+      "kind": "data",
+      "text": "保存是否传播 workSource。"
+    },
+    {
+      "at": 116,
+      "quote": "// Calling work source will be set by Parcel#enforceInterface. Parcel#enforceInterface",
+      "kind": "note",
+      "text": "注释：workSource 由 Parcel#enforceInterface 设置，因为只有 AIDL stub 保证调用它。"
+    },
+    {
+      "at": 117,
+      "quote": "// is only guaranteed to be called for AIDL-generated stubs so we reset the work source",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "// here to never propagate it.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 119,
+      "quote": "clearCallingWorkSource();",
+      "kind": "call",
+      "text": "清零 workSource，避免把调用方的设置传播出去。"
+    },
+    {
+      "at": 120,
+      "quote": "clearPropagateWorkSource();",
+      "kind": "call",
+      "text": "同时关闭传播标志。"
+    },
+    {
+      "at": 121,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 122,
+      "quote": "mCallingPid = tr.sender_pid;",
+      "kind": "state",
+      "text": "**改写 mCallingPid**：之后 getCallingPid 返回的就是发起方。"
+    },
+    {
+      "at": 123,
+      "quote": "mCallingSid = reinterpret_cast<const char*>(tr_secctx.secctx);",
+      "kind": "state",
+      "text": "改写 sid（SELinux 上下文）。"
+    },
+    {
+      "at": 124,
+      "quote": "mCallingUid = tr.sender_euid;",
+      "kind": "state",
+      "text": "**改写 mCallingUid**：鉴权的唯一依据。"
+    },
+    {
+      "at": 125,
+      "quote": "mHasExplicitIdentity = false;",
+      "kind": "state",
+      "text": "不认为调用方给了显式身份。"
+    },
+    {
+      "at": 126,
+      "quote": "mLastTransactionBinderFlags = tr.flags;",
+      "kind": "state",
+      "text": "记录本次事务标志。"
+    },
+    {
+      "at": 127,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 128,
+      "quote": "// ALOGI(\">>>> TRANSACT from pid %d sid %s uid %d\\n\", mCallingPid,",
+      "kind": "note",
+      "text": "注释掉的调试日志。"
+    },
+    {
+      "at": 129,
+      "quote": "//    (mCallingSid ? mCallingSid : \"<N/A>\"), mCallingUid);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 130,
+      "quote": "",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 131,
+      "quote": "Parcel reply;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 132,
+      "quote": "status_t error;",
+      "kind": "data",
+      "text": "回包 Parcel（栈上）。"
+    },
+    {
+      "at": 133,
+      "quote": "IF_LOG_TRANSACTIONS() {",
+      "kind": "data",
+      "text": "业务返回码。"
+    },
+    {
+      "at": 134,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "事务日志开关。"
+    },
+    {
+      "at": 135,
+      "quote": "logStream << \"BR_TRANSACTION thr \" << (void*)pthread_self() << \" / obj \"",
+      "kind": "note",
+      "text": "日志：线程、目标、code 与数据内容。"
+    },
+    {
+      "at": 136,
+      "quote": "<< tr.target.ptr << \" / code \" << TypeCode(tr.code) << \": \\t\" << buffer",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 137,
+      "quote": "<< \"\\n\"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 138,
+      "quote": "<< \"Data addr = \" << reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer)",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 139,
+      "quote": "<< \", offsets addr=\"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 140,
+      "quote": "<< reinterpret_cast<const size_t*>(tr.data.ptr.offsets) << \"\\n\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 141,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 142,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 143,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 144,
+      "quote": "if (tr.target.ptr) {",
+      "kind": "branch",
+      "text": "**目标 ptr 非空**：跨进程调用的实体。"
+    },
+    {
+      "at": 145,
+      "quote": "// We only have a weak reference on the target object, so we must first try to",
+      "kind": "note",
+      "text": "注释：这里只有弱引用，必须先安全提升。"
+    },
+    {
+      "at": 146,
+      "quote": "// safely acquire a strong reference before doing anything else with it.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 147,
+      "quote": "if (reinterpret_cast<RefBase::weakref_type*>(tr.target.ptr)",
+      "kind": "call",
+      "text": "尝试提升强引用。"
+    },
+    {
+      "at": 148,
+      "quote": "->attemptIncStrong(this)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 149,
+      "quote": "BBinder* binder = reinterpret_cast<BBinder*>(tr.cookie);",
+      "kind": "data",
+      "text": "取出实体（cookie 由驱动填的是本地指针）。"
+    },
+    {
+      "at": 150,
+      "quote": "error = doTransactBinder(binder, tr.code, buffer, &reply, tr.flags);",
+      "kind": "call",
+      "text": "**真正调用 onTransact**。"
+    },
+    {
+      "at": 151,
+      "quote": "binder->decStrong(this);",
+      "kind": "call",
+      "text": "用完立即释放强引用。"
+    },
+    {
+      "at": 152,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 153,
+      "quote": "error = UNKNOWN_TRANSACTION;",
+      "kind": "note",
+      "text": "提升失败说明对象已销毁。"
+    },
+    {
+      "at": 154,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 155,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则目标 ptr 为空。"
+    },
+    {
+      "at": 156,
+      "quote": "BBinder* binder = the_context_object.get();",
+      "kind": "data",
+      "text": "落到全局 context 对象（即 ServiceManager）。"
+    },
+    {
+      "at": 157,
+      "quote": "error = doTransactBinder(binder, tr.code, buffer, &reply, tr.flags);",
+      "kind": "call",
+      "text": "对 context object 发起调用。"
+    },
+    {
+      "at": 158,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 159,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 160,
+      "quote": "//ALOGI(\"<<<< TRANSACT from pid %d restore pid %d sid %s uid %d\\n\",",
+      "kind": "note",
+      "text": "注释掉的调试日志。"
+    },
+    {
+      "at": 161,
+      "quote": "//     mCallingPid, origPid, (origSid ? origSid : \"<N/A>\"), origUid);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 162,
+      "quote": "",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 163,
+      "quote": "if ((tr.flags & TF_ONE_WAY) == 0) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 164,
+      "quote": "LOG_ONEWAY(\"Sending reply to %d!\", mCallingPid);",
+      "kind": "branch",
+      "text": "**同步调用**：需要回包。"
+    },
+    {
+      "at": 165,
+      "quote": "if (error < NO_ERROR) reply.setError(error);",
+      "kind": "note",
+      "text": "调试日志。"
+    },
+    {
+      "at": 166,
+      "quote": "",
+      "kind": "branch",
+      "text": "业务返回错误。"
+    },
+    {
+      "at": 167,
+      "quote": "// b/238777741: clear buffer before we send the reply.",
+      "kind": "note",
+      "text": "把错误放进 reply（以 status 形式回传）。"
+    },
+    {
+      "at": 168,
+      "quote": "// Otherwise, there is a race where the client may",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 169,
+      "quote": "// receive the reply and send another transaction",
+      "kind": "note",
+      "text": "b/238777741：回包前先清空输入缓冲。"
+    },
+    {
+      "at": 170,
+      "quote": "// here and the space used by this transaction won't",
+      "kind": "note",
+      "text": "注释解释竞态：否则客户端收到回复后立刻再发一个调用，这块空间不会被释放。"
+    },
+    {
+      "at": 171,
+      "quote": "// be freed for the client.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 172,
+      "quote": "buffer.setDataSize(0);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 173,
+      "quote": "",
+      "kind": "call",
+      "text": "**清空负载大小**。"
+    },
+    {
+      "at": 174,
+      "quote": "constexpr uint32_t kForwardReplyFlags = TF_CLEAR_BUF;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 175,
+      "quote": "",
+      "kind": "data",
+      "text": "只转发的标志。"
+    },
+    {
+      "at": 176,
+      "quote": "// TODO: we may want to abort if there is an error here, or return as 'error'",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 177,
+      "quote": "// from this function, but the impact needs to be measured",
+      "kind": "note",
+      "text": "TODO：失败是否该 abort 尚未定论。"
+    },
+    {
+      "at": 178,
+      "quote": "status_t error2 = sendReply(reply, (tr.flags & kForwardReplyFlags));",
+      "kind": "call",
+      "text": "**发回包**。"
+    },
+    {
+      "at": 179,
+      "quote": "if (error2 != OK) {",
+      "kind": "branch",
+      "text": "回包失败。"
+    },
+    {
+      "at": 180,
+      "quote": "ALOGE(\"error in sendReply for synchronous call: %s\",",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 181,
+      "quote": "statusToString(error2).c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 182,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 183,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是 oneway。"
+    },
+    {
+      "at": 184,
+      "quote": "if (error != OK) {",
+      "kind": "branch",
+      "text": "业务返回错误。"
+    },
+    {
+      "at": 185,
+      "quote": "std::ostringstream logStream;",
+      "kind": "data",
+      "text": "拼日志。"
+    },
+    {
+      "at": 186,
+      "quote": "logStream << \"oneway function results for code \" << tr.code << \" on binder at \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 187,
+      "quote": "<< reinterpret_cast<void*>(tr.target.ptr)",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 188,
+      "quote": "<< \" will be dropped but finished with status \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 189,
+      "quote": "<< statusToString(error);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 190,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 191,
+      "quote": "// ideally we could log this even when error == OK, but it",
+      "kind": "note",
+      "text": "注释说明为什么成功时不打日志：会产生太多日志。"
+    },
+    {
+      "at": 192,
+      "quote": "// causes too much logspam because some manually-written",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 193,
+      "quote": "// interfaces have clients that call methods which always",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 194,
+      "quote": "// write results, sometimes as oneway methods.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 195,
+      "quote": "if (reply.dataSize() != 0) {",
+      "kind": "branch",
+      "text": "reply 里有数据。"
+    },
+    {
+      "at": 196,
+      "quote": "logStream << \" and reply parcel size \" << reply.dataSize();",
+      "kind": "note",
+      "text": "附上大小。"
+    },
+    {
+      "at": 197,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 198,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 199,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "关闭错误分支。"
+    },
+    {
+      "at": 200,
+      "quote": "}",
+      "kind": "note",
+      "text": "调试日志：不发回复。"
+    },
+    {
+      "at": 201,
+      "quote": "LOG_ONEWAY(\"NOT sending reply to %d!\", mCallingPid);",
+      "kind": "note",
+      "text": "关闭 oneway 分支。"
+    },
+    {
+      "at": 202,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 203,
+      "quote": "mServingStackPointer = origServingStackPointer;",
+      "kind": "state",
+      "text": "恢复服务栈指针。"
+    },
+    {
+      "at": 204,
+      "quote": "mCallingPid = origPid;",
+      "kind": "state",
+      "text": "**恢复调用者 pid**。"
+    },
+    {
+      "at": 205,
+      "quote": "mCallingSid = origSid;",
+      "kind": "state",
+      "text": "恢复 sid。"
+    },
+    {
+      "at": 206,
+      "quote": "mCallingUid = origUid;",
+      "kind": "state",
+      "text": "**恢复调用者 uid**。"
+    },
+    {
+      "at": 207,
+      "quote": "mHasExplicitIdentity = origHasExplicitIdentity;",
+      "kind": "state",
+      "text": "恢复显式身份标志。"
+    },
+    {
+      "at": 208,
+      "quote": "mStrictModePolicy = origStrictModePolicy;",
+      "kind": "state",
+      "text": "恢复 StrictMode 策略。"
+    },
+    {
+      "at": 209,
+      "quote": "mLastTransactionBinderFlags = origTransactionBinderFlags;",
+      "kind": "state",
+      "text": "恢复事务标志。"
+    },
+    {
+      "at": 210,
+      "quote": "mWorkSource = origWorkSource;",
+      "kind": "state",
+      "text": "恢复 workSource。"
+    },
+    {
+      "at": 211,
+      "quote": "mPropagateWorkSource = origPropagateWorkSet;",
+      "kind": "state",
+      "text": "恢复传播标志。"
+    },
+    {
+      "at": 212,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 213,
+      "quote": "IF_LOG_TRANSACTIONS() {",
+      "kind": "branch",
+      "text": "事务日志开关。"
+    },
+    {
+      "at": 214,
+      "quote": "std::ostringstream logStream;",
+      "kind": "note",
+      "text": "日志。"
+    },
+    {
+      "at": 215,
+      "quote": "logStream << \"BC_REPLY thr \" << (void*)pthread_self() << \" / obj \" << tr.target.ptr",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 216,
+      "quote": "<< \": \\t\" << reply << \"\\n\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 217,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 218,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 219,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 220,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 221,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 222,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 223,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 224,
+      "quote": "case BR_DEAD_BINDER:",
+      "kind": "branch",
+      "text": "**BR_DEAD_BINDER**：对端死亡通知。"
+    },
+    {
+      "at": 225,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域。"
+    },
+    {
+      "at": 226,
+      "quote": "BpBinder *proxy = (BpBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读代理指针。"
+    },
+    {
+      "at": 227,
+      "quote": "proxy->sendObituary();",
+      "kind": "call",
+      "text": "**触发 obituary**：回调所有 DeathRecipient。"
+    },
+    {
+      "at": 228,
+      "quote": "mOut.writeInt32(BC_DEAD_BINDER_DONE);",
+      "kind": "call",
+      "text": "回报驱动已完成。"
+    },
+    {
+      "at": 229,
+      "quote": "mOut.writePointer((uintptr_t)proxy);",
+      "kind": "data",
+      "text": "指针。"
+    },
+    {
+      "at": 230,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 231,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 232,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 233,
+      "quote": "case BR_CLEAR_DEATH_NOTIFICATION_DONE:",
+      "kind": "branch",
+      "text": "死亡通知清除完成。"
+    },
+    {
+      "at": 234,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域。"
+    },
+    {
+      "at": 235,
+      "quote": "BpBinder *proxy = (BpBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读代理。"
+    },
+    {
+      "at": 236,
+      "quote": "proxy->getWeakRefs()->decWeak(proxy);",
+      "kind": "call",
+      "text": "释放弱引用。"
+    },
+    {
+      "at": 237,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 238,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 239,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 240,
+      "quote": "case BR_FROZEN_BINDER:",
+      "kind": "branch",
+      "text": "**BR_FROZEN_BINDER**：对端被冻结/解冻。"
+    },
+    {
+      "at": 241,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域。"
+    },
+    {
+      "at": 242,
+      "quote": "struct binder_frozen_state_info info;",
+      "kind": "data",
+      "text": "冻结状态信息。"
+    },
+    {
+      "at": 243,
+      "quote": "if (mIn.read(&info, sizeof(struct binder_frozen_state_info)) != NO_ERROR) {",
+      "kind": "branch",
+      "text": "读取失败。"
+    },
+    {
+      "at": 244,
+      "quote": "result = UNKNOWN_ERROR;",
+      "kind": "state",
+      "text": "置错误。"
+    },
+    {
+      "at": 245,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 246,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 247,
+      "quote": "BpBinder* proxy = (BpBinder*)info.cookie;",
+      "kind": "data",
+      "text": "取代理。"
+    },
+    {
+      "at": 248,
+      "quote": "proxy->getPrivateAccessor().onFrozenStateChanged(info.is_frozen);",
+      "kind": "call",
+      "text": "**通知监听者冻结状态变化**。"
+    },
+    {
+      "at": 249,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 250,
+      "quote": "mOut.writeInt32(BC_FREEZE_NOTIFICATION_DONE);",
+      "kind": "call",
+      "text": "回报驱动。"
+    },
+    {
+      "at": 251,
+      "quote": "mOut.writePointer(info.cookie);",
+      "kind": "data",
+      "text": "cookie。"
+    },
+    {
+      "at": 252,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 253,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 254,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 255,
+      "quote": "case BR_CLEAR_FREEZE_NOTIFICATION_DONE:",
+      "kind": "branch",
+      "text": "冻结监听清除完成。"
+    },
+    {
+      "at": 256,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域。"
+    },
+    {
+      "at": 257,
+      "quote": "BpBinder* proxy = (BpBinder*)mIn.readPointer();",
+      "kind": "data",
+      "text": "读代理。"
+    },
+    {
+      "at": 258,
+      "quote": "if (waitForFrozenListenerRemovalCompletion()) {",
+      "kind": "branch",
+      "text": "等监听移除完成。"
+    },
+    {
+      "at": 259,
+      "quote": "proxy->getPrivateAccessor().onFrozenStateChangeListenerRemoved();",
+      "kind": "call",
+      "text": "通知「监听已移除」。"
+    },
+    {
+      "at": 260,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 261,
+      "quote": "proxy->getWeakRefs()->decWeak(proxy);",
+      "kind": "call",
+      "text": "释放弱引用。"
+    },
+    {
+      "at": 262,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 263,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 264,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 265,
+      "quote": "case BR_FINISHED:",
+      "kind": "branch",
+      "text": "BR_FINISHED：驱动要求退出等待。"
+    },
+    {
+      "at": 266,
+      "quote": "result = TIMED_OUT;",
+      "kind": "state",
+      "text": "**转成 TIMED_OUT**：上层据此让非主线程退出线程池。"
+    },
+    {
+      "at": 267,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 268,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 269,
+      "quote": "case BR_NOOP:",
+      "kind": "branch",
+      "text": "空命令。"
+    },
+    {
+      "at": 270,
+      "quote": "break;",
+      "kind": "note",
+      "text": "什么都不做。"
+    },
+    {
+      "at": 271,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 272,
+      "quote": "case BR_SPAWN_LOOPER:",
+      "kind": "branch",
+      "text": "**BR_SPAWN_LOOPER**：驱动要求扩容线程池。"
+    },
+    {
+      "at": 273,
+      "quote": "mProcess->spawnPooledThread(false);",
+      "kind": "call",
+      "text": "**派生新线程**加入线程池——这是服务端并发度的动态来源。"
+    },
+    {
+      "at": 274,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 275,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 276,
+      "quote": "default:",
+      "kind": "note",
+      "text": "未知命令。"
+    },
+    {
+      "at": 277,
+      "quote": "ALOGE(\"*** BAD COMMAND %d received from Binder driver\\n\", cmd);",
+      "kind": "note",
+      "text": "E 级日志：收到驱动发来的非法命令。"
+    },
+    {
+      "at": 278,
+      "quote": "result = UNKNOWN_ERROR;",
+      "kind": "state",
+      "text": "置错误。"
+    },
+    {
+      "at": 279,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 280,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 281,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 282,
+      "quote": "if (result != NO_ERROR) {",
+      "kind": "branch",
+      "text": "有错误就记到 mLastError。"
+    },
+    {
+      "at": 283,
+      "quote": "mLastError = result;",
+      "kind": "state",
+      "text": "记录。"
+    },
+    {
+      "at": 284,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 285,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 286,
+      "quote": "return result;",
+      "kind": "note",
+      "text": "返回结果。"
+    },
+    {
+      "at": 287,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

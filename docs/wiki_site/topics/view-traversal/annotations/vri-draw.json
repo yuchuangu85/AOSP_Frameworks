@@ -1,0 +1,1266 @@
+{
+  "id": "vri-draw",
+  "title": "ViewRootImpl::draw",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "private boolean draw(boolean fullRedrawNeeded",
+  "span": [
+    6161,
+    6365
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private boolean draw(boolean fullRedrawNeeded, @Nullable SurfaceSyncGroup activeSyncGroup,",
+      "kind": "note",
+      "text": "真正的绘制分发：先算脏区、再决定走硬件还是软件。返回值是「是否异步上报」。"
+    },
+    {
+      "at": 2,
+      "quote": "boolean syncBuffer) {",
+      "kind": "note",
+      "text": "syncBuffer 为真时要求强制出一帧（配合 SurfaceSyncGroup 的事务对齐）。"
+    },
+    {
+      "at": 3,
+      "quote": "Surface surface = mSurface;",
+      "kind": "data",
+      "text": "本窗口的生产端 surface；软件路径直接 lockCanvas，硬件路径交给 ThreadedRenderer。"
+    },
+    {
+      "at": 4,
+      "quote": "if (!mRenderTargetIsValid) {",
+      "kind": "branch",
+      "text": "surface 不可用（窗口刚建/正在重建）就不画，避免往无效 surface 里提交。"
+    },
+    {
+      "at": 5,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false 表示没走异步上报，调用方据此决定是否内联处理事务。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 surface 有效性判断。"
+    },
+    {
+      "at": 8,
+      "quote": "if (DEBUG_FPS) {",
+      "kind": "branch",
+      "text": "调试开关：统计 FPS。"
+    },
+    {
+      "at": 9,
+      "quote": "trackFPS();",
+      "kind": "call",
+      "text": "仅在开发调试时有效，正常构建里不产生开销。"
+    },
+    {
+      "at": 9,
+      "quote": "trackFPS();",
+      "kind": "note",
+      "text": "关闭 DEBUG_FPS。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭无效 surface 判断。"
+    },
+    {
+      "at": 12,
+      "quote": "if (sToolkitMetricsForFrameRateDecisionFlagValue) {",
+      "kind": "branch",
+      "text": "frame rate 决策用的指标采集，受 aconfig flag 控制。"
+    },
+    {
+      "at": 12,
+      "quote": "if (sToolkitMetricsForFrameRateDecisionFlagValue) {",
+      "kind": "note",
+      "text": "关闭指标采集分支。"
+    },
+    {
+      "at": 13,
+      "quote": "collectFrameRateDecisionMetrics();",
+      "kind": "call",
+      "text": "采集供刷新率投票使用的指标；与 VRR/高刷策略相关。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 DEBUG_FPS 分支。"
+    },
+    {
+      "at": 16,
+      "quote": "if (!sFirstDrawComplete) {",
+      "kind": "branch",
+      "text": "进程内的第一次绘制：要把注册过的 sFirstDrawHandlers 排出去。"
+    },
+    {
+      "at": 17,
+      "quote": "synchronized (sFirstDrawHandlers) {",
+      "kind": "lock",
+      "text": "静态列表，多窗口并发首帧时会竞争这把锁。"
+    },
+    {
+      "at": 18,
+      "quote": "sFirstDrawComplete = true;",
+      "kind": "state",
+      "text": "置位后其它窗口/后续帧都不会再处理首帧回调。"
+    },
+    {
+      "at": 19,
+      "quote": "final int count = sFirstDrawHandlers.size();",
+      "kind": "data",
+      "text": "先取数量，避免遍历期间被修改。"
+    },
+    {
+      "at": 19,
+      "quote": "final int count = sFirstDrawHandlers.size();",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 20,
+      "quote": "for (int i = 0; i< count; i++) {",
+      "kind": "note",
+      "text": "逐个投递。"
+    },
+    {
+      "at": 20,
+      "quote": "for (int i = 0; i< count; i++) {",
+      "kind": "note",
+      "text": "关闭 synchronized。"
+    },
+    {
+      "at": 21,
+      "quote": "mHandler.post(sFirstDrawHandlers.get(i));",
+      "kind": "call",
+      "text": "用 post 而不是直接调用：首帧回调不属于本帧的绘制时间。"
+    },
+    {
+      "at": 21,
+      "quote": "mHandler.post(sFirstDrawHandlers.get(i));",
+      "kind": "note",
+      "text": "关闭首帧判断。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭同步块。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭指标采集分支。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭首帧处理块。"
+    },
+    {
+      "at": 26,
+      "quote": "scrollToRectOrFocus(null, false);",
+      "kind": "call",
+      "text": "把焦点矩形或待滚动区域滚入视野；它可能改动 scrollX/scrollY，从而影响脏区。"
+    },
+    {
+      "at": 26,
+      "quote": "scrollToRectOrFocus(null, false);",
+      "kind": "note",
+      "text": "关闭滚动变化分支。"
+    },
+    {
+      "at": 28,
+      "quote": "if (mAttachInfo.mViewScrollChanged) {",
+      "kind": "branch",
+      "text": "本帧滚动位置变过。"
+    },
+    {
+      "at": 29,
+      "quote": "mAttachInfo.mViewScrollChanged = false;",
+      "kind": "state",
+      "text": "取走标志。"
+    },
+    {
+      "at": 29,
+      "quote": "mAttachInfo.mViewScrollChanged = false;",
+      "kind": "branch",
+      "text": "动画中取插值结果。"
+    },
+    {
+      "at": 30,
+      "quote": "mAttachInfo.mTreeObserver.dispatchOnScrollChanged();",
+      "kind": "call",
+      "text": "通知 OnScrollChangedListener；应用可能在这里再次 invalidate。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "note",
+      "text": "非动画取实际滚动位置。"
+    },
+    {
+      "at": 33,
+      "quote": "boolean animating = mScroller != null && mScroller.computeScrollOffset();",
+      "kind": "data",
+      "text": "判断是否处于 fling/平滑滚动中；animating 会让后面「dirty 为空也照画」。"
+    },
+    {
+      "at": 33,
+      "quote": "boolean animating = mScroller != null && mScroller.computeScrollOffset();",
+      "kind": "note",
+      "text": "关闭取值分支。"
+    },
+    {
+      "at": 34,
+      "quote": "final int curScrollY;",
+      "kind": "data",
+      "text": "本帧最终使用的滚动偏移。"
+    },
+    {
+      "at": 35,
+      "quote": "if (animating) {",
+      "kind": "branch",
+      "text": "动画中取插值结果。"
+    },
+    {
+      "at": 36,
+      "quote": "curScrollY = mScroller.getCurrY();",
+      "kind": "data",
+      "text": "OverScroller 当前值。"
+    },
+    {
+      "at": 37,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "非动画时取真实滚动位置。"
+    },
+    {
+      "at": 38,
+      "quote": "curScrollY = mScrollY;",
+      "kind": "data",
+      "text": "静止时的真实偏移。"
+    },
+    {
+      "at": 39,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭接管判断。"
+    },
+    {
+      "at": 40,
+      "quote": "if (mCurScrollY != curScrollY) {",
+      "kind": "branch",
+      "text": "滚动位置变了：整窗内容都动了，必须全量重画。"
+    },
+    {
+      "at": 40,
+      "quote": "if (mCurScrollY != curScrollY) {",
+      "kind": "note",
+      "text": "关闭滚动变化处理。"
+    },
+    {
+      "at": 41,
+      "quote": "mCurScrollY = curScrollY;",
+      "kind": "state",
+      "text": "更新缓存值。"
+    },
+    {
+      "at": 42,
+      "quote": "fullRedrawNeeded = true;",
+      "kind": "state",
+      "text": "这一行把局部脏区升级成全量重画——滚动时最常见的性能拐点。"
+    },
+    {
+      "at": 43,
+      "quote": "if (mView instanceof RootViewSurfaceTaker) {",
+      "kind": "branch",
+      "text": "根 View 自己接管 surface 的特殊场景。"
+    },
+    {
+      "at": 44,
+      "quote": "((RootViewSurfaceTaker) mView).onRootViewScrollYChanged(mCurScrollY);",
+      "kind": "call",
+      "text": "把滚动偏移同步给接管方（如输入法、SplashScreen）。"
+    },
+    {
+      "at": 45,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭滚动变化通知。"
+    },
+    {
+      "at": 46,
+      "quote": "}",
+      "kind": "state",
+      "text": "清脏区，避免下一帧误以为还需要画。"
+    },
+    {
+      "at": 48,
+      "quote": "final float appScale = mAttachInfo.mApplicationScale;",
+      "kind": "data",
+      "text": "应用缩放（兼容模式），影响脏区换算。"
+    },
+    {
+      "at": 49,
+      "quote": "final boolean scalingRequired = mAttachInfo.mScalingRequired;",
+      "kind": "data",
+      "text": "是否需要缩放，软件路径会用到。"
+    },
+    {
+      "at": 49,
+      "quote": "final boolean scalingRequired = mAttachInfo.mScalingRequired;",
+      "kind": "note",
+      "text": "关闭动画中止分支。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "不绘制；外部 owner 会自己处理重绘。"
+    },
+    {
+      "at": 51,
+      "quote": "final Rect dirty = mDirty;",
+      "kind": "data",
+      "text": "脏区是 mDirty 的引用——注意后面的 setEmpty/offset 都会改到这个共享对象。"
+    },
+    {
+      "at": 51,
+      "quote": "final Rect dirty = mDirty;",
+      "kind": "note",
+      "text": "关闭 SurfaceHolder 分支。"
+    },
+    {
+      "at": 52,
+      "quote": "if (mSurfaceHolder != null) {",
+      "kind": "branch",
+      "text": "surface 被外部接管：本窗口不负责绘制。"
+    },
+    {
+      "at": 53,
+      "quote": "// The app owns the surface, we won't draw.",
+      "kind": "note",
+      "text": "注释点明所有权：谁接管 surface，谁负责往里面画。"
+    },
+    {
+      "at": 54,
+      "quote": "dirty.setEmpty();",
+      "kind": "note",
+      "text": "关闭全量分支。"
+    },
+    {
+      "at": 55,
+      "quote": "if (animating && mScroller != null) {",
+      "kind": "branch",
+      "text": "正在滚动但要交给外部绘制，滚动动画没有意义。"
+    },
+    {
+      "at": 56,
+      "quote": "mScroller.abortAnimation();",
+      "kind": "call",
+      "text": "中止滚动，避免「没人画却一直请求下一帧」的空转。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外部接管分支。"
+    },
+    {
+      "at": 58,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "明确不画：由 surface 的所有者负责。"
+    },
+    {
+      "at": 59,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外部接管判断。"
+    },
+    {
+      "at": 61,
+      "quote": "if (fullRedrawNeeded) {",
+      "kind": "branch",
+      "text": "全量重画：直接把脏区扩到整个窗口（含 appScale 取整）。"
+    },
+    {
+      "at": 62,
+      "quote": "dirty.set(0, 0, (int) (mWidth * appScale + 0.5f), (int) (mHeight * appScale + 0.5f));",
+      "kind": "state",
+      "text": "四舍五入 +0.5f 是为了避免浮点误差导致最后一列/行像素漏画。"
+    },
+    {
+      "at": 62,
+      "quote": "dirty.set(0, 0, (int) (mWidth * appScale + 0.5f), (int) (mHeight * appScale + 0.5f));",
+      "kind": "note",
+      "text": "关闭调试分支。"
+    },
+    {
+      "at": 63,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭全量脏区计算。"
+    },
+    {
+      "at": 65,
+      "quote": "if (DEBUG_ORIENTATION || DEBUG_DRAW) {",
+      "kind": "branch",
+      "text": "调试日志开关。"
+    },
+    {
+      "at": 66,
+      "quote": "Log.v(mTag, \"Draw \" + mView + \"/\"",
+      "kind": "note",
+      "text": "打印本帧的脏区与 surface 状态。"
+    },
+    {
+      "at": 67,
+      "quote": "+ mWindowAttributes.getTitle()",
+      "kind": "note",
+      "text": "带上窗口标题。"
+    },
+    {
+      "at": 68,
+      "quote": "+ \": dirty={\" + dirty.left + \",\" + dirty.top",
+      "kind": "note",
+      "text": "脏区左/上。"
+    },
+    {
+      "at": 69,
+      "quote": "+ \",\" + dirty.right + \",\" + dirty.bottom + \"} surface=\"",
+      "kind": "note",
+      "text": "脏区右/下。"
+    },
+    {
+      "at": 70,
+      "quote": "+ surface + \" surface.isValid()=\" + surface.isValid() + \", appScale:\" +",
+      "kind": "note",
+      "text": "surface 合法性。"
+    },
+    {
+      "at": 71,
+      "quote": "appScale + \", width=\" + mWidth + \", height=\" + mHeight);",
+      "kind": "note",
+      "text": "缩放与窗口尺寸。"
+    },
+    {
+      "at": 72,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试日志。"
+    },
+    {
+      "at": 73,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭 inset 处理。"
+    },
+    {
+      "at": 74,
+      "quote": "mAttachInfo.mTreeObserver.dispatchOnDraw();",
+      "kind": "call",
+      "text": "在真正绘制前通知 OnDrawListener——这里改的 View 状态有机会进本帧。"
+    },
+    {
+      "at": 76,
+      "quote": "int xOffset = -mCanvasOffsetX;",
+      "kind": "data",
+      "text": "软件路径的 canvas 平移量（硬件路径用自己的坐标系）。"
+    },
+    {
+      "at": 77,
+      "quote": "int yOffset = -mCanvasOffsetY + curScrollY;",
+      "kind": "data",
+      "text": "叠加滚动偏移。"
+    },
+    {
+      "at": 78,
+      "quote": "final WindowManager.LayoutParams params = mWindowAttributes;",
+      "kind": "data",
+      "text": "窗口参数，主要为了取 surfaceInsets。"
+    },
+    {
+      "at": 79,
+      "quote": "final Rect surfaceInsets = params != null ? params.surfaceInsets : null;",
+      "kind": "data",
+      "text": "surface 相对窗口的留白（例如阴影区）。"
+    },
+    {
+      "at": 80,
+      "quote": "if (surfaceInsets != null) {",
+      "kind": "branch",
+      "text": "有 inset 时坐标系要跟着偏。"
+    },
+    {
+      "at": 80,
+      "quote": "if (surfaceInsets != null) {",
+      "kind": "note",
+      "text": "关闭焦点矩形判断。"
+    },
+    {
+      "at": 81,
+      "quote": "xOffset -= surfaceInsets.left;",
+      "kind": "data",
+      "text": "横向偏移。"
+    },
+    {
+      "at": 81,
+      "quote": "xOffset -= surfaceInsets.left;",
+      "kind": "note",
+      "text": "关闭无障碍焦点处理。"
+    },
+    {
+      "at": 82,
+      "quote": "yOffset -= surfaceInsets.top;",
+      "kind": "data",
+      "text": "纵向偏移。"
+    },
+    {
+      "at": 84,
+      "quote": "// Offset dirty rect for surface insets.",
+      "kind": "note",
+      "text": "脏区也要平移到 surface 坐标系，否则会画错位置。"
+    },
+    {
+      "at": 85,
+      "quote": "dirty.offset(surfaceInsets.left, surfaceInsets.top);",
+      "kind": "state",
+      "text": "注意这里改的是共享的 mDirty 对象本身。"
+    },
+    {
+      "at": 86,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭滚动偏移变化判断。"
+    },
+    {
+      "at": 88,
+      "quote": "boolean accessibilityFocusDirty = isAccessibilityFocusDirty();",
+      "kind": "data",
+      "text": "无障碍焦点框变了：即使没有普通脏区也必须画。"
+    },
+    {
+      "at": 90,
+      "quote": "// Force recalculation of transparent regions",
+      "kind": "note",
+      "text": "焦点变化会改变窗口透明区域，需要重算。"
+    },
+    {
+      "at": 91,
+      "quote": "if (accessibilityFocusDirty) {",
+      "kind": "branch",
+      "text": "确实变了才处理。"
+    },
+    {
+      "at": 92,
+      "quote": "final Rect bounds = mAttachInfo.mTmpInvalRect;",
+      "kind": "data",
+      "text": "复用临时矩形，避免每帧分配。"
+    },
+    {
+      "at": 93,
+      "quote": "if (getAccessibilityFocusedRect(bounds)) {",
+      "kind": "call",
+      "text": "拿到焦点矩形才值得 requestLayout。"
+    },
+    {
+      "at": 94,
+      "quote": "requestLayout();",
+      "kind": "call",
+      "text": "焦点框可能改变窗口透明区域，因此要求下一次 relayout；注意这会额外消耗一帧。"
+    },
+    {
+      "at": 94,
+      "quote": "requestLayout();",
+      "kind": "note",
+      "text": "关闭偏移变化判断。"
+    },
+    {
+      "at": 95,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 HDR 分支。"
+    },
+    {
+      "at": 96,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 SurfaceSyncGroup 分支。"
+    },
+    {
+      "at": 97,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭根失效分支。"
+    },
+    {
+      "at": 98,
+      "quote": "boolean useAsyncReport = false;",
+      "kind": "data",
+      "text": "默认走同步路径；硬件分支会把它改成 true。"
+    },
+    {
+      "at": 98,
+      "quote": "boolean useAsyncReport = false;",
+      "kind": "state",
+      "text": "脏区在这里被取走：硬件路径不需要 Java 侧再维护它，后续由 RT 的 damage 计算接管。"
+    },
+    {
+      "at": 99,
+      "quote": "if (!dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty) {",
+      "kind": "decision",
+      "text": "「画不画」的唯一决策点：有脏区、或正在动画、或无障碍焦点变了，三者满足其一才画。"
+    },
+    {
+      "at": 100,
+      "quote": "if (isHardwareEnabled()) {",
+      "kind": "branch",
+      "text": "硬件加速分支：脏区交给 RT 处理，这里只做前置准备。"
+    },
+    {
+      "at": 101,
+      "quote": "// If accessibility focus moved, always invalidate the root.",
+      "kind": "note",
+      "text": "焦点变化要求整根节点重录。"
+    },
+    {
+      "at": 102,
+      "quote": "boolean invalidateRoot = accessibilityFocusDirty || mInvalidateRootRequested;",
+      "kind": "data",
+      "text": "两个来源：焦点变化，或显式请求根节点失效。"
+    },
+    {
+      "at": 103,
+      "quote": "mInvalidateRootRequested = false;",
+      "kind": "state",
+      "text": "取走即清。"
+    },
+    {
+      "at": 105,
+      "quote": "// Draw with hardware renderer.",
+      "kind": "note",
+      "text": "从这里开始进入硬件渲染路径。"
+    },
+    {
+      "at": 106,
+      "quote": "mIsAnimating = false;",
+      "kind": "state",
+      "text": "本帧已经画了，动画标志先清；若下面发现滚动未结束会再置回。"
+    },
+    {
+      "at": 107,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭 report 分支。"
+    },
+    {
+      "at": 108,
+      "quote": "if (mHardwareYOffset != yOffset || mHardwareXOffset != xOffset) {",
+      "kind": "branch",
+      "text": "硬件侧偏移变了（滚动/inset 变化）。"
+    },
+    {
+      "at": 109,
+      "quote": "mHardwareYOffset = yOffset;",
+      "kind": "state",
+      "text": "记录新偏移。"
+    },
+    {
+      "at": 110,
+      "quote": "mHardwareXOffset = xOffset;",
+      "kind": "state",
+      "text": "同上。"
+    },
+    {
+      "at": 110,
+      "quote": "mHardwareXOffset = xOffset;",
+      "kind": "note",
+      "text": "关闭边界变化分支。"
+    },
+    {
+      "at": 111,
+      "quote": "invalidateRoot = true;",
+      "kind": "state",
+      "text": "偏移变了整棵树的内容都要重新定位，根节点必须重录。"
+    },
+    {
+      "at": 112,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭圆角准备。"
+    },
+    {
+      "at": 114,
+      "quote": "if (invalidateRoot) {",
+      "kind": "branch",
+      "text": "需要根节点失效。"
+    },
+    {
+      "at": 115,
+      "quote": "mAttachInfo.mThreadedRenderer.invalidateRoot();",
+      "kind": "call",
+      "text": "把根 RenderNode 标记为需要重录——这直接对应 updateRootDisplayList 里 mRootNodeNeedsUpdate 的置位。"
+    },
+    {
+      "at": 116,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭同步组注册。"
+    },
+    {
+      "at": 118,
+      "quote": "dirty.setEmpty();",
+      "kind": "note",
+      "text": "关闭 HDR 分支。"
+    },
+    {
+      "at": 120,
+      "quote": "// Stage the content drawn size now. It will be transferred to the renderer",
+      "kind": "note",
+      "text": "内容绘制尺寸要提前告诉渲染器，用于 damage/裁剪判断。"
+    },
+    {
+      "at": 121,
+      "quote": "// shortly before the draw commands get send to the renderer.",
+      "kind": "note",
+      "text": "真正下发的时机在 draw 前一刻。"
+    },
+    {
+      "at": 122,
+      "quote": "final boolean updated = updateContentDrawBounds();",
+      "kind": "call",
+      "text": "返回内容边界是否有变化；变化了要额外请求一次绘制窗口。"
+    },
+    {
+      "at": 124,
+      "quote": "if (mReportNextDraw) {",
+      "kind": "branch",
+      "text": "要求报告本帧：临时把渲染器从 stopped 拉起。"
+    },
+    {
+      "at": 124,
+      "quote": "if (mReportNextDraw) {",
+      "kind": "note",
+      "text": "关闭强制绘制判断。"
+    },
+    {
+      "at": 125,
+      "quote": "// report next draw overrides setStopped()",
+      "kind": "note",
+      "text": "注释说明这是一次性的覆盖。"
+    },
+    {
+      "at": 126,
+      "quote": "// This value is re-sync'd to the value of mStopped",
+      "kind": "note",
+      "text": "绘制结束后会重新按 mStopped 同步。"
+    },
+    {
+      "at": 127,
+      "quote": "// in the handling of mReportNextDraw post-draw.",
+      "kind": "note",
+      "text": "回滚点就在 performDraw 的 report 段。"
+    },
+    {
+      "at": 128,
+      "quote": "mAttachInfo.mThreadedRenderer.setStopped(false);",
+      "kind": "call",
+      "text": "清 stopped 才能真的产出一帧。"
+    },
+    {
+      "at": 129,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭挂起事务分支。"
+    },
+    {
+      "at": 130,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭挂起事务分支。"
+    },
+    {
+      "at": 131,
+      "quote": "if (updated) {",
+      "kind": "branch",
+      "text": "内容边界变了。"
+    },
+    {
+      "at": 132,
+      "quote": "requestDrawWindow();",
+      "kind": "call",
+      "text": "请求 WM 更新绘制窗口（视口），避免内容被裁在旧窗口里。"
+    },
+    {
+      "at": 133,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭首帧时间戳记录。"
+    },
+    {
+      "at": 135,
+      "quote": "useAsyncReport = true;",
+      "kind": "state",
+      "text": "硬件路径按异步上报处理：buffer 何时提交由 RT 与帧回调决定。"
+    },
+    {
+      "at": 136,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭记录分支。"
+    },
+    {
+      "at": 137,
+      "quote": "if (mHdrRenderState.updateForFrame(mAttachInfo.mDrawingTime)) {",
+      "kind": "branch",
+      "text": "HDR/SDR 亮度映射需要按帧更新。"
+    },
+    {
+      "at": 137,
+      "quote": "if (mHdrRenderState.updateForFrame(mAttachInfo.mDrawingTime)) {",
+      "kind": "note",
+      "text": "走到这里说明硬件渲染不可用。"
+    },
+    {
+      "at": 138,
+      "quote": "final float renderRatio = mHdrRenderState.getRenderHdrSdrRatio();",
+      "kind": "data",
+      "text": "本帧使用的亮度比。"
+    },
+    {
+      "at": 139,
+      "quote": "applyTransactionOnDraw(mTransaction.setExtendedRangeBrightness(",
+      "kind": "call",
+      "text": "把亮度比写进窗口事务，随本帧一起生效。"
+    },
+    {
+      "at": 140,
+      "quote": "getSurfaceControl(), renderRatio,",
+      "kind": "data",
+      "text": "作用对象是本窗口的 SurfaceControl。"
+    },
+    {
+      "at": 141,
+      "quote": "mHdrRenderState.getDesiredHdrSdrRatio()));",
+      "kind": "data",
+      "text": "目标亮度比。"
+    },
+    {
+      "at": 142,
+      "quote": "mAttachInfo.mThreadedRenderer.setTargetHdrSdrRatio(renderRatio);",
+      "kind": "call",
+      "text": "同时下发给渲染器，保证 GPU 侧色彩映射与事务一致。"
+    },
+    {
+      "at": 143,
+      "quote": "}",
+      "kind": "branch",
+      "text": "走到这里说明硬件渲染不可用，尝试重建。"
+    },
+    {
+      "at": 145,
+      "quote": "prepareCornerRadiiForDraw();",
+      "kind": "call",
+      "text": "圆角（窗口/屏幕圆角）的遮罩准备；不改脏区判定。"
+    },
+    {
+      "at": 147,
+      "quote": "if (activeSyncGroup != null) {",
+      "kind": "branch",
+      "text": "有 SurfaceSyncGroup：本帧要与一组窗口的事务对齐（转场、启动动画常用）。"
+    },
+    {
+      "at": 148,
+      "quote": "registerCallbacksForSync(syncBuffer, activeSyncGroup);",
+      "kind": "call",
+      "text": "注册同步回调，等所有窗口都画完后统一提交。"
+    },
+    {
+      "at": 149,
+      "quote": "if (syncBuffer) {",
+      "kind": "branch",
+      "text": "要求强制出 buffer 的场景。"
+    },
+    {
+      "at": 150,
+      "quote": "mAttachInfo.mThreadedRenderer.forceDrawNextFrame();",
+      "kind": "call",
+      "text": "即使没有脏区也要让 RT 出一帧，否则同步组永远等不到这块 buffer。"
+    },
+    {
+      "at": 151,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭硬件渲染分支。"
+    },
+    {
+      "at": 152,
+      "quote": "} else if (mHasPendingTransactions) {",
+      "kind": "branch",
+      "text": "没有同步组但有挂起事务：只需要一个提交回调。"
+    },
+    {
+      "at": 153,
+      "quote": "// Register a callback if there's no sync involved but there were calls to",
+      "kind": "note",
+      "text": "说明这条路径只处理「不需要等待其它窗口」的情形。"
+    },
+    {
+      "at": 154,
+      "quote": "// applyTransactionOnDraw. If there is a sync involved, the sync callback will",
+      "kind": "note",
+      "text": "有同步时交由同步回调统一处理。"
+    },
+    {
+      "at": 155,
+      "quote": "// handle merging the pending transaction.",
+      "kind": "note",
+      "text": "两条路径不会重复提交。"
+    },
+    {
+      "at": 155,
+      "quote": "// handle merging the pending transaction.",
+      "kind": "note",
+      "text": "本帧放弃。"
+    },
+    {
+      "at": 156,
+      "quote": "registerCallbackForPendingTransactions();",
+      "kind": "call",
+      "text": "注册一次性提交回调。"
+    },
+    {
+      "at": 156,
+      "quote": "registerCallbackForPendingTransactions();",
+      "kind": "note",
+      "text": "关闭 catch。"
+    },
+    {
+      "at": 157,
+      "quote": "}",
+      "kind": "state",
+      "text": "新建的 surface 没有内容，下一帧必须全量重画。"
+    },
+    {
+      "at": 158,
+      "quote": "",
+      "kind": "call",
+      "text": "立刻排下一帧重试——注意这里形成了一次 self-reschedule。"
+    },
+    {
+      "at": 159,
+      "quote": "long timeNs = SystemClock.uptimeNanos();",
+      "kind": "data",
+      "text": "记录进入 RT 绘制前的时间戳，用于统计首帧的 RT 启动耗时。"
+    },
+    {
+      "at": 159,
+      "quote": "long timeNs = SystemClock.uptimeNanos();",
+      "kind": "note",
+      "text": "本帧不画。"
+    },
+    {
+      "at": 160,
+      "quote": "mAttachInfo.mThreadedRenderer.draw(mView, mAttachInfo, this);",
+      "kind": "call",
+      "text": "本页的主角：ThreadedRenderer.draw 内部先录制 display list，再 syncAndDrawFrame 并阻塞在 mSignal 上等同步完成。"
+    },
+    {
+      "at": 160,
+      "quote": "mAttachInfo.mThreadedRenderer.draw(mView, mAttachInfo, this);",
+      "kind": "note",
+      "text": "关闭重建条件。"
+    },
+    {
+      "at": 162,
+      "quote": "// Only trigger once per {@link ViewRootImpl} instance.",
+      "kind": "note",
+      "text": "只记第一次。"
+    },
+    {
+      "at": 163,
+      "quote": "if (mRenderThreadDrawStartTimeNs == -1) {",
+      "kind": "branch",
+      "text": "尚未记录过。"
+    },
+    {
+      "at": 163,
+      "quote": "if (mRenderThreadDrawStartTimeNs == -1) {",
+      "kind": "note",
+      "text": "软件绘制失败（例如 lockCanvas 抛异常）。"
+    },
+    {
+      "at": 164,
+      "quote": "mRenderThreadDrawStartTimeNs = timeNs;",
+      "kind": "state",
+      "text": "保存首帧时间戳，供窗口首帧延迟统计使用。"
+    },
+    {
+      "at": 164,
+      "quote": "mRenderThreadDrawStartTimeNs = timeNs;",
+      "kind": "note",
+      "text": "关闭软件绘制判断。"
+    },
+    {
+      "at": 165,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭软/硬件分流。"
+    },
+    {
+      "at": 166,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "关闭「画不画」的决策块。"
+    },
+    {
+      "at": 167,
+      "quote": "// If we get here with a disabled & requested hardware renderer, something went",
+      "kind": "note",
+      "text": "典型场景：渲染器刚被销毁（eglTerminate）就有人 invalidate。"
+    },
+    {
+      "at": 167,
+      "quote": "// If we get here with a disabled & requested hardware renderer, something went",
+      "kind": "branch",
+      "text": "还在滚动/fling：必须继续排下一帧，否则动画会停在半路。"
+    },
+    {
+      "at": 168,
+      "quote": "// wrong (an invalidate posted right before we destroyed the hardware surface",
+      "kind": "note",
+      "text": "此时若强行用软件锁 surface，会把硬件渲染器挤掉。"
+    },
+    {
+      "at": 168,
+      "quote": "// wrong (an invalidate posted right before we destroyed the hardware surface",
+      "kind": "state",
+      "text": "动画期间整窗内容都在动，下一帧全量画。"
+    },
+    {
+      "at": 169,
+      "quote": "// for instance) so we should just bail out. Locking the surface with software",
+      "kind": "note",
+      "text": "所以策略是「先退出、重建硬件渲染器、下帧再来」。"
+    },
+    {
+      "at": 169,
+      "quote": "// for instance) so we should just bail out. Locking the surface with software",
+      "kind": "call",
+      "text": "自我续期：这是滚动流畅度的关键语句，也是「滚动时掉帧」时第一个要看的地方。"
+    },
+    {
+      "at": 170,
+      "quote": "// rendering at this point would lock it forever and prevent hardware renderer",
+      "kind": "note",
+      "text": "注释强调后果：surface 被软件锁住后硬件渲染器再也拿不回来。"
+    },
+    {
+      "at": 170,
+      "quote": "// rendering at this point would lock it forever and prevent hardware renderer",
+      "kind": "note",
+      "text": "关闭动画续期。"
+    },
+    {
+      "at": 171,
+      "quote": "// from doing its job when it comes back.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 172,
+      "quote": "// Before we request a new frame we must however attempt to reinitiliaze the",
+      "kind": "note",
+      "text": "但在退出之前，先尝试把硬件渲染器拉起来。"
+    },
+    {
+      "at": 172,
+      "quote": "// Before we request a new frame we must however attempt to reinitiliaze the",
+      "kind": "note",
+      "text": "方法结束。整段没有强制等待 RT，唯一的阻塞点在被调用的 ThreadedRenderer.draw 内部。"
+    },
+    {
+      "at": 173,
+      "quote": "// hardware renderer if it's in requested state. This would happen after an",
+      "kind": "note",
+      "text": "「requested 状态」是关键判据。"
+    },
+    {
+      "at": 174,
+      "quote": "// eglTerminate() for instance.",
+      "kind": "note",
+      "text": "举例：EGL 被终止之后。"
+    },
+    {
+      "at": 175,
+      "quote": "if (mAttachInfo.mThreadedRenderer != null &&",
+      "kind": "branch",
+      "text": "三个条件同时成立才重建：有渲染器对象、当前未启用、且被请求启用。"
+    },
+    {
+      "at": 176,
+      "quote": "!mAttachInfo.mThreadedRenderer.isEnabled() &&",
+      "kind": "note",
+      "text": "未启用。"
+    },
+    {
+      "at": 177,
+      "quote": "mAttachInfo.mThreadedRenderer.isRequested() &&",
+      "kind": "note",
+      "text": "被请求启用。"
+    },
+    {
+      "at": 178,
+      "quote": "mRenderTargetIsValid) {",
+      "kind": "note",
+      "text": "且 surface 可用。"
+    },
+    {
+      "at": 180,
+      "quote": "try {",
+      "kind": "note",
+      "text": "初始化可能因资源不足失败。"
+    },
+    {
+      "at": 181,
+      "quote": "mAttachInfo.mThreadedRenderer.initializeIfNeeded(",
+      "kind": "call",
+      "text": "重建 EGL surface 与 RT 上下文。"
+    },
+    {
+      "at": 182,
+      "quote": "mWidth, mHeight, mAttachInfo, mSurface, surfaceInsets);",
+      "kind": "data",
+      "text": "用当前窗口尺寸与 surface 初始化。"
+    },
+    {
+      "at": 183,
+      "quote": "} catch (OutOfResourcesException e) {",
+      "kind": "branch",
+      "text": "GPU/内存资源不足。"
+    },
+    {
+      "at": 184,
+      "quote": "handleOutOfResourcesException(e);",
+      "kind": "call",
+      "text": "统一处理：可能降低分辨率或提示 OOM。"
+    },
+    {
+      "at": 185,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "资源不足时本帧放弃，异常已统一处理。"
+    },
+    {
+      "at": 186,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭异常处理。"
+    },
+    {
+      "at": 188,
+      "quote": "mFullRedrawNeeded = true;",
+      "kind": "state",
+      "text": "新 surface 没有内容，下一帧必须整窗重画。"
+    },
+    {
+      "at": 189,
+      "quote": "scheduleTraversals();",
+      "kind": "call",
+      "text": "立刻排下一帧重试；形成一次 self-reschedule。"
+    },
+    {
+      "at": 190,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "本帧不返回绘制结果。"
+    },
+    {
+      "at": 191,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭重建条件块。"
+    },
+    {
+      "at": 193,
+      "quote": "if (!drawSoftware(surface, mAttachInfo, xOffset, yOffset,",
+      "kind": "branch",
+      "text": "软件绘制路径：lockCanvas 后直接用 Canvas 画，没有 RT 参与。"
+    },
+    {
+      "at": 194,
+      "quote": "scalingRequired, dirty, surfaceInsets)) {",
+      "kind": "note",
+      "text": "参数：缩放、脏区与 inset。"
+    },
+    {
+      "at": 195,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "软件绘制失败同样放弃本帧。"
+    },
+    {
+      "at": 196,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭软件绘制判断。"
+    },
+    {
+      "at": 197,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭软件路径分支。"
+    },
+    {
+      "at": 198,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭软/硬件分流。"
+    },
+    {
+      "at": 200,
+      "quote": "if (animating) {",
+      "kind": "branch",
+      "text": "滚动/fling 未结束：必须继续排下一帧。"
+    },
+    {
+      "at": 201,
+      "quote": "mFullRedrawNeeded = true;",
+      "kind": "state",
+      "text": "动画期间整窗内容都在动，下一帧全量画。"
+    },
+    {
+      "at": 202,
+      "quote": "scheduleTraversals();",
+      "kind": "call",
+      "text": "自我续期：滚动流畅度的关键语句，也是滚动掉帧的第一现场。"
+    },
+    {
+      "at": 203,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭动画续期块。"
+    },
+    {
+      "at": 204,
+      "quote": "return useAsyncReport;",
+      "kind": "note",
+      "text": "告诉 performDraw 本帧是否走异步上报，从而决定谁负责事务同步。"
+    },
+    {
+      "at": 205,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束：返回值告诉 performDraw 谁负责事务同步。"
+    }
+  ]
+}

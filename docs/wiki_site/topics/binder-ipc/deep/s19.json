@@ -1,0 +1,55 @@
+{
+  "step": "s19",
+  "title": "分支：失败码含义",
+  "tldr": "DEAD→DEAD_OBJECT、FAILED→FAILED_TRANSACTION、FROZEN→FROZEN_OBJECT，三者排查方向不同。",
+  "why": "这三个码的区分至关重要，因为排查方向完全不同：DEAD_OBJECT 说明对端进程没了（看 tombstone / lmkd）；FAILED_TRANSACTION 说明对端收到了但没处理（通常是 code 不匹配或 onTransact 返回 false）；FROZEN_OBJECT 说明对端被冻结（cached app 的预期行为，不是 bug）。把三者混为一谈，会浪费大量排查时间。",
+  "concepts": [
+    {
+      "term": "DEAD_OBJECT",
+      "text": "对端进程已死。"
+    },
+    {
+      "term": "FAILED_TRANSACTION",
+      "text": "对端未处理该调用。"
+    },
+    {
+      "term": "FROZEN_OBJECT",
+      "text": "对端被冻结。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "case BR_DEAD_REPLY:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1187",
+      "what": "死亡。"
+    },
+    {
+      "call": "case BR_FAILED_REPLY:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1191",
+      "what": "未处理。"
+    },
+    {
+      "call": "case BR_FROZEN_REPLY:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1195",
+      "what": "冻结。"
+    }
+  ],
+  "state": [
+    {
+      "field": "调用方收到",
+      "before": "等待中",
+      "after": "确定的 status",
+      "note": "随后被译成 Java 异常。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "把冻结当崩溃。",
+    "把 FAILED_TRANSACTION 当对端崩溃：对端其实活着。"
+  ],
+  "debug": [
+    "Java 侧 DeadObjectException / RemoteException 的 cause 对应这些码。",
+    "dumpsys activity 可看进程是否 frozen。"
+  ],
+  "next": "限流是怎么回事？见第 20 步。"
+}

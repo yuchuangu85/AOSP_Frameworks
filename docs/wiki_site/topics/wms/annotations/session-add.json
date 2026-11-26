@@ -1,0 +1,48 @@
+{
+  "id": "session-add",
+  "title": "Session.addToDisplayAsUser",
+  "file": "base/services/core/java/com/android/server/wm/Session.java",
+  "sig": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+  "span": [
+    272,
+    277
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+      "kind": "note",
+      "text": "客户端会话的加窗口入口。注意它几乎只是转发——但「谁在调」这件事由 Session 实例本身携带，这对权限判断很关键。"
+    },
+    {
+      "at": 2,
+      "quote": "int viewVisibility, int displayId, int userId, @InsetsType int requestedVisibleTypes,",
+      "kind": "note",
+      "text": "续行：viewVisibility/displayId/userId/requestedVisibleTypes。"
+    },
+    {
+      "at": 3,
+      "quote": "InputChannel outInputChannel, WindowRelayoutResult result) {",
+      "kind": "note",
+      "text": "续行：输出 InputChannel 与 relayout 结果。"
+    },
+    {
+      "at": 4,
+      "quote": "return mService.addWindow(this, window, attrs, viewVisibility, displayId, userId,",
+      "kind": "call",
+      "text": "**转发给 WMS.addWindow**，把自己（this）作为会话传进去——WMS 侧后续的权限与身份判断都基于这个 Session。"
+    },
+    {
+      "at": 5,
+      "quote": "requestedVisibleTypes, outInputChannel, result);",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

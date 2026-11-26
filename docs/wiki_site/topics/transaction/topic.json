@@ -1,0 +1,1099 @@
+{
+  "meta": {
+    "slug": "transaction",
+    "title": "Transaction：客户端提交 → SF 排队 → 按序应用",
+    "subtitle": "从 app 侧 SurfaceComposerClient::Transaction 收集 layer 状态，merge 与 buffer 缓存，到 SF 侧 setTransactionState 做权限净化、入无锁队列，TransactionHandler 用 ready 过滤器与 barrier 保证顺序，最后 applyTransactionState 写入 drawing state",
+    "version": "android17-release",
+    "built": "2026-11-26",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲 Transaction 这一条：客户端 Transaction 对象累积 layer_state_t/DisplayState，merge() 合并同批变更并对被覆盖的 buffer 触发释放，apply() 缓存 buffer、打包成 TransactionState 走 setTransactionState binder；服务端 setTransactionState 按 uid/pid 净化权限、解析 layer 句柄、组装 QueuedTransactionState 推入无锁队列并 setTransactionFlags；SF 主线程在 commit 时 collectTransactions 归并同 applyToken 的队列，flushTransactions 依据按序过滤器链（frame timeline、buffer/barrier、barrier 超时）决定每笔能否应用；applyTransactionState 在 mStateLock 下把状态写进 LayerLifecycleManager 与 mDrawingState，并登记回调。内核 binder、vendor HAL 在仓库外。",
+    "kicker": "AOSP · android17-release · SurfaceControl.Transaction"
+  },
+  "lanes": [
+    {
+      "id": "APP",
+      "label": "app 进程（UI/RT）",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "BIN",
+      "label": "binder / surfaceflinger 入口",
+      "color": "#ff9f43"
+    },
+    {
+      "id": "SF",
+      "label": "SurfaceFlinger 主线程",
+      "color": "#c792ea"
+    },
+    {
+      "id": "HND",
+      "label": "TransactionHandler",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "LAY",
+      "label": "Layer 状态",
+      "color": "#ffb454"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "构造与累积",
+      "hint": "setXxx 写 layer_state_t"
+    },
+    {
+      "id": "P1",
+      "label": "合并与缓存",
+      "hint": "merge / cacheBuffers"
+    },
+    {
+      "id": "P2",
+      "label": "提交",
+      "hint": "apply → binder"
+    },
+    {
+      "id": "P3",
+      "label": "服务端接收入队",
+      "hint": "净化 + QueuedTransactionState"
+    },
+    {
+      "id": "P4",
+      "label": "排队与就绪",
+      "hint": "collect / flush / filters"
+    },
+    {
+      "id": "P5",
+      "label": "应用状态",
+      "hint": "applyTransactionState"
+    },
+    {
+      "id": "P6",
+      "label": "回调与回环",
+      "hint": "commit/present 回调"
+    },
+    {
+      "id": "P7",
+      "label": "分支与诊断",
+      "hint": "barrier 超时与排障"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "APP",
+      "title": "Transaction 只是一个变更集合",
+      "brief": "SurfaceComposerClient::Transaction 内部只有一个 TransactionState：一组 ComposerState（每层一条 layer_state_t）、DisplayState、barrier、frameTimelineInfo 与 flags。它不立刻生效，只累积。",
+      "refs": [
+        {
+          "file": "native/libs/gui/include/gui/TransactionState.h",
+          "line": 99,
+          "symbol": "mComposerStates"
+        },
+        {
+          "file": "native/libs/gui/include/gui/TransactionState.h",
+          "line": 100,
+          "symbol": "mDisplayStates"
+        },
+        {
+          "file": "native/libs/gui/include/gui/TransactionState.h",
+          "line": 101,
+          "symbol": "mBarriers"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "APP",
+      "title": "setXxx：按位累积 what",
+      "brief": "setPosition/setAlpha/setBuffer 等都通过 getLayerState(sc) 找到或新建该层的 layer_state_t，再 OR 上对应的 what 位。同一个 Transaction 对同一层多次设置会**覆盖**同一字段，而不是叠加。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1328,
+          "symbol": "getLayerState"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1340,
+          "symbol": "setPosition"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1444,
+          "symbol": "setAlpha"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1701,
+          "symbol": "setBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P1",
+      "lane": "APP",
+      "title": "merge：同批变更合并",
+      "brief": "merge(Transaction&&) 把另一个事务的 layer 状态并进来，逐个字段取后者；若被覆盖的层原本有 buffer，会通过 releaseBufferIfOverwriting 立即归还，避免槽位泄漏。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 981,
+          "symbol": "merge"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1006,
+          "symbol": "releaseBufferIfOverwriting"
+        },
+        {
+          "file": "native/libs/gui/include/gui/TransactionState.h",
+          "line": 63,
+          "symbol": "TransactionState::merge"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "APP",
+      "title": "cacheBuffers：把 GraphicBuffer 送进客户端缓存",
+      "brief": "含 buffer 的事务在提交前会把 GraphicBuffer 放进 BufferCache 并换成 client_cache_t 句柄，避免每帧重复传大对象；SF 侧再用句柄取回。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1055,
+          "symbol": "cacheBuffers"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1188,
+          "symbol": "apply 里调用"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P2",
+      "lane": "APP",
+      "title": "apply：打包、提交、可同步等待",
+      "brief": "apply(synchronous, oneWay) 先处理 listener 回调与 eOneWay 标志，cacheBuffers 后把 mState move 成 TransactionState，经 setTransactionState 发给 SF；synchronous 时会等 commit 回调再返回。返回后事务被 clear()，不能复用。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1146,
+          "symbol": "apply"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1209,
+          "symbol": "setTransactionState"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1217,
+          "symbol": "clear"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1220,
+          "symbol": "syncCallback->wait"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P2",
+      "lane": "APP",
+      "title": "Parcel 序列化",
+      "brief": "writeToParcel 负责把 TransactionState 编码进 binder 消息：先写 flags/时间戳等标量，再写每层状态与 set/unset 位图。只在需要跨进程传（例如 delegate）时才显式调用。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 918,
+          "symbol": "writeToParcel"
+        },
+        {
+          "file": "native/libs/gui/include/gui/TransactionState.h",
+          "line": 54,
+          "symbol": "writeToParcel 声明"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P3",
+      "lane": "BIN",
+      "title": "setTransactionState：权限净化",
+      "brief": "SF 侧入口。先按 originPid/originUid 取权限，对每个 layer_state_t/DisplayState 调 sanitize(permissions) 剔除越权字段；非特权调用者发来的 input window commands 与 early wakeup 标志会被直接清掉。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5586,
+          "symbol": "getTransactionPermissions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5591,
+          "symbol": "sanitize"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5610,
+          "symbol": "input commands 权限"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5620,
+          "symbol": "WakeupSurfaceFlinger 权限"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P3",
+      "lane": "BIN",
+      "title": "解析 layer 句柄与 buffer",
+      "brief": "把 SurfaceControl 句柄解析成 layerId、parentId、relativeParentId、touchCropId，并把 buffer 还原成 ExternalTexture。这一步在 binder 线程做完，主线程就不必再查这些跨进程对象。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5648,
+          "symbol": "getLayerId"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5654,
+          "symbol": "getExternalTextureFromBufferData"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5669,
+          "symbol": "parentId"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P3",
+      "lane": "HND",
+      "title": "入无锁队列并置事务标志",
+      "brief": "组装 QueuedTransactionState 后经 queueTransaction 推进无锁队列（注释明确：不需要在主线程调用），再 setTransactionFlags(eTransactionFlushNeeded) 触发 SF 排帧。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5720,
+          "symbol": "queueTransaction"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5729,
+          "symbol": "setTransactionFlags"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 33,
+          "symbol": "push"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P4",
+      "lane": "HND",
+      "title": "collectTransactions：按 applyToken 归并",
+      "brief": "把无锁队列里的内容搬到 mPendingTransactionQueues，按 applyToken 分队列。同一 applyToken 的事务保持先后顺序，不同 token 之间互不阻塞。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 39,
+          "symbol": "collectTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 46,
+          "symbol": "按 token 入队"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "commit 时触发 flush",
+      "brief": "SF 每拍 commit 里若事务标志置位，就 collect + flush。flush 的结果是一批「现在可以应用」的事务，顺序仍按 token 内先后。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2789,
+          "symbol": "collectTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2807,
+          "symbol": "flushTransactions"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P4",
+      "lane": "HND",
+      "title": "ready 过滤器链决定能否应用",
+      "brief": "flushTransactions 对队首事务依次跑三个过滤器：frame timeline 检查（desiredPresentTime 未到且差不到 1s、vsyncId 不合法、frame 过早都会 NotReady）、buffer 检查（barrier 与 acquire fence）、barrier 是否 signal 或超时。任一 NotReady 就停在这一笔，后面的同 token 事务也不能越过。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5478,
+          "symbol": "addTransactionReadyFilters"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5315,
+          "symbol": "transactionReadyTimelineCheck"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5359,
+          "symbol": "transactionReadyBufferCheck"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 174,
+          "symbol": "applyFilters"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P4",
+      "lane": "HND",
+      "title": "barrier：显式排序原语",
+      "brief": "addTransactionBarrier 让生产者声明「我先来，后来的要等我 signal」。KIND_SIGNAL 表示这笔事务发出信号，KIND_WAIT 表示它在等待；barrier 也会过期（默认 TTL 5s），过期后不再阻塞，避免永久卡死。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 92,
+          "symbol": "isBarrierSignalledOrExpired"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 168,
+          "symbol": "KIND_SIGNAL"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 943,
+          "symbol": "barrier TTL 5s"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 2414,
+          "symbol": "addTransactionBarrier"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P5",
+      "lane": "SF",
+      "title": "applyTransactionsLocked：加锁逐笔应用",
+      "brief": "拿到可应用的一批后，在 mStateLock 下逐笔调 applyTransactionState。注意这里是「批量应用」，所以同一帧内多笔事务共享一次锁。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5495,
+          "symbol": "applyTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5501,
+          "symbol": "applyTransactionsLocked"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P5",
+      "lane": "SF",
+      "title": "applyTransactionState：写 drawing state",
+      "brief": "每笔事务在这里落地：先为无 surface 的 listener 建空事务，再逐层 updateLayerCallbacksAndStats（内部写 layer_state_t 到 LayerLifecycleManager），累加 input window commands 与待 uncache buffer，最后按 transactionFlags 决定是否需要 traversal。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5757,
+          "symbol": "applyTransactionState"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5770,
+          "symbol": "addEmptyTransaction"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5775,
+          "symbol": "updateLayerCallbacksAndStats"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5790,
+          "symbol": "空动画事务"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P5",
+      "lane": "LAY",
+      "title": "display 事务单独一批",
+      "brief": "DisplayState 不走上面的路径，而是在 applyAndCommitDisplayTransactionStatesLocked 里统一应用，因为它们要改显示控制器模式，需要和其它显示事务一起提交。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5810,
+          "symbol": "applyAndCommitDisplayTransactionStatesLocked"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2839,
+          "symbol": "commit 里调用"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P6",
+      "lane": "LAY",
+      "title": "commit 回调：OnCommit",
+      "brief": "事务应用后，TransactionCallbackInvoker 在 commit 阶段发 onCommit 回调（空事务更早发）。回调里能拿到这一批事务涉及的 SurfaceControl，但此时还没有上屏。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3162,
+          "symbol": "sendCallbacks(false)"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3165,
+          "symbol": "sendCallbacks(true)"
+        },
+        {
+          "file": "native/services/surfaceflinger/TransactionCallbackInvoker.cpp",
+          "line": 158,
+          "symbol": "sendCallbacks"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P6",
+      "lane": "LAY",
+      "title": "present 回调：OnComplete",
+      "brief": "真正的 onComplete（含 release buffer）发生在 present 之后：onCompositionPresented 里 layer->releasePendingBuffer 之后统一 sendCallbacks。此时 app 才知道「这块 buffer 用完了」。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3869,
+          "symbol": "layer->onCompositionPresented"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 211,
+          "symbol": "sendCallbacks"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1973,
+          "symbol": "addTransactionCallback"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P6",
+      "lane": "APP",
+      "title": "synchronous apply 的等待",
+      "brief": "apply(synchronous=true) 会注册一个 SyncCallback 作为 commit 回调，然后 wait()。这意味着「同步」只保证事务已被 SF 应用（commit），不保证已上屏。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1152,
+          "symbol": "SyncCallback"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1154,
+          "symbol": "addTransactionCommittedCallback"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1219,
+          "symbol": "wait"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P7",
+      "lane": "HND",
+      "title": "卡住的事务：stalled 记录",
+      "brief": "当某笔事务因为 buffer 的 acquire fence 一直不 signal 而阻塞超过 4s，会登记为 stalled transaction（带 pid/layerId/bufferId），dumpsys 里能看到「谁卡住了事务队列」。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5460,
+          "symbol": "onTransactionQueueStalled"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 238,
+          "symbol": "onTransactionQueueStalled"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5579,
+          "symbol": "getStalledTransactionInfo"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P7",
+      "lane": "SF",
+      "title": "分支：desiredPresentTime 未到",
+      "brief": "事务带了非自动时间戳且还没到点（且不到 1s）时会 NotReady 并留在队里。这就是「提前提交的事务不会提前上屏」的实现；超过 1s 的时间戳会被忽略以保稳定。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5328,
+          "symbol": "desiredPresentTime 检查"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5350,
+          "symbol": "frameIsEarly"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P7",
+      "lane": "HND",
+      "title": "分支：允许 latch 未 signal",
+      "brief": "某些场景允许在 acquire fence 未 signal 时就 latch（allowLatchUnsignaled），此时返回 NotReadyUnsignaled——它不是「不可应用」，而是「可以应用但 buffer 还没写完」，优先级处理不同。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5450,
+          "symbol": "allowLatchUnsignaled"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 111,
+          "symbol": "NotReadyBarrier"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "BIN",
+      "title": "分支：权限不足被净化",
+      "brief": "sanitize 会按权限位剔除字段：普通应用改不了别人的 SurfaceControl、也发不了 input window commands。表现是「事务提交成功但没效果」，因为字段在服务端入口就被清掉了。",
+      "refs": [
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 852,
+          "symbol": "Transaction::sanitize"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5611,
+          "symbol": "clear input commands"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5623,
+          "symbol": "清掉 wakeup 标志"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "SF",
+      "title": "诊断：tracing、tracing 与 dumpsys",
+      "brief": "事务有三层可观测性：mTransactionTracing 记录入队与提交、SurfaceFlinger --transaction 可回放、dumpsys SurfaceFlinger 打印 pending/stalled 队列。atrace 里的 TransactionHandler 段对应 flush。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5704,
+          "symbol": "addQueuedTransaction"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2820,
+          "symbol": "addCommittedTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          "line": 234,
+          "symbol": "hasPendingTransactions"
+        }
+      ]
+    }
+  ],
+  "extends": [
+    "topic_render.json"
+  ],
+  "pitfalls": [
+    {
+      "case": "apply 后事务不可复用",
+      "behavior": "apply 内部把 mState move 给服务端并 clear()，同一个 Transaction 对象可以继续 setXxx 累积下一批，但已提交的内容不会保留",
+      "ref": "SurfaceComposerClient.cpp:1208 / 1217"
+    },
+    {
+      "case": "同步 apply 只保证 commit",
+      "behavior": "synchronous=true 等的是 OnCommit 回调，不是上屏；上屏要看 OnComplete",
+      "ref": "SurfaceComposerClient.cpp:1154 / 1219"
+    },
+    {
+      "case": "merge 会立即归还可被覆盖的 buffer",
+      "behavior": "同层旧 buffer 在被新状态覆盖时立刻 release，否则槽位会泄漏",
+      "ref": "SurfaceComposerClient.cpp:1006"
+    },
+    {
+      "case": "同 token 顺序、跨 token 并行",
+      "behavior": "collectTransactions 按 applyToken 分队列，同一队列内严格有序，不同 token 互不阻塞",
+      "ref": "TransactionHandler.cpp:46"
+    },
+    {
+      "case": "NotReady 会卡住同 token 的后续事务",
+      "behavior": "flushTransactions 在队首不 Ready 时停止，后面的同 token 事务不能越过（这正是顺序保证）",
+      "ref": "TransactionHandler.cpp:196-224"
+    },
+    {
+      "case": "barrier 有 TTL",
+      "behavior": "barrier 默认 5s 过期，过期后不再阻塞；没有这条，生产者崩溃会永久卡住队列",
+      "ref": "SurfaceFlinger.cpp:943"
+    },
+    {
+      "case": "desiredPresentTime 未到不应用",
+      "behavior": "非自动时间戳且未到点（<1s）时 NotReady；超过 1s 的时间戳被忽略以保稳定",
+      "ref": "SurfaceFlinger.cpp:5328"
+    },
+    {
+      "case": "allowLatchUnsignaled 与 NotReady 不同",
+      "behavior": "前者表示「可应用但 fence 未完成」，后者是「还不能应用」，两者的后续处理不同",
+      "ref": "SurfaceFlinger.cpp:5450"
+    },
+    {
+      "case": "权限在服务端净化",
+      "behavior": "sanitize 在 setTransactionState 入口按 uid 剔除字段，越权表现为「提交成功但无效果」",
+      "ref": "SurfaceFlinger.cpp:5591 / 5611"
+    },
+    {
+      "case": "display 事务单独一批",
+      "behavior": "DisplayState 不走 applyTransactionState，而在 applyAndCommitDisplayTransactionStatesLocked 统一处理",
+      "ref": "SurfaceFlinger.cpp:5810"
+    }
+  ],
+  "facts": [
+    "<b>Transaction 是「变更集合」不是「命令」</b>：它只累积 layer_state_t，apply 时才变成跨进程消息。",
+    "<b>两级队列</b>：客户端对象（可复用、可 merge）→ 服务端 QueuedTransactionState（无锁队列，按 applyToken 分队列）。",
+    "<b>顺序由 applyToken 定义</b>：同 token 严格有序、跨 token 独立；NotReady 只阻塞本 token 后续。",
+    "<b>何时应用由三种过滤器决定</b>：时间（desiredPresentTime/vsyncId）、buffer（barrier/acquire fence）、barrier signal 或超时。",
+    "<b>回调分两拍</b>：OnCommit 在 commit（已应用），OnComplete 在 present（已上屏，buffer 可回收）。"
+  ],
+  "glossary": [
+    {
+      "term": "Transaction",
+      "text": "客户端变更集合：一组 layer_state_t + DisplayState + 可选 barrier。"
+    },
+    {
+      "term": "layer_state_t",
+      "text": "单层的变更描述，用 what 位图表示哪些字段有效。"
+    },
+    {
+      "term": "applyToken",
+      "text": "顺序域标识；同一 token 的事务严格按提交顺序应用。"
+    },
+    {
+      "term": "QueuedTransactionState",
+      "text": "服务端队列元素，含 resolved states、applyToken、postTime。"
+    },
+    {
+      "term": "ready filter",
+      "text": "决定某笔事务现在能否应用的谓词链。"
+    },
+    {
+      "term": "barrier",
+      "text": "显式排序原语：signal 方放行，wait 方等待，带 TTL。"
+    },
+    {
+      "term": "sanitize",
+      "text": "按调用者权限剔除越权字段的净化步骤。"
+    },
+    {
+      "term": "client_cache_t",
+      "text": "buffer 在客户端缓存中的句柄，替代每帧传 GraphicBuffer。"
+    },
+    {
+      "term": "OnCommit",
+      "text": "事务已被 SF 应用的回调。"
+    },
+    {
+      "term": "OnComplete",
+      "text": "事务相关 buffer 已被 consume 的回调（present 后）。"
+    },
+    {
+      "term": "stalled transaction",
+      "text": "因 fence 长时间未 signal 而卡住队列的事务，记入 dumpsys。"
+    },
+    {
+      "term": "eOneWay",
+      "text": "apply 的一次性标志：不等 binder 返回即继续。"
+    },
+    {
+      "term": "desiredPresentTime",
+      "text": "期望上屏时间；未到则事务不应用。"
+    },
+    {
+      "term": "mStateLock",
+      "text": "SF 应用事务与合成阶段共享的状态锁。"
+    },
+    {
+      "term": "applyFilters",
+      "text": "TransactionHandler 里串起各 ready 过滤器的入口。"
+    },
+    {
+      "term": "eEarlyWakeup",
+      "text": "提前唤醒 SF 的标志，需要 WAKEUP_SURFACE_FLINGER 权限。"
+    }
+  ],
+  "scenario": {
+    "title": "一次窗口动画事务（60Hz，示数量级）",
+    "events": [
+      {
+        "t": "0.0 ms",
+        "label": "构造",
+        "detail": "new Transaction()，内部生成 id"
+      },
+      {
+        "t": "0.05 ms",
+        "label": "累积",
+        "detail": "setPosition/setAlpha 等写入同一层的 layer_state_t"
+      },
+      {
+        "t": "0.1 ms",
+        "label": "合并",
+        "detail": "若有多笔同批变更，merge 后者覆盖前者并释放旧 buffer"
+      },
+      {
+        "t": "0.2 ms",
+        "label": "缓存",
+        "detail": "cacheBuffers 把 GraphicBuffer 换成本地句柄"
+      },
+      {
+        "t": "0.3 ms",
+        "label": "提交",
+        "detail": "setTransactionState（通常 oneway）"
+      },
+      {
+        "t": "0.35 ms",
+        "label": "净化",
+        "detail": "SF 侧 sanitize 按权限剔除字段"
+      },
+      {
+        "t": "0.4 ms",
+        "label": "入队",
+        "detail": "组装 QueuedTransactionState 进无锁队列，置 flush 标志"
+      },
+      {
+        "t": "≈8.3 ms",
+        "label": "SF 拍上",
+        "detail": "commit 里 collect + flush，过 ready filters"
+      },
+      {
+        "t": "8.5 ms",
+        "label": "应用",
+        "detail": "applyTransactionState 写 drawing state"
+      },
+      {
+        "t": "8.8 ms",
+        "label": "回调",
+        "detail": "OnCommit 通知 app 事务已生效"
+      },
+      {
+        "t": "16.6 ms",
+        "label": "上屏后",
+        "detail": "OnComplete 在 present 后触发，buffer 可回收"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：客户端集合 → 服务端队列 → 应用",
+      "route": "全景·架构 → 流程图 → 时序图"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：累积 → 提交 → 排队 → 应用",
+      "route": "精读第 1→19 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "理解顺序与就绪判定（barrier / fence / 时间）",
+      "route": "精读第 11→13 步 + 第 20→23 步"
+    },
+    {
+      "time": "半天",
+      "goal": "能改代码 / 能抓现场",
+      "route": "代码逐行 12 个 P0 函数 + 方法清单 + 降级与坑"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "Transaction::apply",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "line": 1146,
+      "size": 80,
+      "thread": "调用线程（UI 或 RT）",
+      "lock": "无（同步等待时用 SyncCallback 的条件变量）",
+      "purpose": "把累积状态打包提交，可选同步等待 commit。",
+      "risk": "同步 apply 在主线程上会阻塞到 SF 的下一拍 commit。",
+      "status": "card"
+    },
+    {
+      "fn": "TransactionHandler::flushTransactions",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "line": 50,
+      "size": 41,
+      "thread": "SF 主线程",
+      "lock": "flush 内部不持 SF 的 mStateLock",
+      "purpose": "按 token 挑出可应用事务，是顺序保证的核心。",
+      "risk": "filters 判定错误会让顺序错乱或队列卡死。",
+      "status": "card"
+    },
+    {
+      "fn": "SurfaceFlinger::setTransactionState",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 5579,
+      "size": 167,
+      "thread": "binder 线程",
+      "lock": "无 mStateLock（只进无锁队列）",
+      "purpose": "净化、解析、入队、触发排帧。",
+      "risk": "权限净化漏项会造成跨应用越权；句柄解析失败会让事务静默无效。",
+      "status": "card"
+    },
+    {
+      "fn": "transactionReadyBufferCheck",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 5359,
+      "size": 118,
+      "thread": "SF 主线程",
+      "lock": "无（调用方已在 flush 内）",
+      "purpose": "判定 buffer 相关就绪条件：barrier frame、acquire fence、stalled 登记。",
+      "risk": "把 NotReady 与 NotReadyUnsignaled 混用会导致「该应用的没应用」或「未写完就 latch」。",
+      "status": "card"
+    },
+    {
+      "fn": "transactionReadyTimelineCheck",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 5315,
+      "size": 43,
+      "thread": "SF 主线程",
+      "lock": "无",
+      "purpose": "时间维度就绪：desiredPresentTime、vsyncId 有效性、frameIsEarly。",
+      "risk": "忽略 1s 上限会让远期时间戳永久阻塞队列。",
+      "status": "card"
+    },
+    {
+      "fn": "isBarrierSignalledOrExpired",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "line": 92,
+      "size": 25,
+      "thread": "SF 主线程",
+      "lock": "无",
+      "purpose": "barrier 三态：signal / 等待 / 过期。",
+      "risk": "TTL 失效会让崩溃的生产者永久卡住队列。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s12",
+      "fn": "applyFilters",
+      "ref": "TransactionHandler.cpp:174-195",
+      "rows": [
+        {
+          "cond": "所有 filter 返回 Ready",
+          "then": "允许应用",
+          "effect": "事务离开队列"
+        },
+        {
+          "cond": "任一返回 NotReady",
+          "then": "停止在本笔",
+          "effect": "同 token 后续事务不能越过"
+        },
+        {
+          "cond": "返回 NotReadyBarrier",
+          "then": "保留并等待 barrier signal/超时",
+          "effect": "可能持续数帧"
+        },
+        {
+          "cond": "返回 NotReadyUnsignaled",
+          "then": "可应用但 fence 未完成",
+          "effect": "与 NotReady 处理不同"
+        }
+      ]
+    },
+    {
+      "step": "s13",
+      "fn": "isBarrierSignalledOrExpired",
+      "ref": "TransactionHandler.cpp:92-116",
+      "rows": [
+        {
+          "cond": "KIND_SIGNAL 且未被使用",
+          "then": "标记已 signal",
+          "effect": "后续 wait 放行"
+        },
+        {
+          "cond": "KIND_WAIT 且对应 barrier 未 signal",
+          "then": "NotReadyBarrier",
+          "effect": "队首等待"
+        },
+        {
+          "cond": "超过 TTL（默认 5s）",
+          "then": "视为过期",
+          "effect": "不再阻塞，避免永久卡死"
+        }
+      ]
+    },
+    {
+      "step": "s21",
+      "fn": "transactionReadyTimelineCheck",
+      "ref": "SurfaceFlinger.cpp:5328-5356",
+      "rows": [
+        {
+          "cond": "非自动时间戳且 desiredPresentTime 在未来（<1s）",
+          "then": "NotReady",
+          "effect": "等时间到"
+        },
+        {
+          "cond": "时间戳在未来超过 1s",
+          "then": "忽略该时间戳",
+          "effect": "按当前帧应用，保稳定"
+        },
+        {
+          "cond": "vsyncId 无效且 isVsyncValid=false",
+          "then": "NotReady",
+          "effect": "限流"
+        },
+        {
+          "cond": "autoTimestamp 且 frameIsEarly",
+          "then": "NotReady",
+          "effect": "等到正确的 vsync"
+        }
+      ]
+    },
+    {
+      "step": "s23",
+      "fn": "setTransactionState 权限",
+      "ref": "SurfaceFlinger.cpp:5586-5625",
+      "rows": [
+        {
+          "cond": "普通应用改他人 SurfaceControl",
+          "then": "sanitize 剔除",
+          "effect": "提交成功但无效果"
+        },
+        {
+          "cond": "普通应用发 input window commands",
+          "then": "clear",
+          "effect": "日志 Only privileged callers are allowed"
+        },
+        {
+          "cond": "无 WAKEUP_SURFACE_FLINGER 用 eEarlyWakeup",
+          "then": "清标志",
+          "effect": "退化为普通事务"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 6
+  },
+  "scope": [
+    "native/libs/gui/SurfaceComposerClient.cpp",
+    "native/libs/gui/include/gui/TransactionState.h",
+    "native/services/surfaceflinger/SurfaceFlinger.cpp",
+    "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+    "native/services/surfaceflinger/TransactionCallbackInvoker.cpp",
+    "native/services/surfaceflinger/FrontEnd/TransactionHandler.h",
+    "native/services/surfaceflinger/FrontEnd/LayerLifecycleManager.cpp",
+    "native/libs/gui/ISurfaceComposer.cpp"
+  ],
+  "inventorySpans": [
+    "apply",
+    "merge",
+    "cacheBuffers",
+    "writeToParcel",
+    "readFromParcel",
+    "getLayerState",
+    "clear",
+    "setTransactionState",
+    "applyTransactionState",
+    "applyTransactionsLocked",
+    "applyTransactions",
+    "transactionReadyTimelineCheck",
+    "transactionReadyBufferCheck",
+    "addTransactionReadyFilters",
+    "collectTransactions",
+    "flushTransactions",
+    "queueTransaction",
+    "applyFilters",
+    "isBarrierSignalledOrExpired",
+    "flushPendingTransactionQueues",
+    "addTransactionReadyFilter",
+    "hasPendingTransactions",
+    "onTransactionQueueStalled",
+    "sendCallbacks",
+    "addCallbackHandles",
+    "applyTransactions",
+    "commitChanges",
+    "update"
+  ]
+}

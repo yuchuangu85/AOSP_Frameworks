@@ -1,0 +1,70 @@
+{
+  "step": "s11",
+  "title": "触摸命中测试：findTouchedWindowTargets",
+  "tldr": "拷贝当前 TouchState，按 z-order 命中窗口，处理 split/hover/outside/spy，最后为每个窗口生成 InputTarget。",
+  "why": "这是输入链路里分支最密的函数（422 行），也是绝大多数「点击落错窗口」「手势丢失」问题的现场。它的设计原则值得记住：所有修改都发生在 TouchState 的**临时拷贝**上，函数成功返回后才写回——所以任何中途的 FAILED 都不会留下半成品状态。另一个关键点是 canWindowReceiveMotion：被判定 ANR 的连接在这里被直接跳过，触摸不再投给它。",
+  "concepts": [
+    {
+      "term": "TouchState",
+      "text": "每个显示一份的触摸状态：哪些窗口正在接收、哪些指针在哪个窗口。"
+    },
+    {
+      "term": "split touch",
+      "text": "多指分别落不同窗口的能力，由 source 决定。"
+    },
+    {
+      "term": "spy window",
+      "text": "能旁听事件的窗口（无障碍、手势导航等）。"
+    },
+    {
+      "term": "OUTSIDE target",
+      "text": "关注「窗口外触摸」的窗口，收到坐标置零的 ACTION_OUTSIDE。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "InputDispatcher::DispatcherTouchState::findTouchedWindowTargets(",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2534",
+      "what": "422 行的命中测试总入口。"
+    },
+    {
+      "call": "tempTouchState = *oldState;",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2553",
+      "what": "整体拷贝，保证失败可回退。"
+    },
+    {
+      "call": "sp<WindowInfoHandle> newTouchedWindowHandle =",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2595",
+      "what": "按坐标找命中窗口。"
+    },
+    {
+      "call": "if (!canWindowReceiveMotion(windowHandle, entry)) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2643",
+      "what": "ANR 的窗口在这里被跳过。"
+    },
+    {
+      "call": "saveTouchStateForMotionEntry(entry, std::move(tempTouchState));",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2948",
+      "what": "成功才写回状态。"
+    }
+  ],
+  "state": [
+    {
+      "field": "TouchState",
+      "before": "上一帧的触摸窗口集合",
+      "after": "本帧更新后的集合",
+      "note": "SCROLL 不保存，其余动作都保存。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "以为命中测试会等窗口动画结束：它只按当前 z-order 判。",
+    "忽略 OUTSIDE 的坐标置零：跨 uid 时不会泄露坐标。",
+    "把 ANR 后收不到触摸误解为「事件丢了」：是 canWindowReceiveMotion 主动拒绝。"
+  ],
+  "debug": [
+    "dumpsys input 的 TouchStates 段。",
+    "atrace 的 findTouchedWindowTargets 切片。"
+  ],
+  "next": "非触摸事件走哪条路径？见第 12 步。"
+}

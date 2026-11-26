@@ -1,0 +1,1356 @@
+{
+  "id": "sf-snapshots",
+  "title": "SurfaceFlinger::updateLayerSnapshots",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "bool SurfaceFlinger::updateLayerSnapshots(",
+  "span": [
+    2771,
+    2994
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool SurfaceFlinger::updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs,",
+      "kind": "note",
+      "text": "commit 的真正主体：把这一拍收到的所有事务变成不可变快照，并逐层 latch buffer。"
+    },
+    {
+      "at": 2,
+      "quote": "nsecs_t expectedPresentTimeNs, bool flushTransactions,",
+      "kind": "note",
+      "text": "三个时间参数：本拍 frameTime、计划上屏时间，以及「是否需要 flush」。"
+    },
+    {
+      "at": 3,
+      "quote": "bool& outTransactionsAreEmpty) EXCLUDES(mStateLock) {",
+      "kind": "note",
+      "text": "outTransactionsAreEmpty 输出本拍事务是否为空，决定 commit 回调的早晚。"
+    },
+    {
+      "at": 4,
+      "quote": "using Changes = frontend::RequestedLayerState::Changes;",
+      "kind": "note",
+      "text": "局部别名，下面位判断更简洁。"
+    },
+    {
+      "at": 5,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片 updateLayerSnapshots。"
+    },
+    {
+      "at": 6,
+      "quote": "SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Transaction Handling\");",
+      "kind": "trace",
+      "text": "Perfetto 轨道名 Transaction Handling。"
+    },
+    {
+      "at": 7,
+      "quote": "frontend::Update update;",
+      "kind": "data",
+      "text": "本拍的事务更新包：新层、销毁层、事务列表。"
+    },
+    {
+      "at": 8,
+      "quote": "if (flushTransactions) {",
+      "kind": "branch",
+      "text": "只有被要求 flush 时才真正收事务——否则只做快照与 latch。"
+    },
+    {
+      "at": 9,
+      "quote": "SFTRACE_NAME(\"TransactionHandler:flushTransactions\");",
+      "kind": "trace",
+      "text": "子切片：flushTransactions。"
+    },
+    {
+      "at": 10,
+      "quote": "// Locking:",
+      "kind": "note",
+      "text": "下面三段注释解释了三把锁的顺序约束，改动这里必须先读。"
+    },
+    {
+      "at": 11,
+      "quote": "// 1. to prevent onHandleDestroyed from being called while the state lock is held,",
+      "kind": "note",
+      "text": "约束一：onHandleDestroyed 不能在持 mStateLock 时被调用。"
+    },
+    {
+      "at": 12,
+      "quote": "// we must keep a copy of the transactions (specifically the composer",
+      "kind": "note",
+      "text": "因此事务副本要在锁外保留。"
+    },
+    {
+      "at": 13,
+      "quote": "// states) around outside the scope of the lock.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 14,
+      "quote": "// 2. Transactions and created layers do not share a lock. To prevent applying",
+      "kind": "note",
+      "text": "约束二：事务与新建层不共享锁。"
+    },
+    {
+      "at": 15,
+      "quote": "// transactions with layers still in the createdLayer queue, collect the transactions",
+      "kind": "note",
+      "text": "必须先收集事务，再提交新建层，避免应用到还没进队列的层。"
+    },
+    {
+      "at": 16,
+      "quote": "// before committing the created layers.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 17,
+      "quote": "// 3. Transactions can only be flushed after adding layers, since the layer can be a newly",
+      "kind": "note",
+      "text": "约束三：只有层加进来之后才能 flush 事务，因为事务可能指向新层。"
+    },
+    {
+      "at": 18,
+      "quote": "// created one",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 19,
+      "quote": "mTransactionHandler.collectTransactions();",
+      "kind": "call",
+      "text": "收集本拍所有待提交事务（BLAST 的 setBuffer 就在其中）。"
+    },
+    {
+      "at": 20,
+      "quote": "{",
+      "kind": "note",
+      "text": "临界区开始：搬走新建/销毁的层句柄。"
+    },
+    {
+      "at": 21,
+      "quote": "// TODO(b/238781169) lockless queue this and keep order.",
+      "kind": "note",
+      "text": "TODO 说明这把锁的粒度还比较粗。"
+    },
+    {
+      "at": 22,
+      "quote": "std::scoped_lock<std::mutex> lock(mCreatedLayersLock);",
+      "kind": "lock",
+      "text": "只保护队列搬移的多线程队列锁。"
+    },
+    {
+      "at": 23,
+      "quote": "update.legacyLayers = std::move(mCreatedLayers);",
+      "kind": "data",
+      "text": "搬走 legacy 层。"
+    },
+    {
+      "at": 24,
+      "quote": "mCreatedLayers.clear();",
+      "kind": "state",
+      "text": "清空原队列，避免重复处理。"
+    },
+    {
+      "at": 25,
+      "quote": "update.newLayers = std::move(mNewLayers);",
+      "kind": "data",
+      "text": "搬走新层。"
+    },
+    {
+      "at": 26,
+      "quote": "mNewLayers.clear();",
+      "kind": "state",
+      "text": "清空。"
+    },
+    {
+      "at": 27,
+      "quote": "update.layerCreationArgs = std::move(mNewLayerArgs);",
+      "kind": "data",
+      "text": "搬走建层参数。"
+    },
+    {
+      "at": 28,
+      "quote": "mNewLayerArgs.clear();",
+      "kind": "state",
+      "text": "清空。"
+    },
+    {
+      "at": 29,
+      "quote": "update.destroyedHandles = std::move(mDestroyedHandles);",
+      "kind": "data",
+      "text": "搬走被销毁的句柄。"
+    },
+    {
+      "at": 30,
+      "quote": "mDestroyedHandles.clear();",
+      "kind": "state",
+      "text": "清空。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "note",
+      "text": "释放锁。"
+    },
+    {
+      "at": 32,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 33,
+      "quote": "size_t addedLayers = update.newLayers.size();",
+      "kind": "data",
+      "text": "记录新增层数量，用于 trace 与统计。"
+    },
+    {
+      "at": 34,
+      "quote": "mLayerLifecycleManager.addLayers(std::move(update.newLayers));",
+      "kind": "call",
+      "text": "把新层注册进 LayerLifecycleManager：之后它们才有 id 与状态机。"
+    },
+    {
+      "at": 35,
+      "quote": "mLayerLifecycleManager.updateDisplayMirrors(mFrontEndDisplayInfos,",
+      "kind": "call",
+      "text": "刷新显示镜像（虚拟显示/镜像投屏）。"
+    },
+    {
+      "at": 36,
+      "quote": "mFrontEndDisplayInfosChanged);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 37,
+      "quote": "update.transactions = mTransactionHandler.flushTransactions();",
+      "kind": "call",
+      "text": "取出事务列表：这是 setBuffer、setPosition 等指令的载体。"
+    },
+    {
+      "at": 38,
+      "quote": "ftl::Flags<adpf::Workload> committedWorkload;",
+      "kind": "data",
+      "text": "本拍事务带来的负载提示集合。"
+    },
+    {
+      "at": 39,
+      "quote": "for (auto& transaction : update.transactions) {",
+      "kind": "note",
+      "text": "遍历事务。"
+    },
+    {
+      "at": 40,
+      "quote": "committedWorkload |= transaction.workloadHint;",
+      "kind": "data",
+      "text": "把 workloadHint 合并起来。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 42,
+      "quote": "SFTRACE_INSTANT_FOR_TRACK(WorkloadTracer::TRACK_NAME,",
+      "kind": "trace",
+      "text": "打点：本拍层增减与事务数量，排查「这一帧做了什么」非常直接。"
+    },
+    {
+      "at": 43,
+      "quote": "ftl::Concat(\"Layers: +\", addedLayers, \" -\",",
+      "kind": "note",
+      "text": "字符串拼接。"
+    },
+    {
+      "at": 44,
+      "quote": "update.destroyedHandles.size(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "\" txns:\", update.transactions.size())",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 46,
+      "quote": ".c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 47,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 48,
+      "quote": "mPowerAdvisor->setCommittedWorkload(committedWorkload);",
+      "kind": "call",
+      "text": "把事务负载告诉 PowerAdvisor。"
+    },
+    {
+      "at": 49,
+      "quote": "if (mTransactionTracing) {",
+      "kind": "branch",
+      "text": "开了事务 tracing（Perfetto 的事务轨道）。"
+    },
+    {
+      "at": 50,
+      "quote": "mTransactionTracing->addCommittedTransactions(ftl::to_underlying(vsyncId), frameTimeNs,",
+      "kind": "call",
+      "text": "记录本拍提交的事务明细。"
+    },
+    {
+      "at": 51,
+      "quote": "update, mFrontEndDisplayInfos,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": "mFrontEndDisplayInfosChanged);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 53,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracing 分支。"
+    },
+    {
+      "at": 54,
+      "quote": "mLayerLifecycleManager.applyTransactions(update.transactions);",
+      "kind": "call",
+      "text": "把事务应用到 LayerLifecycleManager 的请求状态；setBuffer 在这里落到 RequestedLayerState。"
+    },
+    {
+      "at": 55,
+      "quote": "mLayerLifecycleManager.onHandlesDestroyed(update.destroyedHandles);",
+      "kind": "call",
+      "text": "处理已销毁层，回收其资源。"
+    },
+    {
+      "at": 56,
+      "quote": "for (auto& legacyLayer : update.legacyLayers) {",
+      "kind": "note",
+      "text": "遍历 legacy 层。"
+    },
+    {
+      "at": 57,
+      "quote": "mLegacyLayers[legacyLayer->sequence] = legacyLayer;",
+      "kind": "data",
+      "text": "把 legacy 层按 sequence 放进映射，供后续 latch 时查找。"
+    },
+    {
+      "at": 58,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 59,
+      "quote": "mLayerHierarchyBuilder.update(mLayerLifecycleManager);",
+      "kind": "call",
+      "text": "按依赖关系重算层级（父子、z 序、可见性骨架）。"
+    },
+    {
+      "at": 60,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 flush 分支。"
+    },
+    {
+      "at": 61,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 62,
+      "quote": "// Keep a copy of the drawing state (that is going to be overwritten",
+      "kind": "note",
+      "text": "drawingState 会在下面被覆盖，必须在锁外先拷贝，否则拷贝副作用发生在持锁期间容易死锁。"
+    },
+    {
+      "at": 63,
+      "quote": "// by commitTransactionsLocked) outside of mStateLock so that the side",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 64,
+      "quote": "// effects of the State assignment don't happen with mStateLock held,",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 65,
+      "quote": "// which can cause deadlocks.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 66,
+      "quote": "State drawingState(mDrawingState);",
+      "kind": "data",
+      "text": "先拷贝一份当前 drawing state。"
+    },
+    {
+      "at": 67,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "从这里进入 mStateLock 保护的提交区，一直持到函数结束。"
+    },
+    {
+      "at": 68,
+      "quote": "bool mustComposite = false;",
+      "kind": "data",
+      "text": "本拍是否需要合成。"
+    },
+    {
+      "at": 69,
+      "quote": "mustComposite |= applyAndCommitDisplayTransactionStatesLocked(update.transactions);",
+      "kind": "call",
+      "text": "应用并提交显示级事务（旋转、分辨率、layerStack 切换）。"
+    },
+    {
+      "at": 70,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 71,
+      "quote": "frontend::LayerSnapshotBuilder::Args",
+      "kind": "data",
+      "text": "构造快照构建参数：把 SF 的运行时能力告诉快照层。"
+    },
+    {
+      "at": 72,
+      "quote": "args{.root = mLayerHierarchyBuilder.getHierarchy(),",
+      "kind": "data",
+      "text": "根节点是层级树的根。"
+    },
+    {
+      "at": 73,
+      "quote": ".layerLifecycleManager = mLayerLifecycleManager,",
+      "kind": "data",
+      "text": "层生命周期管理器提供每层的请求状态。"
+    },
+    {
+      "at": 74,
+      "quote": ".forceUpdate = FlagManager::getInstance().frontend_caching_v0()",
+      "kind": "data",
+      "text": "frontend caching 模式下强制全量更新快照。"
+    },
+    {
+      "at": 75,
+      "quote": "? frontend::LayerSnapshotBuilder::ForceUpdateFlags::ALL",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 76,
+      "quote": ": frontend::LayerSnapshotBuilder::ForceUpdateFlags::NONE,",
+      "kind": "note",
+      "text": "否则按需增量更新。"
+    },
+    {
+      "at": 77,
+      "quote": ".includeMetadata = mCompositionEngine->getFeatureFlags().test(",
+      "kind": "data",
+      "text": "是否把 metadata 也放进快照。"
+    },
+    {
+      "at": 78,
+      "quote": "compositionengine::Feature::kSnapshotLayerMetadata),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 79,
+      "quote": ".displays = mFrontEndDisplayInfos,",
+      "kind": "data",
+      "text": "当前显示信息。"
+    },
+    {
+      "at": 80,
+      "quote": ".displayChanges = mFrontEndDisplayInfosChanged,",
+      "kind": "data",
+      "text": "显示配置是否变化。"
+    },
+    {
+      "at": 81,
+      "quote": ".globalShadowSettings = mDrawingState.globalShadowSettings,",
+      "kind": "data",
+      "text": "全局阴影设置。"
+    },
+    {
+      "at": 82,
+      "quote": ".supportsBlur = mSupportsBlur,",
+      "kind": "data",
+      "text": "是否支持模糊（决定快照保留哪些效果）。"
+    },
+    {
+      "at": 83,
+      "quote": ".forceFullDamage = mForceFullDamage,",
+      "kind": "data",
+      "text": "强制整屏 damage（调试用）。"
+    },
+    {
+      "at": 84,
+      "quote": ".supportedLayerGenericMetadata =",
+      "kind": "data",
+      "text": "HWC 支持的 layer 通用 metadata 键。"
+    },
+    {
+      "at": 85,
+      "quote": "getHwComposer().getSupportedLayerGenericMetadata(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 86,
+      "quote": ".genericLayerMetadataKeyMap = getGenericLayerMetadataKeyMap(),",
+      "kind": "data",
+      "text": "metadata 键映射表。"
+    },
+    {
+      "at": 87,
+      "quote": ".skipRoundCornersWhenProtected = !getRenderEngine().supportsProtectedContent(),",
+      "kind": "data",
+      "text": "RenderEngine 不支持受保护内容时跳过圆角。"
+    },
+    {
+      "at": 88,
+      "quote": ".mergeableHierarchyManager = FlagManager::getInstance().frontend_caching_v0()",
+      "kind": "data",
+      "text": "merged 模式下的层级管理器。"
+    },
+    {
+      "at": 89,
+      "quote": "? &mMergeableHierarchyManager",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 90,
+      "quote": ": nullptr,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 91,
+      "quote": ".renderResourceCache = mIpcCache.get(),",
+      "kind": "data",
+      "text": "渲染资源缓存（shader、图片 token 解析来源）。"
+    },
+    {
+      "at": 92,
+      "quote": ".shaderRegistry = mShaderRegistry.get()};",
+      "kind": "data",
+      "text": "shader 注册表。"
+    },
+    {
+      "at": 93,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "if (FlagManager::getInstance().frontend_caching_v0()) {",
+      "kind": "branch",
+      "text": "frontend caching v0：更激进的快照策略。"
+    },
+    {
+      "at": 95,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 96,
+      "quote": "SFTRACE_NAME(\"MergeableHierarchyManager::update\");",
+      "kind": "trace",
+      "text": "子切片：MergeableHierarchyManager::update。"
+    },
+    {
+      "at": 97,
+      "quote": "mMergeableHierarchyManager.update(mLayerHierarchyBuilder.getHierarchy());",
+      "kind": "call",
+      "text": "更新可合并层级（把内容相同的层合并）。"
+    },
+    {
+      "at": 98,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 99,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 100,
+      "quote": "{",
+      "kind": "note",
+      "text": "第二个作用域。"
+    },
+    {
+      "at": 101,
+      "quote": "SFTRACE_NAME(\"MergeableHierarchyManager::constructSnapshots\");",
+      "kind": "trace",
+      "text": "子切片：constructSnapshots。"
+    },
+    {
+      "at": 102,
+      "quote": "std::unique_ptr<compositionengine::CompositionEngine> compositionEngine =",
+      "kind": "data",
+      "text": "现场造一个临时 CompositionEngine，供快照层解析合成属性。"
+    },
+    {
+      "at": 103,
+      "quote": "mFactory.createCompositionEngine();",
+      "kind": "call",
+      "text": "注入 RenderEngine。"
+    },
+    {
+      "at": 104,
+      "quote": "compositionEngine->setRenderEngine(mRenderEngine.get());",
+      "kind": "call",
+      "text": "注入 HWComposer。"
+    },
+    {
+      "at": 105,
+      "quote": "compositionEngine->setHwComposer(mHWComposer.get());",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 106,
+      "quote": "",
+      "kind": "call",
+      "text": "构造快照并写入 mLayerSnapshotBuilder。"
+    },
+    {
+      "at": 107,
+      "quote": "mMergeableHierarchyManager.constructSnapshots(mLayerSnapshotBuilder, args,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 108,
+      "quote": "*compositionEngine, mLegacyLayers);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 109,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 110,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 frontend caching 分支。"
+    },
+    {
+      "at": 111,
+      "quote": "{",
+      "kind": "note",
+      "text": "两种模式都要跑标准的快照更新。"
+    },
+    {
+      "at": 112,
+      "quote": "SFTRACE_NAME(\"LayerSnapshotBuilder:update\");",
+      "kind": "trace",
+      "text": "子切片：LayerSnapshotBuilder::update。"
+    },
+    {
+      "at": 113,
+      "quote": "mLayerSnapshotBuilder.update(args);",
+      "kind": "call",
+      "text": "**本步核心**：为每层生成不可变快照，合成阶段只读它。"
+    },
+    {
+      "at": 114,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 115,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 116,
+      "quote": "if (mLayerLifecycleManager.getGlobalChanges().any(Changes::Geometry | Changes::Input |",
+      "kind": "branch",
+      "text": "几何/输入/层级/可见性任一变化。"
+    },
+    {
+      "at": 117,
+      "quote": "Changes::Hierarchy | Changes::Visibility)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "mUpdateInputInfo = true;",
+      "kind": "state",
+      "text": "标记需要同步窗口信息给输入系统。"
+    },
+    {
+      "at": 119,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 120,
+      "quote": "if (mLayerLifecycleManager.getGlobalChanges().any(Changes::VisibleRegion | Changes::Hierarchy |",
+      "kind": "branch",
+      "text": "可见区域相关变化，或处于 frontend caching 模式。"
+    },
+    {
+      "at": 121,
+      "quote": "Changes::Visibility | Changes::Geometry) ||",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 122,
+      "quote": "FlagManager::getInstance().frontend_caching_v0()) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 123,
+      "quote": "mVisibleRegionsDirty = true;",
+      "kind": "state",
+      "text": "标记可见区域脏，影响 Output 的几何重算。"
+    },
+    {
+      "at": 124,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 125,
+      "quote": "if (mLayerLifecycleManager.getGlobalChanges().any(Changes::Hierarchy | Changes::FrameRate)) {",
+      "kind": "branch",
+      "text": "层级或帧率变化。"
+    },
+    {
+      "at": 126,
+      "quote": "// The frame rate of attached choreographers can only change as a result of a",
+      "kind": "note",
+      "text": "只有帧率或层级变化才会改变已挂接 choreographer 的帧率。"
+    },
+    {
+      "at": 127,
+      "quote": "// FrameRate change (including when Hierarchy changes).",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 128,
+      "quote": "mUpdateAttachedChoreographer = true;",
+      "kind": "state",
+      "text": "标记需要更新 attached choreographer。"
+    },
+    {
+      "at": 129,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 130,
+      "quote": "outTransactionsAreEmpty = mLayerLifecycleManager.getGlobalChanges().get() == 0;",
+      "kind": "data",
+      "text": "全局无变化 → 本拍事务为空（决定回调尽早发）。"
+    },
+    {
+      "at": 131,
+      "quote": "mustComposite |= mLayerLifecycleManager.getGlobalChanges().any(",
+      "kind": "call",
+      "text": "有任何 mustComposite 变化就置位。"
+    },
+    {
+      "at": 132,
+      "quote": "frontend::RequestedLayerState::kMustComposite);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 133,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 134,
+      "quote": "bool newDataLatched = false;",
+      "kind": "data",
+      "text": "本拍是否有新数据被 latch——决定 commit 返回值。"
+    },
+    {
+      "at": 135,
+      "quote": "SFTRACE_NAME(\"DisplayCallbackAndStatsUpdates\");",
+      "kind": "trace",
+      "text": "子切片：DisplayCallbackAndStatsUpdates。"
+    },
+    {
+      "at": 136,
+      "quote": "mustComposite |= applyTransactionsLocked(update.transactions);",
+      "kind": "call",
+      "text": "把事务真正应用（含 setBuffer 写进 Layer 的 drawing state）。"
+    },
+    {
+      "at": 137,
+      "quote": "traverseLegacyLayers([&](Layer* layer) { layer->commitTransaction(); });",
+      "kind": "call",
+      "text": "legacy 层提交事务，把 drawing state 前移一步。"
+    },
+    {
+      "at": 138,
+      "quote": "const nsecs_t latchTime = systemTime();",
+      "kind": "data",
+      "text": "latch 时间戳：FrameTimeline 用它判定这一帧何时被收下。"
+    },
+    {
+      "at": 139,
+      "quote": "bool unused = false;",
+      "kind": "data",
+      "text": "占位参数，latchBufferImpl 会忽略它。"
+    },
+    {
+      "at": 140,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 141,
+      "quote": "for (auto& layer : mLayerLifecycleManager.getLayers()) {",
+      "kind": "note",
+      "text": "逐层处理：新层补建背景色层、判断是否需要 latch。"
+    },
+    {
+      "at": 142,
+      "quote": "if (layer->changes.test(frontend::RequestedLayerState::Changes::Created) &&",
+      "kind": "branch",
+      "text": "新创建且声明了 bgColorLayer 的层。"
+    },
+    {
+      "at": 143,
+      "quote": "layer->bgColorLayer) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 144,
+      "quote": "sp<Layer> bgColorLayer = getFactory().createLayer(",
+      "kind": "call",
+      "text": "现场创建一个纯色层承担背景，避免上层内容透出。"
+    },
+    {
+      "at": 145,
+      "quote": "LayerCreationArgs(this, nullptr, layer->name,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 146,
+      "quote": "ISurfaceComposerClient::eFXSurfaceEffect, LayerMetadata(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 147,
+      "quote": "std::make_optional(layer->id), true));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 148,
+      "quote": "mLegacyLayers[bgColorLayer->sequence] = bgColorLayer;",
+      "kind": "data",
+      "text": "放进 legacy 映射，参与正常合成。"
+    },
+    {
+      "at": 149,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭新层分支。"
+    },
+    {
+      "at": 150,
+      "quote": "const bool willReleaseBufferOnLatch = layer->willReleaseBufferOnLatch();",
+      "kind": "data",
+      "text": "该层本拍是否会在 latch 时释放 buffer（例如 buffer 被显式清空）。"
+    },
+    {
+      "at": 151,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 152,
+      "quote": "auto it = mLegacyLayers.find(layer->id);",
+      "kind": "data",
+      "text": "找对应的 legacy Layer 对象。"
+    },
+    {
+      "at": 153,
+      "quote": "if (it == mLegacyLayers.end() &&",
+      "kind": "branch",
+      "text": "刚创建就被销毁的层。"
+    },
+    {
+      "at": 154,
+      "quote": "layer->changes.test(frontend::RequestedLayerState::Changes::Destroyed)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 155,
+      "quote": "// Layer handle was created and immediately destroyed. It was destroyed before it",
+      "kind": "note",
+      "text": "它还没进映射，跳过即可。"
+    },
+    {
+      "at": 156,
+      "quote": "// was added to the map.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 157,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 158,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 159,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 160,
+      "quote": "LLOG_ALWAYS_FATAL_WITH_TRACE_IF(it == mLegacyLayers.end(),",
+      "kind": "call",
+      "text": "找不到 Layer 对象说明内部状态不一致，直接 fatal 并带 trace。"
+    },
+    {
+      "at": 161,
+      "quote": "\"Couldnt find layer object for %s\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 162,
+      "quote": "layer->getDebugString().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 163,
+      "quote": "if (!layer->hasReadyFrame() && !willReleaseBufferOnLatch) {",
+      "kind": "decision",
+      "text": "**latch 的入口判定**：没有 ready frame、也不需要释放 buffer 的层直接跳过。"
+    },
+    {
+      "at": 164,
+      "quote": "if (!it->second->hasBuffer()) {",
+      "kind": "branch",
+      "text": "该层当前没有 buffer。"
+    },
+    {
+      "at": 165,
+      "quote": "// The last latch time is used to classify a missed frame as buffer stuffing",
+      "kind": "note",
+      "text": "bufferless 层也要更新 latch 时间，否则会被误判成普通掉帧。"
+    },
+    {
+      "at": 166,
+      "quote": "// instead of a missed frame. This is used to identify scenarios where we",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 167,
+      "quote": "// could not latch a buffer or apply a transaction due to backpressure.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 168,
+      "quote": "// We only update the latch time for bufferless layers here, the latch time",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 169,
+      "quote": "// is updated for buffer layers when the buffer is latched.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 170,
+      "quote": "it->second->updateFrameTimelinePastTimestamps({",
+      "kind": "call",
+      "text": "更新 FrameTimeline 的 past timestamps。"
+    },
+    {
+      "at": 171,
+      "quote": ".latchTime = latchTime,",
+      "kind": "data",
+      "text": "本拍的 latch 时间。"
+    },
+    {
+      "at": 172,
+      "quote": ".expectedPresentTime = expectedPresentTimeNs,",
+      "kind": "data",
+      "text": "本拍计划上屏时间。"
+    },
+    {
+      "at": 173,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合更新调用。"
+    },
+    {
+      "at": 174,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hasBuffer 判断。"
+    },
+    {
+      "at": 175,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过这一层。"
+    },
+    {
+      "at": 176,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hasReadyFrame 判定。"
+    },
+    {
+      "at": 177,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 178,
+      "quote": "const bool bgColorOnly =",
+      "kind": "data",
+      "text": "bgColorOnly：这一层只需要画背景色（没有真实 buffer 参与）。"
+    },
+    {
+      "at": 179,
+      "quote": "!layer->externalTexture && (layer->bgColorLayerId != UNASSIGNED_LAYER_ID);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 180,
+      "quote": "if (willReleaseBufferOnLatch) {",
+      "kind": "branch",
+      "text": "本拍会在 latch 时释放 buffer。"
+    },
+    {
+      "at": 181,
+      "quote": "mLayersWithBuffersRemoved.emplace(it->second);",
+      "kind": "call",
+      "text": "登记到「被移除 buffer 的层」，present 之后要专门释放它们。"
+    },
+    {
+      "at": 182,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 183,
+      "quote": "it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);",
+      "kind": "call",
+      "text": "**真正 latch**：轮询 acquire fence，未 signal 就返回 false 让下一拍再来。"
+    },
+    {
+      "at": 184,
+      "quote": "newDataLatched = true;",
+      "kind": "state",
+      "text": "只要走到这里就认为本拍有数据被 latch（即使 latchBufferImpl 返回 false）。"
+    },
+    {
+      "at": 185,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 186,
+      "quote": "frontend::LayerSnapshot* snapshot = mLayerSnapshotBuilder.getSnapshot(it->second->sequence);",
+      "kind": "data",
+      "text": "取该层快照，用于读 gameMode。"
+    },
+    {
+      "at": 187,
+      "quote": "gui::GameMode gameMode = (snapshot) ? snapshot->gameMode : gui::GameMode::Unsupported;",
+      "kind": "data",
+      "text": "gameMode 影响刷新率投票与合成策略。"
+    },
+    {
+      "at": 188,
+      "quote": "mLayersWithQueuedFrames.emplace(it->second, gameMode);",
+      "kind": "call",
+      "text": "把层加入「本拍有 queued frame」集合：release fence 在这批层上兑现。"
+    },
+    {
+      "at": 189,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 190,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 191,
+      "quote": "updateLayerHistory(latchTime);",
+      "kind": "call",
+      "text": "用 latchTime 更新层历史，供刷新率投票使用。"
+    },
+    {
+      "at": 192,
+      "quote": "mLayerSnapshotBuilder.forEachSnapshot([&](const frontend::LayerSnapshot& snapshot) {",
+      "kind": "note",
+      "text": "遍历所有快照更新输出脏区。"
+    },
+    {
+      "at": 193,
+      "quote": "// update output's dirty region if a snapshot is visible and its",
+      "kind": "note",
+      "text": "可见且内容脏，或刚从可见变不可见，都要重绘对应区域。"
+    },
+    {
+      "at": 194,
+      "quote": "// content is dirty or if a snapshot recently became invisible",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 195,
+      "quote": "if ((snapshot.isVisible && snapshot.contentDirty) ||",
+      "kind": "branch",
+      "text": "可见且内容脏。"
+    },
+    {
+      "at": 196,
+      "quote": "(!snapshot.isVisible && snapshot.changes.test(Changes::Visibility))) {",
+      "kind": "note",
+      "text": "或刚变不可见（需要擦掉残留像素）。"
+    },
+    {
+      "at": 197,
+      "quote": "Region visibleReg;",
+      "kind": "data",
+      "text": "脏区容器。"
+    },
+    {
+      "at": 198,
+      "quote": "visibleReg.set(snapshot.transformedBoundsWithoutTransparentRegion);",
+      "kind": "call",
+      "text": "取该层不含透明区域的变换后边界。"
+    },
+    {
+      "at": 199,
+      "quote": "invalidateLayerStack(snapshot.outputFilter, visibleReg);",
+      "kind": "call",
+      "text": "把这块区域标脏到对应 layerStack 的输出上。"
+    },
+    {
+      "at": 200,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 201,
+      "quote": "});",
+      "kind": "note",
+      "text": "关闭 lambda。"
+    },
+    {
+      "at": 202,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 203,
+      "quote": "for (auto& destroyedLayer : mLayerLifecycleManager.getDestroyedLayers()) {",
+      "kind": "note",
+      "text": "遍历本拍被销毁的层。"
+    },
+    {
+      "at": 204,
+      "quote": "mLegacyLayers.erase(destroyedLayer->id);",
+      "kind": "call",
+      "text": "从 legacy 映射里移除。"
+    },
+    {
+      "at": 205,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 206,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 207,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 208,
+      "quote": "SFTRACE_NAME(\"LayerLifecycleManager:commitChanges\");",
+      "kind": "trace",
+      "text": "子切片：commitChanges。"
+    },
+    {
+      "at": 209,
+      "quote": "mLayerLifecycleManager.commitChanges();",
+      "kind": "call",
+      "text": "把请求状态提升为当前状态，并清空 changes 位。"
+    },
+    {
+      "at": 210,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 211,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 212,
+      "quote": "// enter boot animation on first buffer latch",
+      "kind": "note",
+      "text": "开机动画的启动点：第一次 latch 到 buffer。"
+    },
+    {
+      "at": 213,
+      "quote": "if (CC_UNLIKELY(mBootStage == BootStage::BOOTLOADER && newDataLatched)) {",
+      "kind": "branch",
+      "text": "还在 bootloader 阶段且刚 latch 到数据。"
+    },
+    {
+      "at": 214,
+      "quote": "ALOGI(\"Enter boot animation\");",
+      "kind": "note",
+      "text": "打印进入开机动画。"
+    },
+    {
+      "at": 215,
+      "quote": "mBootStage = BootStage::BOOTANIMATION;",
+      "kind": "state",
+      "text": "阶段推进，后续 commit 才会返回 true。"
+    },
+    {
+      "at": 216,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭开机判断。"
+    },
+    {
+      "at": 217,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 218,
+      "quote": "mustComposite |= (getTransactionFlags() & ~eTransactionFlushNeeded) || newDataLatched;",
+      "kind": "decision",
+      "text": "最终 mustComposite：有事务标志，或有新 latch。"
+    },
+    {
+      "at": 219,
+      "quote": "if (mustComposite) {",
+      "kind": "branch",
+      "text": "有事要做。"
+    },
+    {
+      "at": 220,
+      "quote": "commitTransactions();",
+      "kind": "call",
+      "text": "更新事务提交状态（含提交回调排队）。"
+    },
+    {
+      "at": 221,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 222,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 223,
+      "quote": "return mustComposite;",
+      "kind": "note",
+      "text": "返回值直接进 commit 的 mustComposite。"
+    },
+    {
+      "at": 224,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。mStateLock 在这里才释放——整个 latch 过程都持锁。"
+    }
+  ]
+}

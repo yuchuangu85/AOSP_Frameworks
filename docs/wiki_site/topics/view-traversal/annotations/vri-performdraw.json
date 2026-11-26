@@ -1,0 +1,654 @@
+{
+  "id": "vri-performdraw",
+  "title": "ViewRootImpl::performDraw",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "private boolean performDraw(",
+  "span": [
+    5940,
+    6043
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private boolean performDraw(@Nullable SurfaceSyncGroup surfaceSyncGroup) {",
+      "kind": "note",
+      "text": "绘制总控。返回 false 表示「这一帧没画」；surfaceSyncGroup 非空时会要求全量重画并对齐事务。"
+    },
+    {
+      "at": 2,
+      "quote": "mLastPerformDrawSkippedReason = null;",
+      "kind": "state",
+      "text": "先清上次的跳过原因，便于 dumpsys/trace 里区分「本帧正常」与「上帧被跳过」。"
+    },
+    {
+      "at": 3,
+      "quote": "if (mAttachInfo.mDisplayState == Display.STATE_OFF && !mReportNextDraw) {",
+      "kind": "branch",
+      "text": "屏幕关且没人要求 report：直接不画。这是「黑屏时不做无用功」的第一道闸门。"
+    },
+    {
+      "at": 4,
+      "quote": "mLastPerformDrawSkippedReason = \"screen_off\";",
+      "kind": "data",
+      "text": "记录跳过原因字符串，后面会进 dumpsys gfxinfo 一类输出。"
+    },
+    {
+      "at": 5,
+      "quote": "if (!mLastDrawScreenOff) {",
+      "kind": "branch",
+      "text": "只在「状态翻转」时打日志，避免每帧刷屏。"
+    },
+    {
+      "at": 6,
+      "quote": "logAndTrace(\"Not drawing due to screen off\");",
+      "kind": "trace",
+      "text": "trace 与 log 同时打点，Perfetto 里能直接看到这一帧为什么没有 draw 切片。"
+    },
+    {
+      "at": 7,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭状态翻转判断。"
+    },
+    {
+      "at": 8,
+      "quote": "mLastDrawScreenOff = true;",
+      "kind": "state",
+      "text": "记住「已经因息屏停画」，供下次亮屏时打恢复日志。"
+    },
+    {
+      "at": 9,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "本帧不画，performTraversals 看到 false 会走「没有异步绘制」的收尾分支。"
+    },
+    {
+      "at": 10,
+      "quote": "} else if (mView == null) {",
+      "kind": "branch",
+      "text": "第二道闸门：根 View 已 detach。"
+    },
+    {
+      "at": 11,
+      "quote": "mLastPerformDrawSkippedReason = \"no_root_view\";",
+      "kind": "data",
+      "text": "同样记录原因。"
+    },
+    {
+      "at": 12,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "没有根就没有树，什么也不画。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭闸门判断。"
+    },
+    {
+      "at": 15,
+      "quote": "if (mLastDrawScreenOff) {",
+      "kind": "branch",
+      "text": "亮屏后的第一帧：打恢复日志并清状态。"
+    },
+    {
+      "at": 16,
+      "quote": "logAndTrace(\"Resumed drawing after screen turned on\");",
+      "kind": "trace",
+      "text": "与上面的停画日志成对，方便对齐「息屏停了多少帧」。"
+    },
+    {
+      "at": 17,
+      "quote": "mLastDrawScreenOff = false;",
+      "kind": "state",
+      "text": "清状态，避免重复打日志。"
+    },
+    {
+      "at": 17,
+      "quote": "mLastDrawScreenOff = false;",
+      "kind": "note",
+      "text": "关闭恢复分支。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭亮屏恢复分支。"
+    },
+    {
+      "at": 20,
+      "quote": "final boolean fullRedrawNeeded = mFullRedrawNeeded || surfaceSyncGroup != null;",
+      "kind": "decision",
+      "text": "两个来源要求全量：本端已置位，或有人带 SurfaceSyncGroup 要求对齐事务。"
+    },
+    {
+      "at": 21,
+      "quote": "mFullRedrawNeeded = false;",
+      "kind": "state",
+      "text": "取走即清，避免下一帧被连带成全量重画。"
+    },
+    {
+      "at": 23,
+      "quote": "mIsDrawing = true;",
+      "kind": "state",
+      "text": "表示正在绘制；期间再来的 invalidate 只会置脏，不会递归进 draw。"
+    },
+    {
+      "at": 24,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, mDrawTrace);",
+      "kind": "trace",
+      "text": "整帧 draw 的切片，名字来自 mDrawTrace（会随「首帧 / 普通帧」变化）。"
+    },
+    {
+      "at": 24,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, mDrawTrace);",
+      "kind": "note",
+      "text": "无论成败都要复位 mIsDrawing 并收 trace。"
+    },
+    {
+      "at": 26,
+      "quote": "addFrameCommitCallbackIfNeeded();",
+      "kind": "call",
+      "text": "需要时挂上帧提交回调，用于等待 buffer 真正提交到 SF 后再做后续动作。"
+    },
+    {
+      "at": 28,
+      "quote": "boolean usingAsyncReport;",
+      "kind": "data",
+      "text": "本帧是否走异步上报；它决定后面要不要在内联路径里自己处理事务同步。"
+    },
+    {
+      "at": 28,
+      "quote": "boolean usingAsyncReport;",
+      "kind": "note",
+      "text": "关闭回调清理分支。"
+    },
+    {
+      "at": 30,
+      "quote": "try {",
+      "kind": "note",
+      "text": "进入绘制尝试段。"
+    },
+    {
+      "at": 31,
+      "quote": "usingAsyncReport = draw(fullRedrawNeeded, surfaceSyncGroup, mSyncBuffer);",
+      "kind": "call",
+      "text": "进入真正的绘制分发（ViewRootImpl.draw → 硬件或软件）。这是与 ThreadedRenderer 的接合点。"
+    },
+    {
+      "at": 32,
+      "quote": "if (mAttachInfo.mThreadedRenderer != null && !usingAsyncReport) {",
+      "kind": "branch",
+      "text": "本帧没走异步上报，之前挂的帧回调就没意义了。"
+    },
+    {
+      "at": 32,
+      "quote": "if (mAttachInfo.mThreadedRenderer != null && !usingAsyncReport) {",
+      "kind": "note",
+      "text": "try/finally 结束。"
+    },
+    {
+      "at": 33,
+      "quote": "mAttachInfo.mThreadedRenderer.setFrameCallback(null);",
+      "kind": "call",
+      "text": "清掉回调，防止下一帧误触发上一帧的 pending 逻辑。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭悬空动画清理块。"
+    },
+    {
+      "at": 35,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "收尾段。"
+    },
+    {
+      "at": 36,
+      "quote": "mIsDrawing = false;",
+      "kind": "state",
+      "text": "复位绘制中标志，即使 draw 抛异常也不会永久卡住后续 invalidate。"
+    },
+    {
+      "at": 37,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合整帧 draw 切片。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 report 分支之前的准备段。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 40,
+      "quote": "// For whatever reason we didn't create a HardwareRenderer, end any",
+      "kind": "note",
+      "text": "场景：这一帧没走硬件渲染（例如渲染器创建失败、走了软件路径），但之前注册过 RenderNode 动画。"
+    },
+    {
+      "at": 41,
+      "quote": "// hardware animations that are now dangling",
+      "kind": "note",
+      "text": "这些动画会「悬空」：没人驱动，却还在请求下一帧。"
+    },
+    {
+      "at": 41,
+      "quote": "// hardware animations that are now dangling",
+      "kind": "note",
+      "text": "关闭悬空动画清理。"
+    },
+    {
+      "at": 42,
+      "quote": "if (mAttachInfo.mPendingAnimatingRenderNodes != null) {",
+      "kind": "branch",
+      "text": "有悬空的动画节点才处理。"
+    },
+    {
+      "at": 43,
+      "quote": "final int count = mAttachInfo.mPendingAnimatingRenderNodes.size();",
+      "kind": "data",
+      "text": "取快照数量。"
+    },
+    {
+      "at": 44,
+      "quote": "for (int i = 0; i < count; i++) {",
+      "kind": "note",
+      "text": "逐个结束。"
+    },
+    {
+      "at": 45,
+      "quote": "mAttachInfo.mPendingAnimatingRenderNodes.get(i).endAllAnimators();",
+      "kind": "call",
+      "text": "一次性结束该节点上所有动画器，避免它们继续把 app 拖在唤醒态。"
+    },
+    {
+      "at": 46,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭「等待窗口级绘制完成」块。"
+    },
+    {
+      "at": 47,
+      "quote": "mAttachInfo.mPendingAnimatingRenderNodes.clear();",
+      "kind": "call",
+      "text": "清空列表；后续硬件渲染器创建成功后不会再去注册这些已经结束的动画。"
+    },
+    {
+      "at": 48,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 stop 状态同步块。"
+    },
+    {
+      "at": 49,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭事务合并分支。"
+    },
+    {
+      "at": 50,
+      "quote": "final Transaction pendingTransaction;",
+      "kind": "data",
+      "text": "本帧待合并的窗口事务；只在「非异步上报」时才需要在这里内联处理。"
+    },
+    {
+      "at": 51,
+      "quote": "if (!usingAsyncReport && mHasPendingTransactions) {",
+      "kind": "branch",
+      "text": "异步上报的情况下，事务由帧提交回调负责，不能在这里重复提交。"
+    },
+    {
+      "at": 52,
+      "quote": "pendingTransaction = new Transaction();",
+      "kind": "call",
+      "text": "新建一个事务承接累积的变更。"
+    },
+    {
+      "at": 53,
+      "quote": "pendingTransaction.merge(mPendingTransaction);",
+      "kind": "call",
+      "text": "把 draw 期间累加的属性/buffer 变更合并进来。"
+    },
+    {
+      "at": 53,
+      "quote": "pendingTransaction.merge(mPendingTransaction);",
+      "kind": "note",
+      "text": "await 可能被中断。"
+    },
+    {
+      "at": 54,
+      "quote": "mHasPendingTransactions = false;",
+      "kind": "state",
+      "text": "清标志，避免下一帧重复合并同一批变更。"
+    },
+    {
+      "at": 55,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "另一种情况：异步上报，或压根没有待提交事务。"
+    },
+    {
+      "at": 56,
+      "quote": "pendingTransaction = null;",
+      "kind": "data",
+      "text": "null 表示「不需要内联提交」。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "catch 结束。"
+    },
+    {
+      "at": 59,
+      "quote": "if (mReportNextDraw) {",
+      "kind": "branch",
+      "text": "进入「必须报告本帧绘制完成」的路径（WM 等待首帧、转场同步等）。"
+    },
+    {
+      "at": 59,
+      "quote": "if (mReportNextDraw) {",
+      "kind": "note",
+      "text": "关闭倒计时等待。"
+    },
+    {
+      "at": 60,
+      "quote": "// if we're using multi-thread renderer, wait for the window frame draws",
+      "kind": "note",
+      "text": "多线程渲染器下，硬件侧的绘制是异步的，这里要等它真正交出帧。"
+    },
+    {
+      "at": 60,
+      "quote": "// if we're using multi-thread renderer, wait for the window frame draws",
+      "kind": "branch",
+      "text": "把窗口的 stop 状态同步给硬件渲染器。"
+    },
+    {
+      "at": 61,
+      "quote": "if (mWindowDrawCountDown != null) {",
+      "kind": "branch",
+      "text": "有倒计时器说明还有窗口级的绘制未完成。"
+    },
+    {
+      "at": 62,
+      "quote": "try {",
+      "kind": "note",
+      "text": "关闭同步分支。"
+    },
+    {
+      "at": 63,
+      "quote": "mWindowDrawCountDown.await();",
+      "kind": "lock",
+      "text": "这里是 UI 线程少数会「等 RT 真正画完」的地方之一——注意与常规帧的 postAndWait 只等同步不同。"
+    },
+    {
+      "at": 64,
+      "quote": "} catch (InterruptedException e) {",
+      "kind": "branch",
+      "text": "被中断时只记日志，不重抛。"
+    },
+    {
+      "at": 65,
+      "quote": "Log.e(mTag, \"Window redraw count down interrupted!\");",
+      "kind": "note",
+      "text": "ERROR 级日志；现场看到它说明有线程在绘制期间被 interrupt，通常伴随窗口状态异常。"
+    },
+    {
+      "at": 65,
+      "quote": "Log.e(mTag, \"Window redraw count down interrupted!\");",
+      "kind": "note",
+      "text": "关闭 verbose 分支。"
+    },
+    {
+      "at": 66,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 verbose 日志分支。"
+    },
+    {
+      "at": 67,
+      "quote": "mWindowDrawCountDown = null;",
+      "kind": "state",
+      "text": "一次性使用，等完即弃。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外部 surface 分支。"
+    },
+    {
+      "at": 69,
+      "quote": "",
+      "kind": "call",
+      "text": "回调触发时才真正处理事务同步——把提交时机交给 surface 的所有者。"
+    },
+    {
+      "at": 70,
+      "quote": "if (mAttachInfo.mThreadedRenderer != null) {",
+      "kind": "branch",
+      "text": "report 路径下先把 stop 状态重新同步给渲染器。"
+    },
+    {
+      "at": 71,
+      "quote": "mAttachInfo.mThreadedRenderer.setStopped(mStopped);",
+      "kind": "call",
+      "text": "窗口被 stop 时渲染器停画，避免后台窗口继续耗 GPU——这也是排查「后台仍掉帧」的入口。"
+    },
+    {
+      "at": 72,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭同步块。"
+    },
+    {
+      "at": 74,
+      "quote": "if (LOCAL_LOGV) {",
+      "kind": "branch",
+      "text": "本地 verbose 开关。"
+    },
+    {
+      "at": 75,
+      "quote": "Log.v(mTag, \"FINISHED DRAWING: \" + mWindowAttributes.getTitle());",
+      "kind": "note",
+      "text": "打印窗口标题，便于多窗口场景下区分。"
+    },
+    {
+      "at": 75,
+      "quote": "Log.v(mTag, \"FINISHED DRAWING: \" + mWindowAttributes.getTitle());",
+      "kind": "branch",
+      "text": "有硬件渲染器才谈得上等待 fence。"
+    },
+    {
+      "at": 76,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭报点分支。"
+    },
+    {
+      "at": 77,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭渲染器判断。"
+    },
+    {
+      "at": 78,
+      "quote": "if (mSurfaceHolder != null && mRenderTargetIsValid) {",
+      "kind": "branch",
+      "text": "surface 被外部接管（SurfaceView/VideoView 一类）：重绘完成要走 SurfaceHolder 回调，而不是自己提交。"
+    },
+    {
+      "at": 78,
+      "quote": "if (mSurfaceHolder != null && mRenderTargetIsValid) {",
+      "kind": "note",
+      "text": "关闭 else-if。"
+    },
+    {
+      "at": 79,
+      "quote": "usingAsyncReport = true;",
+      "kind": "state",
+      "text": "回调是异步的，因此本帧标记为异步上报。"
+    },
+    {
+      "at": 79,
+      "quote": "usingAsyncReport = true;",
+      "kind": "note",
+      "text": "关闭 mReportNextDraw 分支。"
+    },
+    {
+      "at": 80,
+      "quote": "SurfaceCallbackHelper sch = new SurfaceCallbackHelper(() -> {",
+      "kind": "call",
+      "text": "统一回调所有 SurfaceHolder.Callback，避免个别回调抛异常影响其它回调。"
+    },
+    {
+      "at": 81,
+      "quote": "handleSyncRequestWhenNoAsyncDraw(surfaceSyncGroup, pendingTransaction != null,",
+      "kind": "call",
+      "text": "注意 reason 参数是 \"no async report\"——排查「谁触发了事务同步」时看这个字符串最快。"
+    },
+    {
+      "at": 82,
+      "quote": "pendingTransaction, \"SurfaceHolder\");",
+      "kind": "data",
+      "text": "日志用的原因字符串，便于 trace 里分辨同步是由谁触发的。"
+    },
+    {
+      "at": 83,
+      "quote": "});",
+      "kind": "note",
+      "text": "lambda 结束。"
+    },
+    {
+      "at": 83,
+      "quote": "});",
+      "kind": "note",
+      "text": "关闭同步处理分支。"
+    },
+    {
+      "at": 85,
+      "quote": "SurfaceHolder.Callback callbacks[] = mSurfaceHolder.getCallbacks();",
+      "kind": "data",
+      "text": "取当前关注者列表。"
+    },
+    {
+      "at": 86,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭内容捕获分支。"
+    },
+    {
+      "at": 87,
+      "quote": "sch.dispatchSurfaceRedrawNeededAsync(mSurfaceHolder, callbacks);",
+      "kind": "call",
+      "text": "异步派发重绘通知；它不改绘制结果，只负责让外部所有者知道「内容已经变了」。"
+    },
+    {
+      "at": 88,
+      "quote": "} else if (!usingAsyncReport) {",
+      "kind": "branch",
+      "text": "没有外部 surface 且非异步上报：说明绘制可能还没真正落地。"
+    },
+    {
+      "at": 88,
+      "quote": "} else if (!usingAsyncReport) {",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 89,
+      "quote": "if (mAttachInfo.mThreadedRenderer != null) {",
+      "kind": "branch",
+      "text": "非异步路径才需要显式处理事务同步。"
+    },
+    {
+      "at": 90,
+      "quote": "mAttachInfo.mThreadedRenderer.fence();",
+      "kind": "lock",
+      "text": "在这里同步等到 GPU 工作完成，代价是 UI 线程被阻塞——只在 report 路径上发生。"
+    },
+    {
+      "at": 91,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭事务同步处理块。"
+    },
+    {
+      "at": 92,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 report 大分支。"
+    },
+    {
+      "at": 93,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭「画不画」的前置判断。"
+    },
+    {
+      "at": 95,
+      "quote": "if (!usingAsyncReport) {",
+      "kind": "branch",
+      "text": "非异步路径：在这里把事务同步处理掉，保证 WM 的等待能结束。"
+    },
+    {
+      "at": 96,
+      "quote": "handleSyncRequestWhenNoAsyncDraw(surfaceSyncGroup, pendingTransaction != null,",
+      "kind": "call",
+      "text": "真正处理同步：等所有窗口画完，再把 surfaceSyncGroup 的事务一起提交。"
+    },
+    {
+      "at": 97,
+      "quote": "pendingTransaction, \"no async report\");",
+      "kind": "data",
+      "text": "同上。"
+    },
+    {
+      "at": 98,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭同步处理块。"
+    },
+    {
+      "at": 100,
+      "quote": "if (mPerformContentCapture) {",
+      "kind": "note",
+      "text": "内容捕获（无障碍/自动填充等）的首次上报；与绘制无关，不展开。"
+    },
+    {
+      "at": 101,
+      "quote": "performContentCaptureInitialReport();",
+      "kind": "call",
+      "text": "首次上报内容捕获数据。"
+    },
+    {
+      "at": 102,
+      "quote": "}",
+      "kind": "call",
+      "text": "首次内容捕获上报：仅供参考，与绘制无关。"
+    },
+    {
+      "at": 103,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "返回 true 只表示「本帧走了绘制流程」，不代表已经上屏——上屏要等 RT 的 swap 与 SF 的合成。"
+    },
+    {
+      "at": 104,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

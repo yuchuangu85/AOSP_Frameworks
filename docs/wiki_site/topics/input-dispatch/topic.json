@@ -1,0 +1,1063 @@
+{
+  "meta": {
+    "slug": "input-dispatch",
+    "title": "Input：evdev → InputReader → InputDispatcher → View",
+    "subtitle": "从内核 evdev 读出原始事件，经 InputReader 的 mapper 解析成 NotifyArgs、InputDispatcher 找到目标窗口并通过 InputChannel 投递，到应用 UI 线程的 InputStage 责任链与 View 分发，最后回写 finishInputEvent 闭环；含超时与 ANR 的落地路径",
+    "version": "android17-release",
+    "built": "2026-11-25",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲这一条链路：EventHub::getEvents 从 /dev/input/event* 取 RawEvent；InputReader::loopOnce 在锁外读、持锁解析，mapper 逐事件生成 NotifyMotionArgs/NotifyKeyArgs，出锁后沿 listener 链下发；InputDispatcher::notifyMotion 入队并唤醒 dispatcher，dispatchOnce 内命中测试（触摸走 findTouchedWindowTargets、按键走 findFocusedWindowTargetLocked），startDispatchCycleLocked 通过 socketpair 发布事件并把超时时间插进 AnrTracker；应用侧 NativeInputEventReceiver::consumeEvents 取出事件，ViewRootImpl 用 InputStage 责任链分发到 ViewGroup/View；finishInputEvent 回写后 dispatcher 的 finishDispatchCycleLocked 清除 ANR 计时。processAnrsLocked 负责超时判定，Java 侧 InputManagerService/AnrController 负责文案与 ANR 落地。内核 evdev、binder 驱动、ANR 弹窗在仓库外。",
+    "kicker": "AOSP · android17-release · InputReader → InputDispatcher → View"
+  },
+  "lanes": [
+    {
+      "id": "K",
+      "label": "kernel / evdev（仓库外）",
+      "color": "#ff9f43"
+    },
+    {
+      "id": "R",
+      "label": "InputReader 线程",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "D",
+      "label": "InputDispatcher 线程",
+      "color": "#c792ea"
+    },
+    {
+      "id": "U",
+      "label": "应用 UI 线程",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "S",
+      "label": "system_server / policy",
+      "color": "#ffb454"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "采集",
+      "hint": "evdev → RawEvent"
+    },
+    {
+      "id": "P1",
+      "label": "解析",
+      "hint": "mapper → NotifyArgs"
+    },
+    {
+      "id": "P2",
+      "label": "入队",
+      "hint": "listener 链 → mInboundQueue"
+    },
+    {
+      "id": "P3",
+      "label": "分发决策",
+      "hint": "命中测试与焦点"
+    },
+    {
+      "id": "P4",
+      "label": "投递",
+      "hint": "InputChannel → 应用"
+    },
+    {
+      "id": "P5",
+      "label": "应用分发",
+      "hint": "InputStage 链 → View"
+    },
+    {
+      "id": "P6",
+      "label": "闭环与 ANR",
+      "hint": "finishInputEvent / 超时"
+    },
+    {
+      "id": "P7",
+      "label": "分支与诊断",
+      "hint": "失败路径与抓现场"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "K",
+      "title": "evdev 产生原始事件（仓库外）",
+      "brief": "触摸/按键在驱动层形成 struct input_event 写进 /dev/input/eventN，靠 epoll 通知用户态。本仓库只能看到打开设备与读取封装，内核实现与设备树配置不在范围内。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/reader/EventHub.cpp",
+          "line": 2016,
+          "symbol": "getEvents"
+        },
+        {
+          "file": "native/services/inputflinger/reader/EventHub.cpp",
+          "line": 2202,
+          "symbol": "epoll_wait"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "R",
+      "title": "EventHub::getEvents 摊平成 RawEvent",
+      "brief": "epoll_wait 拿到可读设备后逐个 read，把 input_event 三元组（type/code/value）连同 deviceId 与时间戳摊成 RawEvent。缓冲区满会置 SYN_DROPPED，后续由 mapper 丢到下一个 SYN_REPORT。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/reader/EventHub.cpp",
+          "line": 2016,
+          "symbol": "getEvents"
+        },
+        {
+          "file": "native/services/inputflinger/include/NotifyArgs.h",
+          "line": 44,
+          "symbol": "NotifyKeyArgs"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P1",
+      "lane": "R",
+      "title": "InputReader::loopOnce 的两段锁",
+      "brief": "先在锁内算 timeoutMillis，再在锁外调 getEvents（阻塞），收回后重新持锁解析。拆锁是为了让 getEvents 阻塞时不挡住 getScanCodeState 之类的回调，否则 dispatcher 回调 WMS 再回调 InputReader 会死锁。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/reader/InputReader.cpp",
+          "line": 172,
+          "symbol": "loopOnce"
+        },
+        {
+          "file": "native/services/inputflinger/reader/InputReader.cpp",
+          "line": 196,
+          "symbol": "getEvents"
+        },
+        {
+          "file": "native/services/inputflinger/reader/InputReader.cpp",
+          "line": 242,
+          "symbol": "notify（锁外）"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "R",
+      "title": "processEventsLocked 按设备切批",
+      "brief": "按 deviceId 把连续事件切成批次，处理 DEVICE_ADDED/REMOVED，再交给对应 InputDevice。SYN_DROPPED 会让该设备进入丢弃态，直到下一个 SYN_REPORT 才 reset——这是「事件溢出后整段丢失」的根源。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/reader/InputReader.cpp",
+          "line": 261,
+          "symbol": "processEventsLocked"
+        },
+        {
+          "file": "native/services/inputflinger/reader/InputDevice.cpp",
+          "line": 497,
+          "symbol": "process"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P1",
+      "lane": "R",
+      "title": "mapper 生成 NotifyMotionArgs",
+      "brief": "TouchInputMapper 在消抖与手势判定后 dispatchMotion，最终组装 NotifyMotionArgs（policyFlags、displayId、downTime、readTime 等）。按键侧是 KeyboardInputMapper 组装 NotifyKeyArgs。两者都是「值对象」，跨模块只认它。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp",
+          "line": 1305,
+          "symbol": "TouchInputMapper::process"
+        },
+        {
+          "file": "native/services/inputflinger/reader/mapper/KeyboardInputMapper.cpp",
+          "line": 367,
+          "symbol": "NotifyKeyArgs"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P2",
+      "lane": "R",
+      "title": "listener 链：过滤、编排、分类",
+      "brief": "InputManager 构造函数按固定顺序拼链：InputReader → UnwantedInteractionBlocker → InputFilter → PointerChoreographer → InputProcessor → InputDeviceMetricsCollector → InteractionReporter → InputDispatcher。顺序由注释写死，调整会改变事件语义。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/InputManager.cpp",
+          "line": 122,
+          "symbol": "管道顺序注释"
+        },
+        {
+          "file": "native/services/inputflinger/InputFilter.cpp",
+          "line": 73,
+          "symbol": "notifyKey"
+        },
+        {
+          "file": "native/services/inputflinger/InputProcessor.h",
+          "line": 152,
+          "symbol": "InputProcessor"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P2",
+      "lane": "R",
+      "title": "InputDispatcher::notifyMotion 入队",
+      "brief": "仍在 reader 线程：先让 policy filterInputEvent（可吞事件），再构造 MotionEntry 并 enqueueInboundEventLocked 塞进 mInboundQueue；队列原本为空则唤醒 dispatcher。按键走 notifyKey，其中会同步跨 binder 调 interceptKeyBeforeQueueing。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 4679,
+          "symbol": "notifyMotion"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1426,
+          "symbol": "enqueueInboundEventLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 4576,
+          "symbol": "notifyKey"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P2",
+      "lane": "D",
+      "title": "队列剪枝：点到别的应用就清空积压",
+      "brief": "若当前处于「等焦点窗口」的 ANR 状态，而新 MOTION 落在另一个应用的窗口上，shouldPruneInboundQueueLocked 会把积压事件全部剪掉。这是「某应用卡住后点别人立刻响应」的机制来源。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1380,
+          "symbol": "shouldPruneInboundQueueLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1466,
+          "symbol": "调用点"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P3",
+      "lane": "D",
+      "title": "dispatchOnce：一轮分发 + ANR 检查 + poll",
+      "brief": "持 mLock 跑 dispatchOnceInnerLocked，再执行待处理 command，然后把 nextWakeupTime 与 processPreAnrsLocked / processAnrsLocked 取最小，出锁 pollOnce。dispatcher 线程名就是 InputDispatcher。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 983,
+          "symbol": "dispatchOnce"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1207,
+          "symbol": "dispatchOnceInnerLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1025,
+          "symbol": "pollOnce"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P3",
+      "lane": "D",
+      "title": "取事件与 stale 判定",
+      "brief": "mDispatchFrozen 时直接返回；否则从 mInboundQueue 取队首。MOTION 的 stale 判定只在「没有正在触摸/悬停的指针」时才允许丢，否则宁可发过期事件也要把当前手势补完。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1207,
+          "symbol": "dispatchOnceInnerLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1372,
+          "symbol": "isStaleEvent"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P3",
+      "lane": "D",
+      "title": "触摸命中测试：findTouchedWindowTargets",
+      "brief": "把当前 TouchState 拷成临时状态，按 z-order 找命中窗口，处理 split touch、hover、outside、spy。canWindowReceiveMotion 会因 connection->responsive == false 直接拒发——即「ANR 后不再给它送触摸」。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2534,
+          "symbol": "findTouchedWindowTargets"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2175,
+          "symbol": "dispatchMotionLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 5557,
+          "symbol": "canWindowReceiveMotion"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P3",
+      "lane": "D",
+      "title": "焦点目标：findFocusedWindowTargetLocked",
+      "brief": "非指针事件走焦点解析。有 focused application 但没有 focused window 时，会设置 mNoFocusedWindowAnrState 并返回 PENDING，事件停在 mPendingEvent 不重新入队；窗口一出现就 reset。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2441,
+          "symbol": "findFocusedWindowTargetLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2374,
+          "symbol": "resetNoFocusedWindowTimeoutLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1936,
+          "symbol": "dispatchKeyLocked"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P4",
+      "lane": "D",
+      "title": "startDispatchCycleLocked：发布并登记超时",
+      "brief": "给每个 target 建派发周期：deliveryTime=now，timeoutTime=now+该连接的 dispatchingTimeout，然后 publishMotionEvent 经 InputChannel::sendMessage 做一次非阻塞 send。成功后 entry 从 outboundQueue 移到 waitQueue，并把超时插入 AnrTracker。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 3893,
+          "symbol": "startDispatchCycleLocked"
+        },
+        {
+          "file": "native/libs/input/InputTransport.cpp",
+          "line": 588,
+          "symbol": "publishMotionEvent"
+        },
+        {
+          "file": "native/libs/input/InputTransport.cpp",
+          "line": 388,
+          "symbol": "sendMessage"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 4031,
+          "symbol": "AnrTracker.insert"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P4",
+      "lane": "U",
+      "title": "NativeInputEventReceiver::consumeEvents",
+      "brief": "fd 就绪触发 ALooper 回调 handleEvent → consumeEvents → InputConsumer::consume 从同一个 socketpair 读 InputMessage 并就地还原成 MotionEvent/KeyEvent，再通过 JNI 调 Java 的 dispatchInputEvent。",
+      "refs": [
+        {
+          "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+          "line": 418,
+          "symbol": "handleEvent"
+        },
+        {
+          "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+          "line": 455,
+          "symbol": "consumeEvents"
+        },
+        {
+          "file": "native/libs/input/InputConsumer.cpp",
+          "line": 231,
+          "symbol": "InputConsumer::consume"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P5",
+      "lane": "U",
+      "title": "进 ViewRootImpl：排队与调度",
+      "brief": "WindowInputEventReceiver.onInputEvent → processRawInputEvent（先过兼容层）→ enqueueInputEvent 串进 mPendingInputEvent，再 scheduleProcessInputEvents 发一条 asynchronous 消息或立即处理。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 11465,
+          "symbol": "onInputEvent"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 11210,
+          "symbol": "enqueueInputEvent"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 11257,
+          "symbol": "scheduleProcessInputEvents"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P5",
+      "lane": "U",
+      "title": "deliverInputEvent：选责任链起点",
+      "brief": "手写笔合成事件走 Synthetic 阶段；指针事件在 shouldSkipIme 且未带 FLAG_SKIP_IME 时直接跳到 Post-IME 起点（省掉 IME 段）；否则从 NativePreIme 进链。KeyEvent 还会先过 mUnhandledKeyManager.preDispatch。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 11293,
+          "symbol": "deliverInputEvent"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 1920,
+          "symbol": "InputStage 链拼装"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P5",
+      "lane": "U",
+      "title": "InputStage 责任链语义",
+      "brief": "链顺序：NativePreIme → ViewPreIme → Ime → EarlyPostIme → NativePostIme → ViewPostIme → Synthetic。每级返回 FORWARD/FINISH_HANDLED/FINISH_NOT_HANDLED；进入前先过 shouldDropInputEvent，terminal 事件不丢弃而是改写成 ACTION_CANCEL。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 7889,
+          "symbol": "InputStage 基类"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 7998,
+          "symbol": "shouldDropInputEvent"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 8074,
+          "symbol": "AsyncInputStage"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P5",
+      "lane": "U",
+      "title": "进 View 树：dispatchTouchEvent",
+      "brief": "ViewPostImeInputStage 调 processPointerEvent → mView.dispatchPointerEvent → dispatchTouchEvent。ViewGroup 在 DOWN 时清空旧的 touch target，未置 FLAG_DISALLOW_INTERCEPT 才问 onInterceptTouchEvent；不拦截则按 pointerId 裁剪后交给子 View。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 8545,
+          "symbol": "ViewPostImeInputStage.onProcess"
+        },
+        {
+          "file": "base/core/java/android/view/View.java",
+          "line": 16932,
+          "symbol": "View.dispatchTouchEvent"
+        },
+        {
+          "file": "base/core/java/android/view/ViewGroup.java",
+          "line": 2756,
+          "symbol": "ViewGroup.dispatchTouchEvent"
+        },
+        {
+          "file": "base/core/java/android/view/View.java",
+          "line": 18447,
+          "symbol": "View.onTouchEvent"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P6",
+      "lane": "U",
+      "title": "回写 finishInputEvent",
+      "brief": "链尾调 finishInputEvent → InputEventReceiver.finishInputEvent 按 sequence 取回 seq → native finishInputEvent → InputConsumer::sendFinishedSignal。seq 对不上只打日志、不 ACK。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "line": 11347,
+          "symbol": "finishInputEvent(q)"
+        },
+        {
+          "file": "base/core/java/android/view/InputEventReceiver.java",
+          "line": 220,
+          "symbol": "finishInputEvent"
+        },
+        {
+          "file": "native/libs/input/InputConsumer.cpp",
+          "line": 746,
+          "symbol": "sendFinishedSignal"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P6",
+      "lane": "D",
+      "title": "finishDispatchCycleLocked：清计时",
+      "brief": "dispatcher 收到回包后出 waitQueue、从 AnrTracker 删除该超时项；若该连接先前被判 unresponsive，会复查 isConnectionResponsive 并走 processConnectionResponsiveLocked 恢复。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 4076,
+          "symbol": "finishDispatchCycleLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 544,
+          "symbol": "isConnectionResponsive"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 6955,
+          "symbol": "processConnectionResponsiveLocked"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P6",
+      "lane": "D",
+      "title": "processAnrsLocked：超时判定",
+      "brief": "每轮都跑：先查「等焦点窗口」状态是否到期，再取 AnrTracker 的最早超时与当前时间比。到期就把连接标 unresponsive、移出 tracker、调 onAnrLocked。5s 基线来自 IInputConstants，乘以硬件倍率，可被窗口覆盖。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 1143,
+          "symbol": "processAnrsLocked"
+        },
+        {
+          "file": "native/libs/input/android/os/IInputConstants.aidl",
+          "line": 26,
+          "symbol": "5000ms"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 6792,
+          "symbol": "onAnrLocked"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P6",
+      "lane": "S",
+      "title": "ANR 落地：native 判定，Java 出文案",
+      "brief": "onAnrLocked 拼出理由串并投递「窗口无响应」命令给 policy；「Input dispatching timed out」这句文案其实在 Java 的 timeoutMessage 里。最终经 AnrController 用 input token 反查 WindowState 并进 ActivityRecord.inputDispatchingTimedOut。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/input/InputManagerService.java",
+          "line": 4661,
+          "symbol": "timeoutMessage"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "line": 247,
+          "symbol": "notifyWindowUnresponsive"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "D",
+      "title": "分支：没有目标窗口",
+      "brief": "既无 focused window 也无 focused application 时事件直接丢（FAILED，不产生 ANR）；有 application 无 window 时返回 PENDING 并起超时，超时报「does not have a focused window」。窗口没有 InputChannel 则只打日志并跳过该窗口。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2452,
+          "symbol": "FAILED"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 3058,
+          "symbol": "addWindowTargetLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 2469,
+          "symbol": "PENDING（有应用无窗口）"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "D",
+      "title": "分支：发送失败与诊断",
+      "brief": "WOULD_BLOCK（socket 满）让 entry 留在 outboundQueue 等下轮；DEAD_OBJECT/EPIPE 走 abortBrokenDispatchCycleLocked 并通知 policy。诊断靠 dumpsys input 的 ANR 段、atrace 的 deliverInputEvent/InputDispatcher 段。",
+      "refs": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 3998,
+          "symbol": "WOULD_BLOCK 判定"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 4020,
+          "symbol": "abortBrokenDispatchCycleLocked"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "line": 6861,
+          "symbol": "updateLastAnrStateLocked"
+        }
+      ]
+    }
+  ],
+  "extends": [
+    "topic_render.json"
+  ],
+  "pitfalls": [
+    {
+      "case": "InputReader 的锁被拆成两段",
+      "behavior": "getEvents 阻塞必须在锁外，否则 dispatcher 回调 WMS 再回调 InputReader 会死锁",
+      "ref": "InputReader.cpp:172 / 242"
+    },
+    {
+      "case": "SYN_DROPPED 意味着整段丢失",
+      "behavior": "事件缓冲区溢出后 mapper 进入丢弃态，直到下一个 SYN_REPORT 才恢复",
+      "ref": "InputDevice.cpp:497"
+    },
+    {
+      "case": "dispatcher 不阻塞在 socket 上",
+      "behavior": "send 失败 WOULD_BLOCK 时 entry 留在 outboundQueue，等 app finish 后继续；DEAD_OBJECT 才作废通道",
+      "ref": "InputDispatcher.cpp:4012 / 4020"
+    },
+    {
+      "case": "ANR 后不再给该窗口送触摸",
+      "behavior": "connection->responsive=false，canWindowReceiveMotion 直接拒发",
+      "ref": "InputDispatcher.cpp:5591"
+    },
+    {
+      "case": "ANR 文案不在 native",
+      "behavior": "native 只判定并拼 reason，Input dispatching timed out 这句在 Java 的 timeoutMessage 里",
+      "ref": "InputManagerService.java:4661"
+    },
+    {
+      "case": "没有 focused window 不等于没 ANR",
+      "behavior": "有 focused application 无 window 时事件 PENDING 并起超时，超时报 does not have a focused window",
+      "ref": "InputDispatcher.cpp:2468"
+    },
+    {
+      "case": "拦截判定只在 DOWN 有意义",
+      "behavior": "ViewGroup 只在 ACTION_DOWN 时询问 onInterceptTouchEvent，后续事件沿用拦截结果",
+      "ref": "ViewGroup.java:2756"
+    },
+    {
+      "case": "terminal 事件会被改写成 CANCEL",
+      "behavior": "shouldDropInputEvent 命中时，UP/CANCEL 不丢弃而是改成 ACTION_CANCEL，避免子 View 卡在按下态",
+      "ref": "ViewRootImpl.java:7998"
+    },
+    {
+      "case": "seq 对不上只打日志",
+      "behavior": "finishInputEvent 找不到对应 seq 时不 ACK，dispatcher 侧最终按超时处理",
+      "ref": "InputEventReceiver.java:220"
+    },
+    {
+      "case": "指针事件可跳过 IME 段",
+      "behavior": "shouldSkipIme 且无 FLAG_SKIP_IME 时直接从 Post-IME 起点进链",
+      "ref": "ViewRootImpl.java:11293"
+    }
+  ],
+  "facts": [
+    "<b>三个线程接力</b>：InputReader（解析）→ InputDispatcher（分发）→ 应用 UI 线程（分发到 View），跨进程只靠一个 socketpair。",
+    "<b>锁的边界就是设计</b>：reader 锁外读、锁内解析、锁外下发；dispatcher 全程持 mLock 直到出锁 poll。",
+    "<b>超时从投递那一刻开始算</b>：startDispatchCycleLocked 把 now+dispatchingTimeout 插进 AnrTracker，finishInputEvent 回来才删除。",
+    "<b>ANR 是两段式</b>：native 判定「无响应」并给 reason，Java 侧 timeoutMessage 出文案，AnmController 用 input token 反查窗口落地。",
+    "<b>触摸命中测试不必走焦点</b>：指针走 findTouchedWindowTargets（z-order 命中），按键走 findFocusedWindowTargetLocked（焦点）。"
+  ],
+  "glossary": [
+    {
+      "term": "RawEvent",
+      "text": "evdev 原始事件在用户态的表示，带 deviceId 与时间戳。"
+    },
+    {
+      "term": "NotifyArgs",
+      "text": "mapper 解析后的值对象，如 NotifyMotionArgs / NotifyKeyArgs，是 reader 与 dispatcher 之间的契约。"
+    },
+    {
+      "term": "listener 链",
+      "text": "InputManager 按固定顺序拼装的处理器管道，最后一级是 InputDispatcher。"
+    },
+    {
+      "term": "mInboundQueue",
+      "text": "dispatcher 的入站事件队列，notifyXxx 入队、dispatchOnceInnerLocked 出队。"
+    },
+    {
+      "term": "命中测试",
+      "text": "按 z-order 判断触摸落在哪个窗口，并处理 split touch / hover / spy。"
+    },
+    {
+      "term": "InputChannel",
+      "text": "socketpair 封装，dispatcher 写、应用读；同一对 fd 也承载 finished 回执。"
+    },
+    {
+      "term": "AnrTracker",
+      "text": "按 timeoutTime 排序的待确认投递表；超时即触发 ANR 判定。"
+    },
+    {
+      "term": "dispatchingTimeout",
+      "text": "单次投递的等待上限，默认 5000ms 乘硬件倍率，窗口可覆盖。"
+    },
+    {
+      "term": "InputStage",
+      "text": "应用侧责任链节点，返回 FORWARD / FINISH_HANDLED / FINISH_NOT_HANDLED。"
+    },
+    {
+      "term": "shouldDropInputEvent",
+      "text": "进入责任链前的统一过滤：root 移除、无焦点、窗口停止、转场暂停等。"
+    },
+    {
+      "term": "touch target",
+      "text": "ViewGroup 为每个 pointer 记录的接收者，DOWN 时建立、UP/CANCEL 时清空。"
+    },
+    {
+      "term": "finishInputEvent",
+      "text": "应用回写「这条事件处理完了」，dispatcher 据此清掉超时项。"
+    },
+    {
+      "term": "input token",
+      "text": "窗口通道的 token（WindowState.mInputChannelToken），ANR 反查窗口的 key。"
+    },
+    {
+      "term": "PENDING",
+      "text": "分发结果之一：事件留在 mPendingEvent 等条件满足，不重新入队。"
+    },
+    {
+      "term": "responsive",
+      "text": "连接的响应状态；被判定 ANR 后置 false，触摸不再投给它。"
+    },
+    {
+      "term": "SYN_DROPPED",
+      "text": "evdev 缓冲区溢出标志，表示中间有事件丢失。"
+    }
+  ],
+  "scenario": {
+    "title": "一次点击（60Hz，示数量级）",
+    "events": [
+      {
+        "t": "0.0 ms",
+        "label": "驱动上报",
+        "detail": "evdev 写 input_event，epoll 唤醒 InputReader"
+      },
+      {
+        "t": "0.2 ms",
+        "label": "读与解析",
+        "detail": "getEvents → RawEvent，mapper 生成 NotifyMotionArgs"
+      },
+      {
+        "t": "0.3 ms",
+        "label": "入队",
+        "detail": "notifyMotion 塞进 mInboundQueue 并 wake dispatcher"
+      },
+      {
+        "t": "0.4 ms",
+        "label": "命中测试",
+        "detail": "findTouchedWindowTargets 按 z-order 找到目标窗口"
+      },
+      {
+        "t": "0.5 ms",
+        "label": "投递",
+        "detail": "startDispatchCycleLocked 非阻塞 send，插 AnrTracker"
+      },
+      {
+        "t": "0.6 ms",
+        "label": "应用收包",
+        "detail": "consumeEvents 取出事件，调度到 UI 线程"
+      },
+      {
+        "t": "0.8 ms",
+        "label": "责任链",
+        "detail": "deliverInputEvent → ViewPostIme → dispatchTouchEvent"
+      },
+      {
+        "t": "1.2 ms",
+        "label": "onTouchEvent",
+        "detail": "应用业务代码执行"
+      },
+      {
+        "t": "1.3 ms",
+        "label": "回写",
+        "detail": "finishInputEvent → dispatcher 清超时项"
+      },
+      {
+        "t": "≈5000 ms",
+        "label": "若未回写",
+        "detail": "processAnrsLocked 判定超时并触发 ANR"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：哪三个线程、谁交给谁",
+      "route": "全景·架构 → 流程图 → 时序图前 10 条"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：采集 → 解析 → 分发 → View",
+      "route": "精读第 1→19 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "理解超时与 ANR 落地",
+      "route": "精读第 20→24 步 + 降级与坑"
+    },
+    {
+      "time": "半天",
+      "goal": "能改代码 / 能抓现场",
+      "route": "代码逐行 11 个 P0 函数 + 方法清单 + 文件结构"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "InputReader::loopOnce",
+      "file": "native/services/inputflinger/reader/InputReader.cpp",
+      "line": 172,
+      "size": 88,
+      "thread": "InputReader",
+      "lock": "mLock（两段）",
+      "purpose": "reader 线程主循环：算超时、锁外取事件、锁内解析、锁外下发。",
+      "risk": "把 getEvents 或 notify 挪进锁内会死锁；下发必须在锁外。",
+      "status": "card"
+    },
+    {
+      "fn": "InputDispatcher::dispatchOnce",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "line": 983,
+      "size": 44,
+      "thread": "InputDispatcher",
+      "lock": "mLock",
+      "purpose": "一轮分发 + command + ANR 检查 + poll 超时取最小。",
+      "risk": "nextWakeupTime 算错会导致 ANR 晚发现或忙等。",
+      "status": "card"
+    },
+    {
+      "fn": "DispatcherTouchState::findTouchedWindowTargets",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "line": 2534,
+      "size": 422,
+      "thread": "InputDispatcher",
+      "lock": "mLock",
+      "purpose": "触摸命中测试：z-order、split touch、hover、outside、spy。",
+      "risk": "边界条件（outside、split）写错会让事件落到错误窗口或丢失。",
+      "status": "card"
+    },
+    {
+      "fn": "InputDispatcher::startDispatchCycleLocked",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "line": 3893,
+      "size": 143,
+      "thread": "InputDispatcher",
+      "lock": "mLock",
+      "purpose": "设置 deliveryTime/timeoutTime、publish、处理发送失败。",
+      "risk": "超时时间与 AnrTracker 不一致会造成误判或漏判 ANR。",
+      "status": "card"
+    },
+    {
+      "fn": "InputDispatcher::processAnrsLocked",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "line": 1143,
+      "size": 38,
+      "thread": "InputDispatcher",
+      "lock": "mLock",
+      "purpose": "超时判定的唯一入口：焦点窗口等待 + 连接超时。",
+      "risk": "返回的 nextWakeupTime 决定下次检查时机，算错会推迟 ANR。",
+      "status": "card"
+    },
+    {
+      "fn": "ViewRootImpl.deliverInputEvent",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "line": 11293,
+      "size": 53,
+      "thread": "UI",
+      "lock": "无",
+      "purpose": "责任链起点选择与 trace 埋点。",
+      "risk": "跳过 IME 的条件写错会破坏返回键拦截与输入框语义。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s10",
+      "fn": "stale 判定",
+      "ref": "InputDispatcher.cpp:1321-1372",
+      "rows": [
+        {
+          "cond": "无正在触摸/悬停的指针",
+          "then": "允许丢弃过期 MOTION",
+          "effect": "直接下一步事件"
+        },
+        {
+          "cond": "有正在触摸的指针",
+          "then": "不丢弃",
+          "effect": "宁可发过期事件也要补完当前手势"
+        }
+      ]
+    },
+    {
+      "step": "s23",
+      "fn": "findFocusedWindowTargetLocked",
+      "ref": "InputDispatcher.cpp:2441-2498",
+      "rows": [
+        {
+          "cond": "既无 focused window 也无 focused application",
+          "then": "FAILED，事件丢弃",
+          "effect": "不产生 ANR"
+        },
+        {
+          "cond": "有 application 无 window",
+          "then": "PENDING + mNoFocusedWindowAnrState",
+          "effect": "超时报 does not have a focused window"
+        },
+        {
+          "cond": "有 focused window",
+          "then": "构造 InputTarget 投递",
+          "effect": "正常路径"
+        }
+      ]
+    },
+    {
+      "step": "s24",
+      "fn": "startDispatchCycleLocked 发送结果",
+      "ref": "InputDispatcher.cpp:4012-4035",
+      "rows": [
+        {
+          "cond": "发送成功",
+          "then": "entry 从 outboundQueue 移入 waitQueue",
+          "effect": "插入 AnrTracker 计超时"
+        },
+        {
+          "cond": "WOULD_BLOCK",
+          "then": "留在 outboundQueue",
+          "effect": "下轮再发，不丢弃"
+        },
+        {
+          "cond": "DEAD_OBJECT / EPIPE",
+          "then": "abortBrokenDispatchCycleLocked",
+          "effect": "通道作废并通知 policy"
+        }
+      ]
+    },
+    {
+      "step": "s17",
+      "fn": "shouldDropInputEvent",
+      "ref": "ViewRootImpl.java:7998",
+      "rows": [
+        {
+          "cond": "root 已移除 / mStopped / ambient / 转场暂停",
+          "then": "丢弃",
+          "effect": "非 terminal 事件直接丢"
+        },
+        {
+          "cond": "同上是 terminal（UP/CANCEL）",
+          "then": "改写成 ACTION_CANCEL",
+          "effect": "避免子 View 卡在按下态"
+        },
+        {
+          "cond": "正常",
+          "then": "继续进责任链",
+          "effect": "FORWARD"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 8
+  },
+  "scope": [
+    "native/services/inputflinger/reader/EventHub.cpp",
+    "native/services/inputflinger/reader/InputReader.cpp",
+    "native/services/inputflinger/reader/InputDevice.cpp",
+    "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp",
+    "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+    "native/services/inputflinger/InputFilter.cpp",
+    "native/services/inputflinger/InputManager.cpp",
+    "native/libs/input/InputTransport.cpp",
+    "native/libs/input/InputConsumer.cpp",
+    "base/core/jni/android_view_InputEventReceiver.cpp",
+    "base/core/java/android/view/ViewRootImpl.java",
+    "base/core/java/android/view/ViewGroup.java"
+  ],
+  "inventorySpans": [
+    "getEvents",
+    "loopOnce",
+    "processEventsLocked",
+    "process",
+    "notifyMotion",
+    "notifyKey",
+    "dispatchOnce",
+    "dispatchOnceInnerLocked",
+    "findTouchedWindowTargets",
+    "findFocusedWindowTargetLocked",
+    "startDispatchCycleLocked",
+    "finishDispatchCycleLocked",
+    "processAnrsLocked",
+    "onAnrLocked",
+    "enqueueInboundEventLocked",
+    "publishMotionEvent",
+    "sendMessage",
+    "consume",
+    "sendFinishedSignal",
+    "consumeEvents",
+    "handleEvent",
+    "finishInputEvent",
+    "enqueueInputEvent",
+    "deliverInputEvent",
+    "dispatchTouchEvent",
+    "onInterceptTouchEvent",
+    "onTouchEvent",
+    "shouldDropInputEvent"
+  ]
+}

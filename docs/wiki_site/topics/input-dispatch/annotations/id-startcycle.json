@@ -1,0 +1,870 @@
+{
+  "id": "id-startcycle",
+  "title": "InputDispatcher::startDispatchCycleLocked",
+  "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+  "sig": "void InputDispatcher::startDispatchCycleLocked(",
+  "span": [
+    3893,
+    4035
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void InputDispatcher::startDispatchCycleLocked(nsecs_t currentTime,",
+      "kind": "note",
+      "text": "**真正把事件发出去的一步**。调用时已持 mLock；本函数负责设置超时、按类型 publish、处理发送失败、并登记 ANR 计时。"
+    },
+    {
+      "at": 2,
+      "quote": "const std::shared_ptr<Connection>& connection) {",
+      "kind": "note",
+      "text": "connection 就是一个窗口的 InputChannel 封装。"
+    },
+    {
+      "at": 3,
+      "quote": "ATRACE_NAME_IF(ATRACE_ENABLED(),",
+      "kind": "trace",
+      "text": "切片名包含 inputChannel，能直接看出这条事件发给了哪个窗口。"
+    },
+    {
+      "at": 4,
+      "quote": "StringPrintf(\"startDispatchCycleLocked(inputChannel=%s)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 5,
+      "quote": "connection->getInputChannelName().c_str()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "LOG_IF(INFO, DEBUG_DISPATCH_CYCLE)",
+      "kind": "branch",
+      "text": "调试日志开关。"
+    },
+    {
+      "at": 7,
+      "quote": "<< \"channel '\" << connection->getInputChannelName() << \"' ~ startDispatchCycle\";",
+      "kind": "note",
+      "text": "打印通道名。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "while (connection->status == Connection::Status::NORMAL && !connection->outboundQueue.empty()) {",
+      "kind": "decision",
+      "text": "循环条件：连接正常且 outboundQueue 非空。一次调用可能连续发出多条。"
+    },
+    {
+      "at": 10,
+      "quote": "std::unique_ptr<DispatchEntry>& dispatchEntry = connection->outboundQueue.front();",
+      "kind": "data",
+      "text": "取队首待发条目。"
+    },
+    {
+      "at": 11,
+      "quote": "dispatchEntry->deliveryTime = currentTime;",
+      "kind": "data",
+      "text": "**投递时刻**：这是后续算「等了多久」的基准。"
+    },
+    {
+      "at": 12,
+      "quote": "const std::chrono::nanoseconds timeout = getDispatchingTimeoutLocked(connection);",
+      "kind": "call",
+      "text": "取该连接的分发超时（默认 5s × 硬件倍率，可被窗口覆盖）。"
+    },
+    {
+      "at": 13,
+      "quote": "dispatchEntry->timeoutTime = currentTime + timeout.count();",
+      "kind": "data",
+      "text": "**超时时刻**：dispatcher 认为 app 必须在这个时间前 finish。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "// Publish the event.",
+      "kind": "note",
+      "text": "按事件类型构造并发布。"
+    },
+    {
+      "at": 16,
+      "quote": "status_t status;",
+      "kind": "data",
+      "text": "发送结果。"
+    },
+    {
+      "at": 17,
+      "quote": "const EventEntry& eventEntry = *(dispatchEntry->eventEntry);",
+      "kind": "data",
+      "text": "取出事件本体。"
+    },
+    {
+      "at": 18,
+      "quote": "switch (eventEntry.type) {",
+      "kind": "decision",
+      "text": "按类型分派——每种事件有自己的 publish 函数与载荷。"
+    },
+    {
+      "at": 19,
+      "quote": "case EventEntry::Type::KEY: {",
+      "kind": "branch",
+      "text": "按键事件。"
+    },
+    {
+      "at": 20,
+      "quote": "const KeyEntry& keyEntry = static_cast<const KeyEntry&>(eventEntry);",
+      "kind": "data",
+      "text": "投递 entry 的 keyEntry。"
+    },
+    {
+      "at": 21,
+      "quote": "std::array<uint8_t, 32> hmac = getSignature(keyEntry, *dispatchEntry);",
+      "kind": "call",
+      "text": "对按键做 HMAC 签名（防注入，InputFilter 会校验）。"
+    },
+    {
+      "at": 22,
+      "quote": "LOG_IF(INFO, DEBUG_OUTBOUND_EVENT_DETAILS)",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 23,
+      "quote": "<< \"Publishing \" << *dispatchEntry << \" to \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 24,
+      "quote": "<< connection->getInputChannelName();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "// Publish the key event.",
+      "kind": "note",
+      "text": "注释：发布按键。"
+    },
+    {
+      "at": 27,
+      "quote": "status =",
+      "kind": "call",
+      "text": "publishKeyEvent：把 seq、id、deviceId、keyCode、时间戳等写进共享内存消息。"
+    },
+    {
+      "at": 28,
+      "quote": "connection->inputPublisher",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 29,
+      "quote": ".publishKeyEvent(dispatchEntry->seq, keyEntry.id, keyEntry.deviceId,",
+      "kind": "call",
+      "text": "seq 是本轮投递的序号，应用回写 finish 时带回来。"
+    },
+    {
+      "at": 30,
+      "quote": "keyEntry.source, keyEntry.displayId,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "std::move(hmac), keyEntry.action, keyEntry.flags,",
+      "kind": "data",
+      "text": "source 与 displayId。"
+    },
+    {
+      "at": 32,
+      "quote": "keyEntry.keyCode, keyEntry.scanCode,",
+      "kind": "data",
+      "text": "action/flags/keyCode/scanCode。"
+    },
+    {
+      "at": 33,
+      "quote": "keyEntry.metaState, keyEntry.repeatCount,",
+      "kind": "data",
+      "text": "metaState 与 repeatCount。"
+    },
+    {
+      "at": 34,
+      "quote": "keyEntry.downTime, keyEntry.eventTime);",
+      "kind": "data",
+      "text": "downTime 与 eventTime。"
+    },
+    {
+      "at": 35,
+      "quote": "if (mTracer) {",
+      "kind": "branch",
+      "text": "有 tracer。"
+    },
+    {
+      "at": 36,
+      "quote": "ensureEventTraced(keyEntry);",
+      "kind": "call",
+      "text": "确保事件有 trace 上下文。"
+    },
+    {
+      "at": 37,
+      "quote": "mTracer->traceEventDispatch(*dispatchEntry, *keyEntry.traceTracker);",
+      "kind": "call",
+      "text": "记录派发点。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracer 分支。"
+    },
+    {
+      "at": 39,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 KEY 分支。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 42,
+      "quote": "case EventEntry::Type::MOTION: {",
+      "kind": "branch",
+      "text": "Motion 事件（触摸/鼠标/hover）。"
+    },
+    {
+      "at": 43,
+      "quote": "LOG_IF(INFO, DEBUG_OUTBOUND_EVENT_DETAILS)",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 44,
+      "quote": "<< \"Publishing \" << *dispatchEntry << \" to \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "<< connection->getInputChannelName();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 46,
+      "quote": "const MotionEntry& motionEntry = static_cast<const MotionEntry&>(eventEntry);",
+      "kind": "data",
+      "text": "取出 motionEntry。"
+    },
+    {
+      "at": 47,
+      "quote": "status = publishMotionEvent(*connection, *dispatchEntry);",
+      "kind": "call",
+      "text": "**核心**：publishMotionEvent，内部会把坐标按显示变换换算后写入。"
+    },
+    {
+      "at": 48,
+      "quote": "if (status == BAD_VALUE) {",
+      "kind": "branch",
+      "text": "BAD_VALUE 表示参数非法。"
+    },
+    {
+      "at": 49,
+      "quote": "logDispatchStateLocked();",
+      "kind": "call",
+      "text": "打印状态便于定位。"
+    },
+    {
+      "at": 50,
+      "quote": "LOG(FATAL) << \"Publisher failed for \" << motionEntry;",
+      "kind": "note",
+      "text": "FATAL：非法事件不该被投递，说明上游校验缺失。"
+    },
+    {
+      "at": 51,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 52,
+      "quote": "if (mTracer) {",
+      "kind": "branch",
+      "text": "有 tracer。"
+    },
+    {
+      "at": 53,
+      "quote": "ensureEventTraced(motionEntry);",
+      "kind": "call",
+      "text": "确保 trace 上下文。"
+    },
+    {
+      "at": 54,
+      "quote": "mTracer->traceEventDispatch(*dispatchEntry, *motionEntry.traceTracker);",
+      "kind": "call",
+      "text": "记录派发点。"
+    },
+    {
+      "at": 55,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracer。"
+    },
+    {
+      "at": 56,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 MOTION 分支。"
+    },
+    {
+      "at": 58,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 59,
+      "quote": "case EventEntry::Type::FOCUS: {",
+      "kind": "branch",
+      "text": "焦点事件（窗口获得/失去焦点）。"
+    },
+    {
+      "at": 60,
+      "quote": "const FocusEntry& focusEntry = static_cast<const FocusEntry&>(eventEntry);",
+      "kind": "data",
+      "text": "取出 focusEntry。"
+    },
+    {
+      "at": 61,
+      "quote": "status = connection->inputPublisher.publishFocusEvent(dispatchEntry->seq,",
+      "kind": "call",
+      "text": "publishFocusEvent。"
+    },
+    {
+      "at": 62,
+      "quote": "focusEntry.id,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 63,
+      "quote": "focusEntry.hasFocus);",
+      "kind": "data",
+      "text": "id 与 hasFocus。"
+    },
+    {
+      "at": 64,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 FOCUS。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "case EventEntry::Type::TOUCH_MODE_CHANGED: {",
+      "kind": "branch",
+      "text": "触摸模式变化（有鼠标/无鼠标切换）。"
+    },
+    {
+      "at": 68,
+      "quote": "const TouchModeEntry& touchModeEntry =",
+      "kind": "data",
+      "text": "取出 touchModeEntry。"
+    },
+    {
+      "at": 69,
+      "quote": "static_cast<const TouchModeEntry&>(eventEntry);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 70,
+      "quote": "status = connection->inputPublisher",
+      "kind": "call",
+      "text": "publishTouchModeEvent。"
+    },
+    {
+      "at": 71,
+      "quote": ".publishTouchModeEvent(dispatchEntry->seq, touchModeEntry.id,",
+      "kind": "data",
+      "text": "携带 inTouchMode 布尔。"
+    },
+    {
+      "at": 72,
+      "quote": "touchModeEntry.inTouchMode);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 73,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 74,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 75,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 TOUCH_MODE_CHANGED。"
+    },
+    {
+      "at": 76,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 77,
+      "quote": "case EventEntry::Type::POINTER_CAPTURE_CHANGED: {",
+      "kind": "branch",
+      "text": "指针捕获状态变化。"
+    },
+    {
+      "at": 78,
+      "quote": "const auto& captureEntry =",
+      "kind": "data",
+      "text": "取出 captureEntry。"
+    },
+    {
+      "at": 79,
+      "quote": "static_cast<const PointerCaptureChangedEntry&>(eventEntry);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 80,
+      "quote": "status =",
+      "kind": "call",
+      "text": "publishCaptureEvent。"
+    },
+    {
+      "at": 81,
+      "quote": "connection->inputPublisher",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": ".publishCaptureEvent(dispatchEntry->seq, captureEntry.id,",
+      "kind": "data",
+      "text": "携带是否启用捕获。"
+    },
+    {
+      "at": 83,
+      "quote": "captureEntry.pointerCaptureRequest.isEnable());",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 84,
+      "quote": "break;",
+      "kind": "note",
+      "text": "关闭 POINTER_CAPTURE_CHANGED。"
+    },
+    {
+      "at": 85,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 86,
+      "quote": "",
+      "kind": "branch",
+      "text": "拖拽事件。"
+    },
+    {
+      "at": 87,
+      "quote": "case EventEntry::Type::DRAG: {",
+      "kind": "data",
+      "text": "取出 dragEntry。"
+    },
+    {
+      "at": 88,
+      "quote": "const DragEntry& dragEntry = static_cast<const DragEntry&>(eventEntry);",
+      "kind": "call",
+      "text": "publishDragEvent。"
+    },
+    {
+      "at": 89,
+      "quote": "status = connection->inputPublisher.publishDragEvent(dispatchEntry->seq,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 90,
+      "quote": "dragEntry.id, dragEntry.x,",
+      "kind": "data",
+      "text": "id 与坐标。"
+    },
+    {
+      "at": 91,
+      "quote": "dragEntry.y,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 92,
+      "quote": "dragEntry.isExiting);",
+      "kind": "data",
+      "text": "isExiting 表示拖拽离开窗口。"
+    },
+    {
+      "at": 93,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 94,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 DRAG。"
+    },
+    {
+      "at": 95,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 96,
+      "quote": "case EventEntry::Type::DEVICE_RESET:",
+      "kind": "branch",
+      "text": "这两类事件不应走投递周期。"
+    },
+    {
+      "at": 97,
+      "quote": "case EventEntry::Type::SENSOR: {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 98,
+      "quote": "LOG_ALWAYS_FATAL(\"Should never start dispatch cycles for %s events\",",
+      "kind": "note",
+      "text": "FATAL：说明事件分类逻辑出错。"
+    },
+    {
+      "at": 99,
+      "quote": "ftl::enum_string(eventEntry.type).c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 100,
+      "quote": "return;",
+      "kind": "note",
+      "text": "关闭 FATAL 分支。"
+    },
+    {
+      "at": 101,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 102,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch 块。"
+    },
+    {
+      "at": 103,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 104,
+      "quote": "// Check the result.",
+      "kind": "note",
+      "text": "接下来检查发送结果——这是整段最容易误读的地方。"
+    },
+    {
+      "at": 105,
+      "quote": "if (status) {",
+      "kind": "branch",
+      "text": "status 非 0 表示失败。"
+    },
+    {
+      "at": 106,
+      "quote": "if (status == WOULD_BLOCK) {",
+      "kind": "branch",
+      "text": "**WOULD_BLOCK**：socket 缓冲满，不是致命错误。"
+    },
+    {
+      "at": 107,
+      "quote": "if (connection->waitQueue.empty()) {",
+      "kind": "branch",
+      "text": "但 waitQueue 为空说明不该满，属于异常状态。"
+    },
+    {
+      "at": 108,
+      "quote": "ALOGE(\"channel '%s' ~ Could not publish event because the pipe is full. \"",
+      "kind": "note",
+      "text": "W/E 级日志解释这个矛盾。"
+    },
+    {
+      "at": 109,
+      "quote": "\"This is unexpected because the wait queue is empty, so the pipe \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 110,
+      "quote": "\"should be empty and we shouldn't have any problems writing an \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 111,
+      "quote": "\"event to it, status=%s(%d)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 112,
+      "quote": "connection->getInputChannelName().c_str(), statusToString(status).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 113,
+      "quote": "status);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 114,
+      "quote": "abortBrokenDispatchCycleLocked(connection, /*notify=*/true);",
+      "kind": "call",
+      "text": "这种情况下视为通道损坏并断开。"
+    },
+    {
+      "at": 115,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是正常反压。"
+    },
+    {
+      "at": 116,
+      "quote": "// Pipe is full and we are waiting for the app to finish process some events",
+      "kind": "note",
+      "text": "注释：管道满，等应用先处理完。"
+    },
+    {
+      "at": 117,
+      "quote": "// before sending more events to it.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "LOG_IF(INFO, DEBUG_DISPATCH_CYCLE)",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 119,
+      "quote": "<< \"channel '\" << connection->getInputChannelName()",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 120,
+      "quote": "<< \"' ~ Could not publish event because the pipe is full, waiting for \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 121,
+      "quote": "\"the application to catch up\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 122,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试日志。"
+    },
+    {
+      "at": 123,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "关闭 WOULD_BLOCK 分支。"
+    },
+    {
+      "at": 124,
+      "quote": "ALOGE(\"channel '%s' ~ Could not publish event due to an unexpected error, \"",
+      "kind": "note",
+      "text": "否则是真正的错误（DEAD_OBJECT/EPIPE 等）。"
+    },
+    {
+      "at": 125,
+      "quote": "\"status=%s(%d)\",",
+      "kind": "note",
+      "text": "W/E 级日志。"
+    },
+    {
+      "at": 126,
+      "quote": "connection->getInputChannelName().c_str(), statusToString(status).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 127,
+      "quote": "status);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 128,
+      "quote": "abortBrokenDispatchCycleLocked(connection, /*notify=*/true);",
+      "kind": "call",
+      "text": "**通道作废**并通知 policy：该窗口不会再收到事件。"
+    },
+    {
+      "at": 129,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭错误分支。"
+    },
+    {
+      "at": 130,
+      "quote": "return;",
+      "kind": "note",
+      "text": "统一 return：本连接本轮不再继续发。"
+    },
+    {
+      "at": 131,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭失败判断。"
+    },
+    {
+      "at": 132,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 133,
+      "quote": "// Re-enqueue the event on the wait queue.",
+      "kind": "note",
+      "text": "发送成功：把 entry 从 outbound 移到 wait。"
+    },
+    {
+      "at": 134,
+      "quote": "const nsecs_t timeoutTime = dispatchEntry->timeoutTime;",
+      "kind": "data",
+      "text": "取出刚才记录的超时时刻。"
+    },
+    {
+      "at": 135,
+      "quote": "connection->waitQueue.emplace_back(std::move(dispatchEntry));",
+      "kind": "call",
+      "text": "**移入 waitQueue**：表示「已发出，等 app finish」。"
+    },
+    {
+      "at": 136,
+      "quote": "connection->outboundQueue.erase(connection->outboundQueue.begin());",
+      "kind": "call",
+      "text": "从 outboundQueue 移除。"
+    },
+    {
+      "at": 137,
+      "quote": "traceOutboundQueueLength(*connection);",
+      "kind": "trace",
+      "text": "记录 outbound 队列长度。"
+    },
+    {
+      "at": 138,
+      "quote": "if (connection->responsive) {",
+      "kind": "branch",
+      "text": "只有连接仍是 responsive 才登记 ANR 计时。"
+    },
+    {
+      "at": 139,
+      "quote": "mAnrTracker.insert(timeoutTime, connection->getToken());",
+      "kind": "call",
+      "text": "**关键**：把 timeoutTime 插进 AnrTracker，processAnrsLocked 就靠它判超时。"
+    },
+    {
+      "at": 140,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 responsive 判断。"
+    },
+    {
+      "at": 141,
+      "quote": "traceWaitQueueLength(*connection);",
+      "kind": "trace",
+      "text": "记录 wait 队列长度。"
+    },
+    {
+      "at": 142,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 while：outboundQueue 清空或连接异常时结束。"
+    },
+    {
+      "at": 143,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

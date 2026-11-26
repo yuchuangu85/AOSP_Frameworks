@@ -1,0 +1,1302 @@
+{
+  "id": "eh-getevents",
+  "title": "EventHub::getEvents",
+  "file": "native/services/inputflinger/reader/EventHub.cpp",
+  "sig": "std::vector<RawEvent> EventHub::getEvents(int timeoutMillis)",
+  "span": [
+    2016,
+    2230
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::vector<RawEvent> EventHub::getEvents(int timeoutMillis) {",
+      "kind": "note",
+      "text": "整个输入链路的源头。它同时负责三件事：等设备可读（epoll）、读出并摊平 evdev 事件、顺手处理设备增删/热插拔。"
+    },
+    {
+      "at": 2,
+      "quote": "std::scoped_lock _l(mLock);",
+      "kind": "lock",
+      "text": "整个函数都在 EventHub::mLock 里——注意它内部会在 poll 前**放锁**，见后面的 epoll_wait。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 4,
+      "quote": "std::array<input_event, EVENT_BUFFER_SIZE> readBuffer;",
+      "kind": "data",
+      "text": "栈上的读取缓冲；按 struct input_event 数组一次读一批。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "std::vector<RawEvent> events;",
+      "kind": "data",
+      "text": "输出：本轮的 RawEvent 列表。"
+    },
+    {
+      "at": 7,
+      "quote": "bool awoken = false;",
+      "kind": "data",
+      "text": "是否被 wake() 显式唤醒（用于停止阻塞的 epoll）。"
+    },
+    {
+      "at": 8,
+      "quote": "for (;;) {",
+      "kind": "note",
+      "text": "外层 for(;;)：只在「拿到事件 / 被唤醒 / 超时 / 出错」时 break。"
+    },
+    {
+      "at": 9,
+      "quote": "nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);",
+      "kind": "data",
+      "text": "本轮开始时间，后续用于设备变化与超时判断。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 11,
+      "quote": "// Reopen input devices if needed.",
+      "kind": "note",
+      "text": "第一类特殊事件：配置变更要求重开所有设备。"
+    },
+    {
+      "at": 12,
+      "quote": "if (mNeedToReopenDevices) {",
+      "kind": "branch",
+      "text": "需要重开设备。"
+    },
+    {
+      "at": 13,
+      "quote": "mNeedToReopenDevices = false;",
+      "kind": "state",
+      "text": "取走标志。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "ALOGI(\"Reopening all input devices due to a configuration change.\");",
+      "kind": "note",
+      "text": "打印日志：说明这是配置变更导致的重开。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "closeAllDevicesLocked();",
+      "kind": "call",
+      "text": "关掉当前所有设备 fd。"
+    },
+    {
+      "at": 18,
+      "quote": "mNeedToScanDevices = true;",
+      "kind": "state",
+      "text": "标记需要重新扫描设备（下一轮 getEvents 才真正扫）。"
+    },
+    {
+      "at": 19,
+      "quote": "break; // return to the caller before we actually rescan",
+      "kind": "note",
+      "text": "先返回给调用方，避免在重开过程中阻塞太久。"
+    },
+    {
+      "at": 20,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭重开分支。"
+    },
+    {
+      "at": 21,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 22,
+      "quote": "handleSysfsNodeChangeNotificationsLocked();",
+      "kind": "call",
+      "text": "处理 sysfs 节点变化通知（例如视频设备属性变化）。"
+    },
+    {
+      "at": 23,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 24,
+      "quote": "handleDeviceChangesLocked(events, now);",
+      "kind": "call",
+      "text": "处理设备增删：把 DEVICE_ADDED/REMOVED 合成事件塞进 events。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "if (events.size() == EVENT_BUFFER_SIZE) {",
+      "kind": "branch",
+      "text": "输出缓冲已满。"
+    },
+    {
+      "at": 27,
+      "quote": "break;",
+      "kind": "note",
+      "text": "直接返回，让上层先消费。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭缓冲判断。"
+    },
+    {
+      "at": 29,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "// Grab the next input event.",
+      "kind": "note",
+      "text": "处理上一轮 epoll 拿到的待处理事件项。"
+    },
+    {
+      "at": 31,
+      "quote": "bool deviceChanged = false;",
+      "kind": "data",
+      "text": "本轮是否发生了设备变化。"
+    },
+    {
+      "at": 32,
+      "quote": "while (mPendingEventIndex < mPendingEventCount) {",
+      "kind": "note",
+      "text": "遍历 pending 的 epoll 事件项。"
+    },
+    {
+      "at": 33,
+      "quote": "const struct epoll_event& eventItem = mPendingEventItems[mPendingEventIndex++];",
+      "kind": "data",
+      "text": "取一项并推进索引。"
+    },
+    {
+      "at": 34,
+      "quote": "if (eventItem.data.fd == mINotifyFd) {",
+      "kind": "branch",
+      "text": "inotify fd 就绪：设备节点树有变化。"
+    },
+    {
+      "at": 35,
+      "quote": "if (eventItem.events & EPOLLIN) {",
+      "kind": "branch",
+      "text": "是可读事件。"
+    },
+    {
+      "at": 36,
+      "quote": "mPendingINotify = true;",
+      "kind": "state",
+      "text": "只是置标志，真正读取放到本轮事件处理完之后。"
+    },
+    {
+      "at": 37,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是错误的就绪类型。"
+    },
+    {
+      "at": 38,
+      "quote": "ALOGW(\"Received unexpected epoll event 0x%08x for INotify.\", eventItem.events);",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 39,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 40,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过这一项。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 inotify 分支。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "if (eventItem.data.fd == mWakeReadPipeFd) {",
+      "kind": "branch",
+      "text": "wake pipe 就绪：说明有人调了 wake() 想打断阻塞。"
+    },
+    {
+      "at": 44,
+      "quote": "if (eventItem.events & EPOLLIN) {",
+      "kind": "branch",
+      "text": "可读。"
+    },
+    {
+      "at": 45,
+      "quote": "ALOGV(\"awoken after wake()\");",
+      "kind": "note",
+      "text": "VERBOSE 日志。"
+    },
+    {
+      "at": 46,
+      "quote": "awoken = true;",
+      "kind": "state",
+      "text": "标记被唤醒，稍后会 break 出去。"
+    },
+    {
+      "at": 47,
+      "quote": "char wakeReadBuffer[16];",
+      "kind": "data",
+      "text": "读缓冲。"
+    },
+    {
+      "at": 48,
+      "quote": "ssize_t nRead;",
+      "kind": "data",
+      "text": "读取结果。"
+    },
+    {
+      "at": 49,
+      "quote": "do {",
+      "kind": "note",
+      "text": "循环读到管道空为止（EINTR 重试）。"
+    },
+    {
+      "at": 50,
+      "quote": "nRead = read(mWakeReadPipeFd, wakeReadBuffer, sizeof(wakeReadBuffer));",
+      "kind": "call",
+      "text": "真正读 wake pipe。"
+    },
+    {
+      "at": 51,
+      "quote": "} while ((nRead == -1 && errno == EINTR) || nRead == sizeof(wakeReadBuffer));",
+      "kind": "note",
+      "text": "循环条件处理 EINTR 与写满的情况。"
+    },
+    {
+      "at": 52,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则就绪类型异常。"
+    },
+    {
+      "at": 53,
+      "quote": "ALOGW(\"Received unexpected epoll event 0x%08x for wake read pipe.\",",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 54,
+      "quote": "eventItem.events);",
+      "kind": "note",
+      "text": "闭合日志参数。"
+    },
+    {
+      "at": 55,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 56,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过这一项。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 wake pipe 分支。"
+    },
+    {
+      "at": 58,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 59,
+      "quote": "Device* device = getDeviceByFdLocked(eventItem.data.fd);",
+      "kind": "call",
+      "text": "按 fd 找到对应设备。"
+    },
+    {
+      "at": 60,
+      "quote": "if (device == nullptr) {",
+      "kind": "branch",
+      "text": "fd 对应不上设备：可能是刚关闭的。"
+    },
+    {
+      "at": 61,
+      "quote": "ALOGE(\"Received unexpected epoll event 0x%08x for unknown fd %d.\", eventItem.events,",
+      "kind": "note",
+      "text": "W/E 级日志，打印事件位与 fd。"
+    },
+    {
+      "at": 62,
+      "quote": "eventItem.data.fd);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 63,
+      "quote": "ALOG_ASSERT(!DEBUG);",
+      "kind": "note",
+      "text": "DEBUG 构建下直接断言，暴露竞态。"
+    },
+    {
+      "at": 64,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭未知 fd 分支。"
+    },
+    {
+      "at": 66,
+      "quote": "if (device->videoDevice && eventItem.data.fd == device->videoDevice->getFd()) {",
+      "kind": "branch",
+      "text": "这个 fd 属于视频设备（摄像头帧）而非输入设备。"
+    },
+    {
+      "at": 67,
+      "quote": "if (eventItem.events & EPOLLIN) {",
+      "kind": "branch",
+      "text": "可读。"
+    },
+    {
+      "at": 68,
+      "quote": "size_t numFrames = device->videoDevice->readAndQueueFrames();",
+      "kind": "call",
+      "text": "读取并排队视频帧。"
+    },
+    {
+      "at": 69,
+      "quote": "if (numFrames == 0) {",
+      "kind": "branch",
+      "text": "一帧都没读到。"
+    },
+    {
+      "at": 70,
+      "quote": "ALOGE(\"Received epoll event for video device %s, but could not read frame\",",
+      "kind": "note",
+      "text": "W/E 级日志。"
+    },
+    {
+      "at": 71,
+      "quote": "device->videoDevice->getName().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 72,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 73,
+      "quote": "} else if (eventItem.events & EPOLLHUP) {",
+      "kind": "note",
+      "text": "否则是挂断。"
+    },
+    {
+      "at": 74,
+      "quote": "// TODO(b/121395353) - consider adding EPOLLRDHUP",
+      "kind": "note",
+      "text": "TODO 注：可考虑 EPOLLRDHUP。"
+    },
+    {
+      "at": 75,
+      "quote": "ALOGI(\"Removing video device %s due to epoll hang-up event.\",",
+      "kind": "note",
+      "text": "日志：移除视频设备。"
+    },
+    {
+      "at": 76,
+      "quote": "device->videoDevice->getName().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 77,
+      "quote": "unregisterVideoDeviceFromEpollLocked(*device->videoDevice);",
+      "kind": "call",
+      "text": "从 epoll 注销。"
+    },
+    {
+      "at": 78,
+      "quote": "device->videoDevice = nullptr;",
+      "kind": "state",
+      "text": "置空指针。"
+    },
+    {
+      "at": 79,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则就绪类型异常。"
+    },
+    {
+      "at": 80,
+      "quote": "ALOGW(\"Received unexpected epoll event 0x%08x for device %s.\", eventItem.events,",
+      "kind": "note",
+      "text": "W/E 级日志。"
+    },
+    {
+      "at": 81,
+      "quote": "device->videoDevice->getName().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": "ALOG_ASSERT(!DEBUG);",
+      "kind": "note",
+      "text": "DEBUG 下断言。"
+    },
+    {
+      "at": 83,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 84,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "视频设备处理完即跳过。"
+    },
+    {
+      "at": 85,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭视频设备分支。"
+    },
+    {
+      "at": 86,
+      "quote": "// This must be an input event",
+      "kind": "note",
+      "text": "注释：接下来一定是输入设备。"
+    },
+    {
+      "at": 87,
+      "quote": "if (eventItem.events & EPOLLIN) {",
+      "kind": "branch",
+      "text": "输入设备可读。"
+    },
+    {
+      "at": 88,
+      "quote": "int32_t readSize =",
+      "kind": "data",
+      "text": "读取结果。"
+    },
+    {
+      "at": 89,
+      "quote": "read(device->fd, readBuffer.data(),",
+      "kind": "call",
+      "text": "一次 read 读一批 input_event。"
+    },
+    {
+      "at": 90,
+      "quote": "sizeof(decltype(readBuffer)::value_type) * readBuffer.size());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 91,
+      "quote": "if (readSize == 0 || (readSize < 0 && errno == ENODEV)) {",
+      "kind": "branch",
+      "text": "读不到（0 或 ENODEV）：设备已被移除。"
+    },
+    {
+      "at": 92,
+      "quote": "// Device was removed before INotify noticed.",
+      "kind": "note",
+      "text": "注释：inotify 还没来得及通知。"
+    },
+    {
+      "at": 93,
+      "quote": "ALOGW(\"could not get event, removed? (fd: %d size: %\" PRId32",
+      "kind": "note",
+      "text": "W 级日志，带 fd/大小/errno。"
+    },
+    {
+      "at": 94,
+      "quote": "\" capacity: %zu errno: %d)\\n\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 95,
+      "quote": "device->fd, readSize, readBuffer.size(), errno);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 96,
+      "quote": "deviceChanged = true;",
+      "kind": "state",
+      "text": "标记设备变化。"
+    },
+    {
+      "at": 97,
+      "quote": "closeDeviceLocked(*device);",
+      "kind": "call",
+      "text": "直接关闭该设备。"
+    },
+    {
+      "at": 98,
+      "quote": "} else if (readSize < 0) {",
+      "kind": "note",
+      "text": "其他错误。"
+    },
+    {
+      "at": 99,
+      "quote": "if (errno != EAGAIN && errno != EINTR) {",
+      "kind": "branch",
+      "text": "EAGAIN/EINTR 属于正常抖动。"
+    },
+    {
+      "at": 100,
+      "quote": "ALOGW(\"could not get event (errno=%d)\", errno);",
+      "kind": "note",
+      "text": "只对真错误告警。"
+    },
+    {
+      "at": 101,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 102,
+      "quote": "} else if ((readSize % sizeof(struct input_event)) != 0) {",
+      "kind": "note",
+      "text": "读到的字节数不是 input_event 整数倍：说明协议异常。"
+    },
+    {
+      "at": 103,
+      "quote": "ALOGE(\"could not get event (wrong size: %d)\", readSize);",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 104,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "正常路径。"
+    },
+    {
+      "at": 105,
+      "quote": "const RawDeviceId deviceId = device->id == mBuiltInKeyboardId ? 0 : device->id;",
+      "kind": "data",
+      "text": "内置键盘统一映射成 deviceId=0，便于策略识别。"
+    },
+    {
+      "at": 106,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 107,
+      "quote": "const size_t count = size_t(readSize) / sizeof(struct input_event);",
+      "kind": "data",
+      "text": "本批事件个数。"
+    },
+    {
+      "at": 108,
+      "quote": "for (size_t i = 0; i < count; i++) {",
+      "kind": "note",
+      "text": "逐个摊平。"
+    },
+    {
+      "at": 109,
+      "quote": "struct input_event& iev = readBuffer[i];",
+      "kind": "data",
+      "text": "取一条原始事件。"
+    },
+    {
+      "at": 110,
+      "quote": "device->trackInputEvent(iev);",
+      "kind": "call",
+      "text": "交给设备做输入事件跟踪（用于「设备是否还在上报」判断）。"
+    },
+    {
+      "at": 111,
+      "quote": "RawEvent& ev = events.emplace_back(RawEvent{",
+      "kind": "data",
+      "text": "**关键结构**：RawEvent 在此诞生，携带 when/readTime/deviceId/type/code/value。"
+    },
+    {
+      "at": 112,
+      "quote": ".when = processEventTimestamp(iev),",
+      "kind": "data",
+      "text": "when 由 processEventTimestamp 换算（处理时钟源与钳制）。"
+    },
+    {
+      "at": 113,
+      "quote": ".readTime = systemTime(SYSTEM_TIME_MONOTONIC),",
+      "kind": "data",
+      "text": "readTime 是读到它的时刻——与 when 的差就是「读延迟」。"
+    },
+    {
+      "at": 114,
+      "quote": ".deviceId = deviceId,",
+      "kind": "data",
+      "text": "deviceId 用于后续按设备切批。"
+    },
+    {
+      "at": 115,
+      "quote": ".type = iev.type,",
+      "kind": "data",
+      "text": "evdev type。"
+    },
+    {
+      "at": 116,
+      "quote": ".code = iev.code,",
+      "kind": "data",
+      "text": "evdev code。"
+    },
+    {
+      "at": 117,
+      "quote": ".value = iev.value,",
+      "kind": "data",
+      "text": "evdev value。"
+    },
+    {
+      "at": 118,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合构造。"
+    },
+    {
+      "at": 119,
+      "quote": "if (mTracer) {",
+      "kind": "branch",
+      "text": "有 tracer 时记录原始事件。"
+    },
+    {
+      "at": 120,
+      "quote": "mTracer->traceRawEvent(ev);",
+      "kind": "call",
+      "text": "Perfetto 输入轨道的起点。"
+    },
+    {
+      "at": 121,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracer。"
+    },
+    {
+      "at": 122,
+      "quote": "const nsecs_t readDeltaNs = events.back().readTime - events.back().when;",
+      "kind": "data",
+      "text": "读延迟 = 读到时刻 − 事件时刻。"
+    },
+    {
+      "at": 123,
+      "quote": "if (readDeltaNs >= SLOW_READ_LOG_THRESHOLD_NS) {",
+      "kind": "branch",
+      "text": "读延迟超过阈值（设备卡或系统忙）。"
+    },
+    {
+      "at": 124,
+      "quote": "ALOGW(",
+      "kind": "note",
+      "text": "W 级日志：这是「输入延迟大」在源头的直接证据。"
+    },
+    {
+      "at": 125,
+      "quote": "\"Slow read detected for device '%s', eventTime: %\" PRId64 \"ns, \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 126,
+      "quote": "\"readDelta: %\" PRId64 \" ns (over the threshold of %\" PRId64",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 127,
+      "quote": "\" ms)\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 128,
+      "quote": "device->identifier.name.c_str(), events.back().when,",
+      "kind": "note",
+      "text": "设备名与时间。"
+    },
+    {
+      "at": 129,
+      "quote": "readDeltaNs, ns2ms(SLOW_READ_LOG_THRESHOLD_NS));",
+      "kind": "note",
+      "text": "阈值换算成 ms。"
+    },
+    {
+      "at": 130,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志分支。"
+    },
+    {
+      "at": 131,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭逐事件循环。"
+    },
+    {
+      "at": 132,
+      "quote": "if (events.size() >= EVENT_BUFFER_SIZE) {",
+      "kind": "branch",
+      "text": "输出缓冲满。"
+    },
+    {
+      "at": 133,
+      "quote": "// The result buffer is full.  Reset the pending event index",
+      "kind": "note",
+      "text": "注释：把 pending 索引回退一格，下次从这台设备继续读。"
+    },
+    {
+      "at": 134,
+      "quote": "// so we will try to read the device again on the next iteration.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 135,
+      "quote": "mPendingEventIndex -= 1;",
+      "kind": "call",
+      "text": "索引回退。"
+    },
+    {
+      "at": 136,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出内层循环。"
+    },
+    {
+      "at": 137,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭缓冲判断。"
+    },
+    {
+      "at": 138,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭正常读取分支。"
+    },
+    {
+      "at": 139,
+      "quote": "} else if (eventItem.events & EPOLLHUP) {",
+      "kind": "note",
+      "text": "挂断：设备被拔掉。"
+    },
+    {
+      "at": 140,
+      "quote": "ALOGI(\"Removing device %s due to epoll hang-up event.\",",
+      "kind": "note",
+      "text": "日志。"
+    },
+    {
+      "at": 141,
+      "quote": "device->identifier.name.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 142,
+      "quote": "deviceChanged = true;",
+      "kind": "state",
+      "text": "标记设备变化。"
+    },
+    {
+      "at": 143,
+      "quote": "closeDeviceLocked(*device);",
+      "kind": "call",
+      "text": "关闭设备。"
+    },
+    {
+      "at": 144,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "其他就绪类型。"
+    },
+    {
+      "at": 145,
+      "quote": "ALOGW(\"Received unexpected epoll event 0x%08x for device %s.\", eventItem.events,",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 146,
+      "quote": "device->identifier.name.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 147,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 148,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 pending 事件遍历。"
+    },
+    {
+      "at": 149,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 150,
+      "quote": "// readNotify() will modify the list of devices so this must be done after",
+      "kind": "note",
+      "text": "inotify 必须在处理完所有事件后再读：readNotify 会改设备列表。"
+    },
+    {
+      "at": 151,
+      "quote": "// processing all other events to ensure that we read all remaining events",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 152,
+      "quote": "// before closing the devices.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 153,
+      "quote": "if (mPendingINotify && mPendingEventIndex >= mPendingEventCount) {",
+      "kind": "branch",
+      "text": "有待处理的 inotify 且本轮事件已处理完。"
+    },
+    {
+      "at": 154,
+      "quote": "mPendingINotify = false;",
+      "kind": "state",
+      "text": "取走标志。"
+    },
+    {
+      "at": 155,
+      "quote": "const auto res = readNotifyLocked();",
+      "kind": "call",
+      "text": "读取 inotify，更新设备节点状态。"
+    },
+    {
+      "at": 156,
+      "quote": "if (!res.ok()) {",
+      "kind": "branch",
+      "text": "读取失败。"
+    },
+    {
+      "at": 157,
+      "quote": "ALOGW(\"Failed to read from inotify: %s\", res.error().message().c_str());",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 158,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭失败分支。"
+    },
+    {
+      "at": 159,
+      "quote": "deviceChanged = true;",
+      "kind": "state",
+      "text": "标记设备变化（下一轮重新扫描）。"
+    },
+    {
+      "at": 160,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 inotify 分支。"
+    },
+    {
+      "at": 161,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 162,
+      "quote": "// Report added or removed devices immediately.",
+      "kind": "note",
+      "text": "设备变化要立刻上报，不能继续 poll。"
+    },
+    {
+      "at": 163,
+      "quote": "if (deviceChanged) {",
+      "kind": "branch",
+      "text": "本轮有设备变化。"
+    },
+    {
+      "at": 164,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "重新进入外层循环（此时会走 handleDeviceChangesLocked）。"
+    },
+    {
+      "at": 165,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 166,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 167,
+      "quote": "// Return now if we have collected any events or if we were explicitly awoken.",
+      "kind": "note",
+      "text": "拿到事件或被唤醒就返回。"
+    },
+    {
+      "at": 168,
+      "quote": "if (!events.empty() || awoken) {",
+      "kind": "branch",
+      "text": "有事件或被 wake。"
+    },
+    {
+      "at": 169,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出外层循环。"
+    },
+    {
+      "at": 170,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 171,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 172,
+      "quote": "// Poll for events.",
+      "kind": "note",
+      "text": "接下来是真正的阻塞点。"
+    },
+    {
+      "at": 173,
+      "quote": "// When a device driver has pending (unread) events, it acquires",
+      "kind": "note",
+      "text": "注释说明 EPOLLWAKEUP 与 wakelock 的关系。"
+    },
+    {
+      "at": 174,
+      "quote": "// a kernel wake lock.  Once the last pending event has been read, the device",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 175,
+      "quote": "// driver will release the kernel wake lock, but the epoll will hold the wakelock,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 176,
+      "quote": "// since we are using EPOLLWAKEUP. The wakelock is released by the epoll when epoll_wait",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 177,
+      "quote": "// is called again for the same fd that produced the event.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 178,
+      "quote": "// Thus the system can only sleep if there are no events pending or",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 179,
+      "quote": "// currently being processed.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 180,
+      "quote": "//",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 181,
+      "quote": "// The timeout is advisory only.  If the device is asleep, it will not wake just to",
+      "kind": "note",
+      "text": "超时只是建议值：设备睡眠时不会为超时专门唤醒。"
+    },
+    {
+      "at": 182,
+      "quote": "// service the timeout.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 183,
+      "quote": "mPendingEventIndex = 0;",
+      "kind": "state",
+      "text": "重置 pending 索引，准备接收新一批 epoll 结果。"
+    },
+    {
+      "at": 184,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 185,
+      "quote": "mLock.unlock(); // release lock before poll",
+      "kind": "lock",
+      "text": "**放锁**再 poll：否则 epoll 阻塞期间全系统的输入接口都不可用。"
+    },
+    {
+      "at": 186,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 187,
+      "quote": "int pollResult = epoll_wait(mEpollFd, mPendingEventItems, EPOLL_MAX_EVENTS, timeoutMillis);",
+      "kind": "call",
+      "text": "**epoll_wait**：整个链路的阻塞点，InputReader 线程就停在这里。"
+    },
+    {
+      "at": 188,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 189,
+      "quote": "mLock.lock(); // reacquire lock after poll",
+      "kind": "lock",
+      "text": "醒来后重新加锁。"
+    },
+    {
+      "at": 190,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 191,
+      "quote": "if (pollResult == 0) {",
+      "kind": "branch",
+      "text": "超时（pollResult == 0）。"
+    },
+    {
+      "at": 192,
+      "quote": "// Timed out.",
+      "kind": "note",
+      "text": "注释：超时。"
+    },
+    {
+      "at": 193,
+      "quote": "mPendingEventCount = 0;",
+      "kind": "state",
+      "text": "清空 pending 计数。"
+    },
+    {
+      "at": 194,
+      "quote": "break;",
+      "kind": "note",
+      "text": "返回空列表，让上层处理定时任务（例如长按）。"
+    },
+    {
+      "at": 195,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭超时分支。"
+    },
+    {
+      "at": 196,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 197,
+      "quote": "if (pollResult < 0) {",
+      "kind": "branch",
+      "text": "出错。"
+    },
+    {
+      "at": 198,
+      "quote": "// An error occurred.",
+      "kind": "note",
+      "text": "注释：发生错误。"
+    },
+    {
+      "at": 199,
+      "quote": "mPendingEventCount = 0;",
+      "kind": "state",
+      "text": "清空 pending。"
+    },
+    {
+      "at": 200,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 201,
+      "quote": "// Sleep after errors to avoid locking up the system.",
+      "kind": "note",
+      "text": "出错后短暂睡眠，避免错误风暴把系统锁死。"
+    },
+    {
+      "at": 202,
+      "quote": "// Hopefully the error is transient.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 203,
+      "quote": "if (errno != EINTR) {",
+      "kind": "branch",
+      "text": "EINTR 不算错。"
+    },
+    {
+      "at": 204,
+      "quote": "ALOGW(\"poll failed (errno=%d)\\n\", errno);",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 205,
+      "quote": "usleep(100000);",
+      "kind": "call",
+      "text": "睡 100ms。"
+    },
+    {
+      "at": 206,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 errno 判断。"
+    },
+    {
+      "at": 207,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则有事件。"
+    },
+    {
+      "at": 208,
+      "quote": "// Some events occurred.",
+      "kind": "note",
+      "text": "注释：有事件发生。"
+    },
+    {
+      "at": 209,
+      "quote": "mPendingEventCount = size_t(pollResult);",
+      "kind": "state",
+      "text": "记录本轮拿到的 epoll 事件数量。"
+    },
+    {
+      "at": 210,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 211,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外层 for(;;)。"
+    },
+    {
+      "at": 212,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 213,
+      "quote": "// All done, return the number of events we read.",
+      "kind": "note",
+      "text": "注释：全部完成，返回读到的 RawEvent。"
+    },
+    {
+      "at": 214,
+      "quote": "return events;",
+      "kind": "note",
+      "text": "返回给 InputReader::loopOnce。"
+    },
+    {
+      "at": 215,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

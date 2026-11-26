@@ -1,0 +1,55 @@
+{
+  "step": "s21",
+  "title": "分支：加窗口失败",
+  "tldr": "ADD_BAD_APP_TOKEN、ADD_BAD_SUBWINDOW_TOKEN、ADD_DUPLICATE_ADD、ADD_INVALID_TYPE 含义各不相同。",
+  "why": "客户端看到的是 BadTokenException 这类统一异常，但底层原因差别很大。最常见的三个：token 已失效（Activity 已销毁还在加窗）、子窗口 token 与父不一致（Popup 挂错父窗口）、重复添加（同一 client 加了两次）。能把 ADD_* 与现象对上，排查效率会高一个数量级。",
+  "concepts": [
+    {
+      "term": "ADD_BAD_APP_TOKEN",
+      "text": "token 不是有效的宿主。"
+    },
+    {
+      "term": "ADD_BAD_SUBWINDOW_TOKEN",
+      "text": "子窗口的 token 不是父窗口。"
+    },
+    {
+      "term": "ADD_APP_EXITING",
+      "text": "应用正在退出。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "return WindowManagerGlobal.ADD_BAD_SUBWINDOW_TOKEN;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1705",
+      "what": "父窗口找不到。"
+    },
+    {
+      "call": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1721",
+      "what": "无特权建 token。"
+    },
+    {
+      "call": "return WindowManagerGlobal.ADD_DUPLICATE_ADD;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1739",
+      "what": "重复添加。"
+    }
+  ],
+  "state": [
+    {
+      "field": "无窗口",
+      "before": "—",
+      "after": "—",
+      "note": "失败路径不产生副作用。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "把所有 BadTokenException 当一个原因。",
+    "在 Activity 销毁后仍尝试加窗。"
+  ],
+  "debug": [
+    "ProtoLog WM_ERROR 有精确原因。",
+    "dumpsys window tokens 看 token 是否还存在。"
+  ],
+  "next": "布局为什么重复？见第 22 步。"
+}

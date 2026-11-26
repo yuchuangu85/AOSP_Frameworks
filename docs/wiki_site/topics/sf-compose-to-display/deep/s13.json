@@ -1,0 +1,34 @@
+{
+  "step": "s13",
+  "title": "HWComposer::getDeviceCompositionChanges",
+  "tldr": "能跳过 validate 时用 presentOrValidate 一步到位，否则 validate 后取回 changedTypes/requests 并 accept。",
+  "why": "这是 SF 与 vendor HAL 之间唯一一次「双向协商」。它既要拿到「哪些层必须改成 CLIENT」的结论，也要把「我接受这些变更」明确回告 HAL——不调 acceptChanges，下一轮 validate 会重复返回同一批变更，形成无谓的 HAL 往返。快路径 presentOrValidate 是 composer3 的优化：在确定不会提前上屏时把 validate 与 present 合并，省掉一次往返，但一旦它只完成了 validate（state==0），后续仍要正常 present。理解这个状态机，才能读懂那些「有 present 却没有 validate」的 trace。",
+  "concepts": [
+    { "term": "canSkipValidate", "text": "无 client 合成 + 不会提前上屏时，可以用 presentOrValidate 合并调用。" },
+    { "term": "presentOrValidate", "text": "composer3 的合并 API；state==1 表示 present 已成功。" },
+    { "term": "validateWasSkipped", "text": "标记「present 已完成」，让后续 presentAndGetReleaseFences 不再 present 一次。" },
+    { "term": "acceptChanges", "text": "告诉 HAL 这些变更已应用，作为下一轮基线。" }
+  ],
+  "walk": [
+    { "call": "status_t HWComposer::getDeviceCompositionChanges(", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:537", "what": "入口。" },
+    { "call": "const bool canSkipValidate = [&] {", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:562", "what": "三条件判断能否走快路径。" },
+    { "call": "error = hwcDisplay->presentOrValidate(expectedPresentTime, frameInterval.getPeriodNsecs(),", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:584", "what": "合并调用。" },
+    { "call": "if (state == 1) { // Present Succeeded.", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:589", "what": "已 present：取 fence 并标记跳过后续 present。" },
+    { "call": "error = hwcDisplay->validate(expectedPresentTime, frameInterval.getPeriodNsecs(), &numTypes,", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:600", "what": "慢路径：纯 validate。" },
+    { "call": "error = hwcDisplay->acceptChanges();", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:631", "what": "接受变更。" }
+  ],
+  "state": [
+    { "field": "displayData.validateWasSkipped", "before": "上一拍的值", "after": "true（快路径成功时）", "note": "决定 present 阶段是否还要真的 present。" },
+    { "field": "displayData.releaseFences", "before": "上一拍", "after": "快路径时本拍直接拿到", "note": "慢路径由 present 阶段填。" }
+  ],
+  "threads": "SF 主线程或 HwcAsyncWorker；HAL 调用本身可能阻塞。",
+  "pitfalls": [
+    "以为 validate 一定发生：无 client 合成时会走 presentOrValidate。",
+    "漏调 acceptChanges：HAL 会重复返回同一批变更。"
+  ],
+  "debug": [
+    "trace 里看 validate 与 presentOrValidate 两个切片是否存在。",
+    "HAL 版本与能力可用 dumpsys SurfaceFlinger 查看。"
+  ],
+  "next": "判定为 DEVICE 之后，buffer 怎么交到 HWC？见第 14 步。"
+}

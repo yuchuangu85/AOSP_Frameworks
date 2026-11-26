@@ -1,0 +1,71 @@
+{
+  "step": "s15",
+  "title": "applyTransactionState：写 drawing state",
+  "tldr": "登记回调、逐层 updateLayerCallbacksAndStats、累加 input 命令与 uncache、按 flags 决定是否需要 traversal。",
+  "why": "这是「事务变成状态」的落点。它不直接改 Layer 对象，而是调用 updateLayerCallbacksAndStats 把 layer_state_t 交给 LayerLifecycleManager 推进状态机——这与快照机制配套：主线程写请求状态，快照层在 commit 时拍快照。另一个细节是空动画事务也会强制触发一次 traversal：这不是 bug，而是刻意保留的「背压模拟」手段。",
+  "concepts": [
+    {
+      "term": "updateLayerCallbacksAndStats",
+      "text": "逐层写状态并登记回调与统计。"
+    },
+    {
+      "term": "addEmptyTransaction",
+      "text": "给没有 surface 的 listener 建空事务，保证回调。"
+    },
+    {
+      "term": "eTraversalNeeded",
+      "text": "需要本帧重新遍历层树。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool SurfaceFlinger::applyTransactionState(",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5757",
+      "what": "入口，调用方持锁。"
+    },
+    {
+      "call": "mTransactionCallbackInvoker.addEmptyTransaction(listener);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5770",
+      "what": "无 surface 的 listener。"
+    },
+    {
+      "call": "clientStateFlags |=",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5774",
+      "what": "逐层应用并累加标志。"
+    },
+    {
+      "call": "updateLayerCallbacksAndStats(frameTimelineInfo, resolvedState, desiredPresentTime,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5775",
+      "what": "**核心**：写状态。"
+    },
+    {
+      "call": "transactionFlags = eTransactionNeeded;",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5791",
+      "what": "空动画事务强制遍历。"
+    }
+  ],
+  "state": [
+    {
+      "field": "LayerLifecycleManager 的请求状态",
+      "before": "上一拍",
+      "after": "本事务的值",
+      "note": "随后被快照层消费。"
+    },
+    {
+      "field": "SF 事务标志",
+      "before": "旧标志",
+      "after": "并入本事务的标志",
+      "note": "决定是否 traversal。"
+    }
+  ],
+  "threads": "SF 主线程，持 mStateLock。",
+  "pitfalls": [
+    "以为它直接改 layer 的可见状态：先改请求状态，commit 才拍快照。",
+    "把空动画事务的强制 traversal 当浪费：它是刻意设计。"
+  ],
+  "debug": [
+    "trace 里 updateLayerCallbacksAndStats 的子切片。",
+    "dumpsys SurfaceFlinger 能看到每层的请求状态。"
+  ],
+  "next": "display 事务走哪条路？见第 16 步。"
+}

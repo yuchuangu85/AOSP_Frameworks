@@ -1,0 +1,55 @@
+{
+  "step": "s20",
+  "title": "分支：重复唤醒与迟到",
+  "tldr": "新目标比已武装目标晚太多就保留旧目标；定时器即将触发时改为登记 pending workload。",
+  "why": "这两个分支都是为了「不折腾定时器」。第一条防止同一拍被反复武装成不同时间（会导致唤醒点抖动）；第二条更微妙：如果 timer 马上就要触发，取消并重设反而可能错过窗口，所以把这次更新攒起来交给即将执行的这次回调合并。这类「避免与正在运行的东西抢时序」的写法，是高精度定时器代码的通用模式。",
+  "concepts": [
+    {
+      "term": "mMinVsyncDistance",
+      "text": "判定「算不算同一拍」的距离。"
+    },
+    {
+      "term": "addPendingWorkloadUpdate",
+      "text": "把更新推迟到本次回调里合并。"
+    },
+    {
+      "term": "rearmImminent",
+      "text": "定时器是否即将触发。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "auto const rearmImminent = now > mIntendedWakeupTime;",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:425",
+      "what": "判断是否即将触发。"
+    },
+    {
+      "call": "return callback->addPendingWorkloadUpdate(*mTracker, now, scheduleTiming);",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:427",
+      "what": "登记 pending workload。"
+    },
+    {
+      "call": "if (callback->wakeupTime() < mIntendedWakeupTime - mTimerSlack) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:432",
+      "what": "只有更早才重新武装。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mIntendedWakeupTime",
+      "before": "旧目标",
+      "after": "更早的目标或无变化",
+      "note": "不会为更晚的目标重设。"
+    }
+  ],
+  "threads": "注册方线程，持队列锁。",
+  "pitfalls": [
+    "频繁调度导致重复武装。",
+    "忽略 pending workload：更新会延迟到下次回调。"
+  ],
+  "debug": [
+    "trace 里 wouldSkip* 与 pending workload 相关打点。",
+    "TimerDispatch 线程唤醒频率。"
+  ],
+  "next": "Choreographer 什么时候会跳帧？见第 21 步。"
+}

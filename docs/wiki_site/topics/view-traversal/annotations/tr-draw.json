@@ -1,0 +1,210 @@
+{
+  "id": "tr-draw",
+  "title": "ThreadedRenderer::draw",
+  "file": "base/core/java/android/view/ThreadedRenderer.java",
+  "sig": "void draw(View view, AttachInfo attachInfo",
+  "span": [
+    827,
+    859
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks) {",
+      "kind": "note",
+      "text": "硬件渲染门面：先录制，再交棒。两个动作之间没有等待，UI 线程的阻塞发生在 syncAndDrawFrame 内部。"
+    },
+    {
+      "at": 2,
+      "quote": "attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();",
+      "kind": "trace",
+      "text": "给本帧的 FrameInfo 打开始点，后续 DrawFrames 与 Choreographer 的 vsyncId 可以对齐。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行，逻辑分界。"
+    },
+    {
+      "at": 4,
+      "quote": "updateRootDisplayList(view, callbacks);",
+      "kind": "call",
+      "text": "第一步：把脏子树的绘制调用录成 display list，写进各 RenderNode 的 staging 槽。此刻 RT 还看不见。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "// register animating rendernodes which started animating prior to renderer",
+      "kind": "note",
+      "text": "处理「渲染器还不存在时就开始的动画」。"
+    },
+    {
+      "at": 7,
+      "quote": "// creation, which is typical for animators started prior to first draw",
+      "kind": "note",
+      "text": "典型场景：首帧之前启动的 ViewPropertyAnimator。"
+    },
+    {
+      "at": 8,
+      "quote": "if (attachInfo.mPendingAnimatingRenderNodes != null) {",
+      "kind": "branch",
+      "text": "有挂起的动画节点才处理。"
+    },
+    {
+      "at": 9,
+      "quote": "final int count = attachInfo.mPendingAnimatingRenderNodes.size();",
+      "kind": "data",
+      "text": "取快照数量，避免遍历期间被改。"
+    },
+    {
+      "at": 10,
+      "quote": "for (int i = 0; i < count; i++) {",
+      "kind": "note",
+      "text": "逐个注册。"
+    },
+    {
+      "at": 11,
+      "quote": "registerAnimatingRenderNode(",
+      "kind": "call",
+      "text": "把节点交给 RT 的动画驱动，让它在下一帧继续推进，而不是等 Java 侧再触发。"
+    },
+    {
+      "at": 12,
+      "quote": "attachInfo.mPendingAnimatingRenderNodes.get(i));",
+      "kind": "data",
+      "text": "被注册的节点。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 14,
+      "quote": "attachInfo.mPendingAnimatingRenderNodes.clear();",
+      "kind": "call",
+      "text": "清空列表：同一节点只需要注册一次。"
+    },
+    {
+      "at": 15,
+      "quote": "// We don't need this anymore as subsequent calls to",
+      "kind": "note",
+      "text": "之后新启动的动画会直接走 attachRenderNodeAnimator 一路。"
+    },
+    {
+      "at": 16,
+      "quote": "// ViewRootImpl#attachRenderNodeAnimator will go directly to us.",
+      "kind": "note",
+      "text": "不再需要 mPendingAnimatingRenderNodes 这个中转站。"
+    },
+    {
+      "at": 17,
+      "quote": "attachInfo.mPendingAnimatingRenderNodes = null;",
+      "kind": "state",
+      "text": "置 null 明确表达「这条路径关闭」，也让 performDraw 里那段悬空动画清理变成 no-op。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭挂起动画处理。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 20,
+      "quote": "final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();",
+      "kind": "data",
+      "text": "取本帧 FrameInfo：vsyncId、frameDeadline、intendedVsync 等都在里面，随后以 long[] 形式过 JNI。"
+    },
+    {
+      "at": 21,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 22,
+      "quote": "int syncResult = syncAndDrawFrame(frameInfo);",
+      "kind": "call",
+      "text": "第二步：交棒。这是同步调用——返回时 RT 的 sync 阶段已做完、UI 线程已被放行，但绘制与 swap 还没有。"
+    },
+    {
+      "at": 23,
+      "quote": "if ((syncResult & SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {",
+      "kind": "branch",
+      "text": "RT 报告 surface 丢了：此时继续画没有意义。"
+    },
+    {
+      "at": 24,
+      "quote": "Log.w(\"HWUI\", \"Surface lost, forcing relayout\");",
+      "kind": "note",
+      "text": "W 级日志；现场看到它基本等于「窗口正在被销毁或重建」。"
+    },
+    {
+      "at": 25,
+      "quote": "// We lost our surface. For a relayout next frame which should give us a new",
+      "kind": "note",
+      "text": "策略：下一帧强制 relayout，向 WM 要一个新 surface。"
+    },
+    {
+      "at": 26,
+      "quote": "// surface from WindowManager, which hopefully will work.",
+      "kind": "note",
+      "text": "注释里的 hopefully 说明这条路依赖后续窗口流程成功。"
+    },
+    {
+      "at": 27,
+      "quote": "attachInfo.mViewRootImpl.mForceNextWindowRelayout = true;",
+      "kind": "state",
+      "text": "置强制 relayout 标志，下一次 performTraversals 一定会走窗口重排。"
+    },
+    {
+      "at": 28,
+      "quote": "attachInfo.mViewRootImpl.requestLayout();",
+      "kind": "call",
+      "text": "同时主动 requestLayout，保证「下一次」真的会发生，而不是等外部事件撞醒。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭丢 surface 分支。"
+    },
+    {
+      "at": 30,
+      "quote": "if ((syncResult & SYNC_REDRAW_REQUESTED) != 0) {",
+      "kind": "branch",
+      "text": "RT 主动要求重画（例如它检测到内容需要下一帧补画）。"
+    },
+    {
+      "at": 31,
+      "quote": "attachInfo.mViewRootImpl.invalidate();",
+      "kind": "call",
+      "text": "用 invalidate 而不是 requestLayout：只要求重画，不需要重新测量布局。"
+    },
+    {
+      "at": 32,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭重画分支。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意全程没有等绘制完成——「绘制完成」在 UI 视角等于「录制完成 + RT 同步完成」。"
+    }
+  ]
+}

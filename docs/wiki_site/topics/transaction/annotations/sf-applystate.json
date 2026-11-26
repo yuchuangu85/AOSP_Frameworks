@@ -1,0 +1,324 @@
+{
+  "id": "sf-applystate",
+  "title": "SurfaceFlinger::applyTransactionState",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "bool SurfaceFlinger::applyTransactionState(",
+  "span": [
+    5757,
+    5808
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool SurfaceFlinger::applyTransactionState(",
+      "kind": "note",
+      "text": "一笔事务真正落地的地方。它把 layer_state_t 交给 LayerLifecycleManager 推进状态机，而不是直接改 Layer 对象。"
+    },
+    {
+      "at": 2,
+      "quote": "const FrameTimelineInfo& frameTimelineInfo, std::vector<ResolvedComposerState>& states,",
+      "kind": "note",
+      "text": "续行：states 与 displays。"
+    },
+    {
+      "at": 3,
+      "quote": "std::vector<DisplayState>& displays, uint32_t flags,",
+      "kind": "note",
+      "text": "续行：flags。"
+    },
+    {
+      "at": 4,
+      "quote": "const InputWindowCommands& inputWindowCommands, const int64_t desiredPresentTime,",
+      "kind": "note",
+      "text": "续行：input window commands 与期望上屏时间。"
+    },
+    {
+      "at": 5,
+      "quote": "bool isAutoTimestamp, const std::vector<uint64_t>& uncacheBufferIds, const int64_t postTime,",
+      "kind": "note",
+      "text": "续行：时间戳语义与待回收 buffer。"
+    },
+    {
+      "at": 6,
+      "quote": "bool hasListenerCallbacks, const std::vector<ListenerCallbacks>& listenerCallbacks,",
+      "kind": "note",
+      "text": "续行：回调与来源身份。"
+    },
+    {
+      "at": 7,
+      "quote": "int originPid, int originUid, uint64_t transactionId) REQUIRES(mStateLock) {",
+      "kind": "note",
+      "text": "续行：REQUIRES(mStateLock) 说明调用方必须持锁。"
+    },
+    {
+      "at": 8,
+      "quote": "uint32_t transactionFlags = 0;",
+      "kind": "data",
+      "text": "本事务要置的 SF 事务标志。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "// start and end registration for listeners w/ no surface so they can get their callback.  Note",
+      "kind": "note",
+      "text": "注释：没有 surface 的 listener 要在这里注册，否则收不到回调。"
+    },
+    {
+      "at": 11,
+      "quote": "// that listeners with SurfaceControls will start registration during setClientStateLocked",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 12,
+      "quote": "// below.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 13,
+      "quote": "for (const auto& listener : listenerCallbacks) {",
+      "kind": "note",
+      "text": "遍历 listener。"
+    },
+    {
+      "at": 14,
+      "quote": "mTransactionCallbackInvoker.addEmptyTransaction(listener);",
+      "kind": "call",
+      "text": "登记空事务，保证本批一定有回调。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 16,
+      "quote": "uint32_t clientStateFlags = 0;",
+      "kind": "data",
+      "text": "本批 layer 状态产生的标志。"
+    },
+    {
+      "at": 17,
+      "quote": "for (auto& resolvedState : states) {",
+      "kind": "note",
+      "text": "逐层应用。"
+    },
+    {
+      "at": 18,
+      "quote": "clientStateFlags |=",
+      "kind": "call",
+      "text": "累加标志。"
+    },
+    {
+      "at": 19,
+      "quote": "updateLayerCallbacksAndStats(frameTimelineInfo, resolvedState, desiredPresentTime,",
+      "kind": "call",
+      "text": "**核心**：写状态、统计、回调登记都在这里。"
+    },
+    {
+      "at": 20,
+      "quote": "isAutoTimestamp, postTime, transactionId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "transactionFlags |= clientStateFlags;",
+      "kind": "state",
+      "text": "合并层标志。"
+    },
+    {
+      "at": 24,
+      "quote": "transactionFlags |= addInputWindowCommands(inputWindowCommands);",
+      "kind": "call",
+      "text": "把 input window commands 交给 input（非特权会被清空）。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "for (uint64_t uncacheBufferId : uncacheBufferIds) {",
+      "kind": "note",
+      "text": "遍历待丢弃的 buffer 缓存 id。"
+    },
+    {
+      "at": 27,
+      "quote": "mBufferIdsToUncache.push_back(uncacheBufferId);",
+      "kind": "call",
+      "text": "排队统一 uncache。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 29,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "// If a synchronous transaction is explicitly requested without any changes, force a transaction",
+      "kind": "note",
+      "text": "注释：空动画事务也要强制走一次遍历，可用作背压模拟。"
+    },
+    {
+      "at": 31,
+      "quote": "// anyway. This can be used as a flush mechanism for previous async transactions.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 32,
+      "quote": "// Empty animation transaction can be used to simulate back-pressure, so also force a",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 33,
+      "quote": "// transaction for empty animation transactions.",
+      "kind": "branch",
+      "text": "没有标志但是动画事务。"
+    },
+    {
+      "at": 34,
+      "quote": "if (transactionFlags == 0 && (flags & eAnimation)) {",
+      "kind": "state",
+      "text": "强制置 eTransactionNeeded。"
+    },
+    {
+      "at": 35,
+      "quote": "transactionFlags = eTransactionNeeded;",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "data",
+      "text": "是否需要本帧 traversal。"
+    },
+    {
+      "at": 38,
+      "quote": "bool needsTraversal = false;",
+      "kind": "branch",
+      "text": "有标志要处理。"
+    },
+    {
+      "at": 39,
+      "quote": "if (transactionFlags) {",
+      "kind": "note",
+      "text": "注释：马上要 traversal，先清位避免多一次唤醒。"
+    },
+    {
+      "at": 40,
+      "quote": "// We are on the main thread, we are about to perform a traversal. Clear the traversal bit",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "// so we don't have to wake up again next frame to perform an unnecessary traversal.",
+      "kind": "branch",
+      "text": "需要 traversal。"
+    },
+    {
+      "at": 42,
+      "quote": "if (transactionFlags & eTraversalNeeded) {",
+      "kind": "state",
+      "text": "清位。"
+    },
+    {
+      "at": 43,
+      "quote": "transactionFlags = transactionFlags & (~eTraversalNeeded);",
+      "kind": "state",
+      "text": "记录需要 traversal。"
+    },
+    {
+      "at": 44,
+      "quote": "needsTraversal = true;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 45,
+      "quote": "}",
+      "kind": "branch",
+      "text": "还有其它标志。"
+    },
+    {
+      "at": 46,
+      "quote": "if (transactionFlags) {",
+      "kind": "call",
+      "text": "交给通用事务标志机制。"
+    },
+    {
+      "at": 47,
+      "quote": "setTransactionFlags(transactionFlags);",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 48,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外层判断。"
+    },
+    {
+      "at": 49,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "返回是否需要 traversal。"
+    },
+    {
+      "at": 51,
+      "quote": "return needsTraversal;",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "（EOF 行）"
+    }
+  ]
+}

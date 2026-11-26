@@ -1,0 +1,61 @@
+{
+  "step": "s08",
+  "title": "setVsyncConfig：把时长下发两条线",
+  "tldr": "app 线拿到 (appWorkDuration, sfWorkDuration)，sf 线只拿到 sfWorkDuration；相位差由此产生。",
+  "why": "这五行是整个相位机制的执行点。注意 app 线的 readyDuration 用的是 sfWorkDuration，而不是 0——这正是「app 的 deadline 等于 sf 的唤醒点」的来源，也是 FrameTimeline 里 deadline 的计算依据。如果有人把两行的参数写反或写成同一个值，app 与 sf 会同时唤醒，画面就会出现「app 还在画，SF 已经要合成了」的竞态。",
+  "concepts": [
+    {
+      "term": "setDuration(work, ready)",
+      "text": "app 侧注册的时长。"
+    },
+    {
+      "term": "setDuration 单参数",
+      "text": "sf 线只给 workDuration，readyDuration 取默认值。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void Scheduler::setVsyncConfig(const VsyncConfig& config) {",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:802",
+      "what": "入口。"
+    },
+    {
+      "call": "setDuration(/* workDuration */ config.appWorkDuration,",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:803",
+      "what": "app 线（两个参数）。"
+    },
+    {
+      "call": "setDuration(config.sfWorkDuration);",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:805",
+      "what": "sf 线（单参数）。"
+    },
+    {
+      "call": "void EventThread::setDuration(std::chrono::nanoseconds workDuration,",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:353",
+      "what": "落到 EventThread。"
+    },
+    {
+      "call": "void MessageQueue::setDuration(std::chrono::nanoseconds workDuration) {",
+      "ref": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp:138",
+      "what": "落到 MessageQueue。"
+    }
+  ],
+  "state": [
+    {
+      "field": "两条注册的 workDuration",
+      "before": "旧值",
+      "after": "新值",
+      "note": "update 会立刻重算已武装时间。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "把 app 的 readyDuration 写成 0：deadline 语义会错。",
+    "两条线用同一个值：相位塌陷，app 与 sf 同时唤醒。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --vsync 打印每条的 work/ready。",
+    "trace 里 VSYNC-app 与 VSYNC-sf 的时间差。"
+  ],
+  "next": "三套配置何时切换？见第 9 步。"
+}

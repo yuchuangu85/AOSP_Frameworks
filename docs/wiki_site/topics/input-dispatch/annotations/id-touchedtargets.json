@@ -1,0 +1,2544 @@
+{
+  "id": "id-touchedtargets",
+  "title": "DispatcherTouchState::findTouchedWindowTargets",
+  "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+  "sig": "InputDispatcher::DispatcherTouchState::findTouchedWindowTargets(",
+  "span": [
+    2534,
+    2955
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "InputDispatcher::DispatcherTouchState::findTouchedWindowTargets(",
+      "kind": "note",
+      "text": "触摸/指针事件的命中测试总入口，422 行，是 SF 之外最长的输入函数之一。它既是「决策」也是「状态更新」，两件事必须一起看。"
+    },
+    {
+      "at": 2,
+      "quote": "nsecs_t currentTime, const MotionEntry& entry,",
+      "kind": "note",
+      "text": "参数：当前时间、事件本体、拖拽窗口、两个回调（加拖拽事件、dump 状态）。"
+    },
+    {
+      "at": 3,
+      "quote": "const sp<android::gui::WindowInfoHandle> dragWindow,",
+      "kind": "note",
+      "text": "dragWindow：若该指针正在拖拽，则目标被钉在拖拽窗口上。"
+    },
+    {
+      "at": 4,
+      "quote": "std::function<void(const MotionEntry&)> addDragEvent, std::function<void()> dump) {",
+      "kind": "note",
+      "text": "addDragEvent / dump 是回调，保持本函数无副作用边界。"
+    },
+    {
+      "at": 5,
+      "quote": "ATRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片，名字就是 findTouchedWindowTargets。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "std::vector<InputTarget> targets;",
+      "kind": "data",
+      "text": "本事件要投递的目标列表。"
+    },
+    {
+      "at": 8,
+      "quote": "// For security reasons, we defer updating the touch state until we are sure that",
+      "kind": "data",
+      "text": "注释点明安全考量：**先确认允许注入，再更新 touchState**，避免被拒绝的事件污染状态。"
+    },
+    {
+      "at": 9,
+      "quote": "// event injection will be allowed.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "const ui::LogicalDisplayId displayId = entry.displayId;",
+      "kind": "data",
+      "text": "按显示分别维护触摸状态。"
+    },
+    {
+      "at": 11,
+      "quote": "const int32_t action = entry.action;",
+      "kind": "data",
+      "text": "原始 action（含 pointer index）。"
+    },
+    {
+      "at": 12,
+      "quote": "const int32_t maskedAction = MotionEvent::getActionMasked(action);",
+      "kind": "data",
+      "text": "maskedAction（去掉 index，只剩 DOWN/MOVE/UP 等）。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "// Copy current touch state into tempTouchState.",
+      "kind": "note",
+      "text": "注释：把当前 touchState 拷成临时副本。"
+    },
+    {
+      "at": 15,
+      "quote": "// This state will be used to update saved touch state at the end of this function.",
+      "kind": "note",
+      "text": "续行：函数末尾才写回，中途任何失败都不会留下半成品状态。"
+    },
+    {
+      "at": 16,
+      "quote": "// If no state for the specified display exists, then our initial state will be empty.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "const TouchState* oldState = getTouchStateForMotionEntry(entry);",
+      "kind": "call",
+      "text": "取该事件对应设备的触摸状态。"
+    },
+    {
+      "at": 18,
+      "quote": "TouchState tempTouchState;",
+      "kind": "data",
+      "text": "临时状态。"
+    },
+    {
+      "at": 19,
+      "quote": "if (oldState != nullptr) {",
+      "kind": "branch",
+      "text": "之前有状态。"
+    },
+    {
+      "at": 20,
+      "quote": "tempTouchState = *oldState;",
+      "kind": "data",
+      "text": "**整体拷贝**——这是后面所有修改的安全基点。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "const bool isSplit = shouldSplitTouch(entry.source);",
+      "kind": "call",
+      "text": "判断该 source 是否支持多指分裂（split touch）。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "const bool isHoverAction = (maskedAction == AMOTION_EVENT_ACTION_HOVER_MOVE ||",
+      "kind": "decision",
+      "text": "是否是 hover（悬停）动作。"
+    },
+    {
+      "at": 26,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_HOVER_ENTER ||",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_HOVER_EXIT);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 28,
+      "quote": "// A DOWN could be generated from POINTER_DOWN if the initial pointers did not land into any",
+      "kind": "note",
+      "text": "注释：POINTER_DOWN 在某些情况下等效于 DOWN。"
+    },
+    {
+      "at": 29,
+      "quote": "// touchable windows.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "const bool wasDown = oldState != nullptr && oldState->isDown(entry.deviceId);",
+      "kind": "decision",
+      "text": "之前是否已经按下。"
+    },
+    {
+      "at": 31,
+      "quote": "const bool isDown = (maskedAction == AMOTION_EVENT_ACTION_DOWN) ||",
+      "kind": "decision",
+      "text": "本次是否是「真正的手势开始」。"
+    },
+    {
+      "at": 32,
+      "quote": "(maskedAction == AMOTION_EVENT_ACTION_POINTER_DOWN && !wasDown);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 33,
+      "quote": "const bool newGesture = isDown || maskedAction == AMOTION_EVENT_ACTION_SCROLL ||",
+      "kind": "decision",
+      "text": "新手势：DOWN/SCROLL/HOVER_ENTER/HOVER_MOVE。"
+    },
+    {
+      "at": 34,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_HOVER_ENTER ||",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 35,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_HOVER_MOVE;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "if (isDown && tempTouchState.hasHoveringPointers(entry.deviceId)) {",
+      "kind": "branch",
+      "text": "按下时还有悬停指针：兼容行为。"
+    },
+    {
+      "at": 38,
+      "quote": "// Compatibility behaviour: ACTION_DOWN causes HOVER_EXIT to get generated.",
+      "kind": "note",
+      "text": "注释：DOWN 会导致 HOVER_EXIT 被生成。"
+    },
+    {
+      "at": 39,
+      "quote": "tempTouchState.clearHoveringPointers(entry.deviceId);",
+      "kind": "call",
+      "text": "清掉悬停指针，避免同一指针既悬停又按下。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 42,
+      "quote": "if (isHoverAction) {",
+      "kind": "branch",
+      "text": "是 hover 动作。"
+    },
+    {
+      "at": 43,
+      "quote": "if (wasDown) {",
+      "kind": "branch",
+      "text": "但设备已经按下。"
+    },
+    {
+      "at": 44,
+      "quote": "// Started hovering, but the device is already down: reject the hover event",
+      "kind": "note",
+      "text": "注释：拒绝这种矛盾的 hover。"
+    },
+    {
+      "at": 45,
+      "quote": "LOG(ERROR) << \"Got hover event \" << entry.getDescription()",
+      "kind": "note",
+      "text": "ERROR 日志带状态。"
+    },
+    {
+      "at": 46,
+      "quote": "<< \" but the device is already down \" << oldState->dump();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 47,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "**直接 FAILED**：矛盾事件不投递。"
+    },
+    {
+      "at": 48,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭内层判断。"
+    },
+    {
+      "at": 49,
+      "quote": "// For hover actions, we will treat 'tempTouchState' as a new state, so let's erase",
+      "kind": "note",
+      "text": "注释：hover 当作全新状态重算。"
+    },
+    {
+      "at": 50,
+      "quote": "// all of the existing hovering pointers and recompute.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 51,
+      "quote": "tempTouchState.clearHoveringPointers(entry.deviceId);",
+      "kind": "call",
+      "text": "清空该设备的悬停指针。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hover 分支。"
+    },
+    {
+      "at": 53,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 54,
+      "quote": "if (newGesture || (isSplit && maskedAction == AMOTION_EVENT_ACTION_POINTER_DOWN)) {",
+      "kind": "decision",
+      "text": "**Case 1**：新手势（分裂指针按下 / hover / scroll）。"
+    },
+    {
+      "at": 55,
+      "quote": "/* Case 1: New splittable pointer going down, or need target for hover or scroll. */",
+      "kind": "note",
+      "text": "注释：这一分支负责「找新目标」。"
+    },
+    {
+      "at": 56,
+      "quote": "const auto [x, y] = resolveTouchedPosition(entry);",
+      "kind": "call",
+      "text": "解析触摸坐标（可能涉及显示变换）。"
+    },
+    {
+      "at": 57,
+      "quote": "const int32_t pointerIndex = MotionEvent::getActionIndex(action);",
+      "kind": "data",
+      "text": "取触发本次 action 的指针索引。"
+    },
+    {
+      "at": 58,
+      "quote": "const PointerProperties& pointer = entry.pointerProperties[pointerIndex];",
+      "kind": "data",
+      "text": "该指针的属性（含 id）。"
+    },
+    {
+      "at": 59,
+      "quote": "// Outside targets should be added upon first dispatched DOWN event. That means, this should",
+      "kind": "note",
+      "text": "注释：outside target 只在第一个 DOWN 时添加。"
+    },
+    {
+      "at": 60,
+      "quote": "// be a pointer that would generate ACTION_DOWN, *and* touch should not already be down.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 61,
+      "quote": "const bool isStylus = isPointerFromStylus(entry, pointerIndex);",
+      "kind": "call",
+      "text": "是否来自手写笔（影响命中优先级）。"
+    },
+    {
+      "at": 62,
+      "quote": "sp<WindowInfoHandle> newTouchedWindowHandle =",
+      "kind": "data",
+      "text": "**命中测试**：按 z-order 找 (x,y) 处的窗口。"
+    },
+    {
+      "at": 63,
+      "quote": "mWindowInfos.findTouchedWindowAt(displayId, x, y, isStylus);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 64,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 65,
+      "quote": "if (isDown) {",
+      "kind": "branch",
+      "text": "真正的 DOWN：还要处理「窗口外」目标。"
+    },
+    {
+      "at": 66,
+      "quote": "targets += findOutsideTargets(displayId, newTouchedWindowHandle, pointer.id, dump);",
+      "kind": "call",
+      "text": "把关注 outside 触摸的窗口加入目标（可拿到 ACTION_OUTSIDE）。"
+    },
+    {
+      "at": 67,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 68,
+      "quote": "LOG_IF(INFO, newTouchedWindowHandle == nullptr)",
+      "kind": "branch",
+      "text": "没命中任何窗口时打 INFO。"
+    },
+    {
+      "at": 69,
+      "quote": "<< \"No new touched window at (\" << std::format(\"{:.1f}, {:.1f}\", x, y)",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 70,
+      "quote": "<< \") in display \" << displayId;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 71,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭日志分支。"
+    },
+    {
+      "at": 72,
+      "quote": "// Verify targeted injection.",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 73,
+      "quote": "if (const auto err = verifyTargetedInjection(newTouchedWindowHandle, entry); err) {",
+      "kind": "branch",
+      "text": "定向注入校验（inject 时要求目标 uid 匹配）。"
+    },
+    {
+      "at": 74,
+      "quote": "ALOGW(\"Dropping injected touch event: %s\", (*err).c_str());",
+      "kind": "note",
+      "text": "W 级日志：丢弃注入事件。"
+    },
+    {
+      "at": 75,
+      "quote": "return injectionError(InputEventInjectionResult::TARGET_MISMATCH);",
+      "kind": "note",
+      "text": "TARGET_MISMATCH：注入目标不符。"
+    },
+    {
+      "at": 76,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭校验分支。"
+    },
+    {
+      "at": 77,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 78,
+      "quote": "if (newTouchedWindowHandle != nullptr &&",
+      "kind": "branch",
+      "text": "指针按下且命中了窗口。"
+    },
+    {
+      "at": 79,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_POINTER_DOWN) {",
+      "kind": "note",
+      "text": "注释：检查是否需要转发到别的窗口（transferTouch）。"
+    },
+    {
+      "at": 80,
+      "quote": "// Check if this should be redirected to another window, in case this window previously",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 81,
+      "quote": "// called 'transferTouch' for this gesture.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": "const auto it =",
+      "kind": "data",
+      "text": "在已有 touched windows 里找「正在接收转发」的那个。"
+    },
+    {
+      "at": 83,
+      "quote": "std::find_if(tempTouchState.windows.begin(), tempTouchState.windows.end(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 84,
+      "quote": "[&](const TouchedWindow& touchedWindow) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 85,
+      "quote": "return touchedWindow.forwardingWindowToken ==",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 86,
+      "quote": "newTouchedWindowHandle->getToken() &&",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 87,
+      "quote": "touchedWindow.hasTouchingPointers(entry.deviceId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 88,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合 lambda。"
+    },
+    {
+      "at": 89,
+      "quote": "if (it != tempTouchState.windows.end()) {",
+      "kind": "branch",
+      "text": "找到了转发目标。"
+    },
+    {
+      "at": 90,
+      "quote": "LOG(INFO) << \"Forwarding pointer from \" << newTouchedWindowHandle->getName()",
+      "kind": "note",
+      "text": "INFO 日志：打印转发方向。"
+    },
+    {
+      "at": 91,
+      "quote": "<< \" to \" << it->windowHandle->getName();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 92,
+      "quote": "newTouchedWindowHandle = it->windowHandle;",
+      "kind": "data",
+      "text": "**重定向**：目标换成转发窗口。"
+    },
+    {
+      "at": 93,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 94,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 95,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 96,
+      "quote": "std::vector<sp<WindowInfoHandle>> newTouchedWindows =",
+      "kind": "data",
+      "text": "再找「spy 窗口」：它们能旁听事件（例如无障碍、手势导航）。"
+    },
+    {
+      "at": 97,
+      "quote": "findTouchedSpyWindowsAt(displayId, x, y, isStylus, entry.deviceId, mWindowInfos);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 98,
+      "quote": "if (newTouchedWindowHandle != nullptr) {",
+      "kind": "branch",
+      "text": "有真实命中窗口。"
+    },
+    {
+      "at": 99,
+      "quote": "// Process the foreground window first so that it is the first to receive the event.",
+      "kind": "note",
+      "text": "注释：前台窗口排第一，保证它最先收到事件。"
+    },
+    {
+      "at": 100,
+      "quote": "newTouchedWindows.insert(newTouchedWindows.begin(), newTouchedWindowHandle);",
+      "kind": "call",
+      "text": "插到列表最前。"
+    },
+    {
+      "at": 101,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 102,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 103,
+      "quote": "if (newTouchedWindows.empty()) {",
+      "kind": "branch",
+      "text": "**没有任何可触摸窗口**。"
+    },
+    {
+      "at": 104,
+      "quote": "LOG(INFO) << \"Dropping event because there is no touchable window at (\" << x << \", \"",
+      "kind": "note",
+      "text": "INFO 日志带坐标与事件。"
+    },
+    {
+      "at": 105,
+      "quote": "<< y << \") on display \" << displayId << \": \" << entry;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 106,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "**FAILED**：无目标即丢弃，不会产生 ANR。"
+    },
+    {
+      "at": 107,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 108,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 109,
+      "quote": "for (const sp<WindowInfoHandle>& windowHandle : newTouchedWindows) {",
+      "kind": "note",
+      "text": "逐个候选窗口处理。"
+    },
+    {
+      "at": 110,
+      "quote": "if (!canWindowReceiveMotion(windowHandle, entry)) {",
+      "kind": "decision",
+      "text": "**关键闸门**：该窗口能否接收 motion（ANR 后 responsive=false 会在这里被拒）。"
+    },
+    {
+      "at": 111,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 112,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭闸门。"
+    },
+    {
+      "at": 113,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 114,
+      "quote": "if (isHoverAction) {",
+      "kind": "branch",
+      "text": "hover 动作要记录「哪个窗口在悬停」。"
+    },
+    {
+      "at": 115,
+      "quote": "// The \"windowHandle\" is the target of this hovering pointer.",
+      "kind": "note",
+      "text": "注释：该窗口是这个悬停指针的目标。"
+    },
+    {
+      "at": 116,
+      "quote": "tempTouchState.addHoveringPointerToWindow(windowHandle, entry.deviceId, pointer, x,",
+      "kind": "call",
+      "text": "把悬停指针记到窗口上。"
+    },
+    {
+      "at": 117,
+      "quote": "y);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hover 分支。"
+    },
+    {
+      "at": 119,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 120,
+      "quote": "// Set target flags.",
+      "kind": "note",
+      "text": "设置目标标志。"
+    },
+    {
+      "at": 121,
+      "quote": "ftl::Flags<InputTarget::Flags> targetFlags =",
+      "kind": "data",
+      "text": "目标标志（前台/遮挡/split 等）。"
+    },
+    {
+      "at": 122,
+      "quote": "getTargetFlags(windowHandle, {x, y}, isSplit);",
+      "kind": "call",
+      "text": "按窗口与坐标计算。"
+    },
+    {
+      "at": 123,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 124,
+      "quote": "// Update the temporary touch state.",
+      "kind": "note",
+      "text": "注释：更新临时触摸状态。"
+    },
+    {
+      "at": 125,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 126,
+      "quote": "if (!isHoverAction) {",
+      "kind": "branch",
+      "text": "非 hover 才记录「触摸目标」。"
+    },
+    {
+      "at": 127,
+      "quote": "const bool isDownOrPointerDown = maskedAction == AMOTION_EVENT_ACTION_DOWN ||",
+      "kind": "decision",
+      "text": "是否 DOWN 或 POINTER_DOWN。"
+    },
+    {
+      "at": 128,
+      "quote": "maskedAction == AMOTION_EVENT_ACTION_POINTER_DOWN;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 129,
+      "quote": "Result<void> addResult =",
+      "kind": "data",
+      "text": "添加结果。"
+    },
+    {
+      "at": 130,
+      "quote": "tempTouchState.addOrUpdateWindow(windowHandle,",
+      "kind": "call",
+      "text": "**把窗口加入触摸态并登记指针**。"
+    },
+    {
+      "at": 131,
+      "quote": "InputTarget::DispatchMode::AS_IS,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 132,
+      "quote": "targetFlags, entry.deviceId, {pointer},",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 133,
+      "quote": "isDownOrPointerDown",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 134,
+      "quote": "? std::make_optional(",
+      "kind": "data",
+      "text": "DOWN 时记录下降时间，用于长按判定。"
+    },
+    {
+      "at": 135,
+      "quote": "entry.eventTime)",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 136,
+      "quote": ": std::nullopt,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 137,
+      "quote": "/*forwardingWindowToken=*/nullptr);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 138,
+      "quote": "if (!addResult.ok()) {",
+      "kind": "branch",
+      "text": "添加失败（状态不一致）。"
+    },
+    {
+      "at": 139,
+      "quote": "LOG(ERROR) << \"Error while processing \" << entry << \" for \"",
+      "kind": "note",
+      "text": "ERROR 日志。"
+    },
+    {
+      "at": 140,
+      "quote": "<< windowHandle->getName();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 141,
+      "quote": "dump();",
+      "kind": "call",
+      "text": "dump 当前状态便于定位。"
+    },
+    {
+      "at": 142,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭失败分支。"
+    },
+    {
+      "at": 143,
+      "quote": "// If this is the pointer going down and the touched window has a wallpaper",
+      "kind": "note",
+      "text": "注释：如果该窗口要「复制触摸给壁纸」，把壁纸层也锁进来。"
+    },
+    {
+      "at": 144,
+      "quote": "// then also add the touched wallpaper windows so they are locked in for the",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 145,
+      "quote": "// duration of the touch gesture. We do not collect wallpapers during HOVER_MOVE or",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 146,
+      "quote": "// SCROLL because the wallpaper engine only supports touch events.  We would need to",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 147,
+      "quote": "// add a mechanism similar to View.onGenericMotionEvent to enable wallpapers to",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 148,
+      "quote": "// handle these events.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 149,
+      "quote": "if (isDownOrPointerDown && targetFlags.test(InputTarget::Flags::FOREGROUND) &&",
+      "kind": "branch",
+      "text": "DOWN 且是前台窗口且要求复制给壁纸。"
+    },
+    {
+      "at": 150,
+      "quote": "windowHandle->getInfo()->inputConfig.test(",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 151,
+      "quote": "gui::WindowInfo::InputConfig::DUPLICATE_TOUCH_TO_WALLPAPER)) {",
+      "kind": "call",
+      "text": "读取窗口的输入配置位。"
+    },
+    {
+      "at": 152,
+      "quote": "sp<WindowInfoHandle> wallpaper =",
+      "kind": "data",
+      "text": "找它下面的壁纸窗口。"
+    },
+    {
+      "at": 153,
+      "quote": "mWindowInfos.findWallpaperWindowBelow(windowHandle);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 154,
+      "quote": "if (wallpaper != nullptr) {",
+      "kind": "branch",
+      "text": "确有壁纸。"
+    },
+    {
+      "at": 155,
+      "quote": "ftl::Flags<InputTarget::Flags> wallpaperFlags =",
+      "kind": "data",
+      "text": "壁纸目标的标志。"
+    },
+    {
+      "at": 156,
+      "quote": "InputTarget::Flags::WINDOW_IS_OBSCURED |",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 157,
+      "quote": "InputTarget::Flags::WINDOW_IS_PARTIALLY_OBSCURED;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 158,
+      "quote": "if (isSplit) {",
+      "kind": "branch",
+      "text": "分裂触摸时也标 SPLIT。"
+    },
+    {
+      "at": 159,
+      "quote": "wallpaperFlags |= InputTarget::Flags::SPLIT;",
+      "kind": "call",
+      "text": "补标。"
+    },
+    {
+      "at": 160,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 161,
+      "quote": "tempTouchState.addOrUpdateWindow(wallpaper,",
+      "kind": "call",
+      "text": "把壁纸窗口也加进触摸态。"
+    },
+    {
+      "at": 162,
+      "quote": "InputTarget::DispatchMode::AS_IS,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 163,
+      "quote": "wallpaperFlags, entry.deviceId, {pointer},",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 164,
+      "quote": "entry.eventTime,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 165,
+      "quote": "/*forwardingWindowToken=*/nullptr);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 166,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 167,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭壁纸判断。"
+    },
+    {
+      "at": 168,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭非 hover 分支。"
+    },
+    {
+      "at": 169,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭候选窗口循环。"
+    },
+    {
+      "at": 170,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 171,
+      "quote": "// If a window is already pilfering some pointers, give it this new pointer as well and",
+      "kind": "note",
+      "text": "注释：已经「偷走」指针的窗口，要继续独占新指针。"
+    },
+    {
+      "at": 172,
+      "quote": "// make it pilfering. This will prevent other non-spy windows from getting this pointer,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 173,
+      "quote": "// which is a specific behaviour that we want.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 174,
+      "quote": "for (TouchedWindow& touchedWindow : tempTouchState.windows) {",
+      "kind": "note",
+      "text": "遍历已触摸窗口。"
+    },
+    {
+      "at": 175,
+      "quote": "if (touchedWindow.hasTouchingPointer(entry.deviceId, pointer.id) &&",
+      "kind": "decision",
+      "text": "该窗口已持有此指针，且正在偷取指针。"
+    },
+    {
+      "at": 176,
+      "quote": "touchedWindow.hasPilferingPointers(entry.deviceId)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 177,
+      "quote": "// This window is already pilfering some pointers, and this new pointer is also",
+      "kind": "note",
+      "text": "注释：把这个新指针也交给它，避免别的窗口拿到。"
+    },
+    {
+      "at": 178,
+      "quote": "// going to it. Therefore, take over this pointer and don't give it to anyone",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 179,
+      "quote": "// else.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 180,
+      "quote": "touchedWindow.addPilferingPointer(entry.deviceId, pointer.id);",
+      "kind": "call",
+      "text": "标记为偷取指针。"
+    },
+    {
+      "at": 181,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 182,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 183,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 184,
+      "quote": "// Restrict all pilfered pointers to the pilfering windows.",
+      "kind": "note",
+      "text": "注释：被偷取的指针要从非偷取窗口上移除。"
+    },
+    {
+      "at": 185,
+      "quote": "tempTouchState.cancelPointersForNonPilferingWindows();",
+      "kind": "call",
+      "text": "取消非偷取窗口对这些指针的持有。"
+    },
+    {
+      "at": 186,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "**Case 2**：move / up / cancel / 不可分裂的 pointer down。"
+    },
+    {
+      "at": 187,
+      "quote": "/* Case 2: Pointer move, up, cancel or non-splittable pointer down. */",
+      "kind": "note",
+      "text": "注释：这一分支是「沿用既有目标」。"
+    },
+    {
+      "at": 188,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 189,
+      "quote": "// If the pointer is not currently down, then ignore the event.",
+      "kind": "note",
+      "text": "注释：如果指针没按下就忽略（除了 hover exit）。"
+    },
+    {
+      "at": 190,
+      "quote": "if (!tempTouchState.isDown(entry.deviceId) &&",
+      "kind": "decision",
+      "text": "当前未按下。"
+    },
+    {
+      "at": 191,
+      "quote": "maskedAction != AMOTION_EVENT_ACTION_HOVER_EXIT) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 192,
+      "quote": "LOG_IF(INFO, DEBUG_DROPPED_EVENTS_VERBOSE)",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 193,
+      "quote": "<< \"Dropping event because the pointer for device \" << entry.deviceId",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 194,
+      "quote": "<< \" is not down or we previously dropped the pointer down event in display \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 195,
+      "quote": "<< displayId << \": \" << entry.getDescription();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 196,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "**FAILED**：典型「丢了一帧 MOVE」的现场。"
+    },
+    {
+      "at": 197,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭未按下判断。"
+    },
+    {
+      "at": 198,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 199,
+      "quote": "// If the pointer is not currently hovering, then ignore the event.",
+      "kind": "note",
+      "text": "注释：hover exit 时指针必须确实在悬停。"
+    },
+    {
+      "at": 200,
+      "quote": "if (maskedAction == AMOTION_EVENT_ACTION_HOVER_EXIT) {",
+      "kind": "branch",
+      "text": "hover exit。"
+    },
+    {
+      "at": 201,
+      "quote": "const int32_t pointerId = entry.pointerProperties[0].id;",
+      "kind": "data",
+      "text": "取指针 id。"
+    },
+    {
+      "at": 202,
+      "quote": "if (oldState == nullptr ||",
+      "kind": "decision",
+      "text": "之前没有该指针的悬停窗口。"
+    },
+    {
+      "at": 203,
+      "quote": "oldState->getWindowsWithHoveringPointer(entry.deviceId, pointerId).empty()) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 204,
+      "quote": "LOG(INFO) << \"Dropping event because the hovering pointer is not in any windows in \"",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 205,
+      "quote": "\"display \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 206,
+      "quote": "<< displayId << \": \" << entry.getDescription();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 207,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "FAILED：悬停目标不存在。"
+    },
+    {
+      "at": 208,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 209,
+      "quote": "tempTouchState.removeHoveringPointer(entry.deviceId, pointerId);",
+      "kind": "call",
+      "text": "移除悬停指针。"
+    },
+    {
+      "at": 210,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hover exit 分支。"
+    },
+    {
+      "at": 211,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 212,
+      "quote": "addDragEvent(entry);",
+      "kind": "call",
+      "text": "**把事件喂给拖拽状态**（拖拽走独立的目标跟踪）。"
+    },
+    {
+      "at": 213,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 214,
+      "quote": "// Check whether touches should slip outside of the current foreground window.",
+      "kind": "note",
+      "text": "注释：单指 MOVE 且处于 slippery 模式时，触摸可以「滑出」当前窗口。"
+    },
+    {
+      "at": 215,
+      "quote": "if (maskedAction == AMOTION_EVENT_ACTION_MOVE && entry.getPointerCount() == 1 &&",
+      "kind": "decision",
+      "text": "MOVE、单指、slippery。"
+    },
+    {
+      "at": 216,
+      "quote": "tempTouchState.isSlippery(entry.deviceId)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 217,
+      "quote": "const auto [x, y] = resolveTouchedPosition(entry);",
+      "kind": "call",
+      "text": "解析坐标。"
+    },
+    {
+      "at": 218,
+      "quote": "const bool isStylus = isPointerFromStylus(entry, /*pointerIndex=*/0);",
+      "kind": "call",
+      "text": "是否手写笔。"
+    },
+    {
+      "at": 219,
+      "quote": "sp<WindowInfoHandle> oldTouchedWindowHandle =",
+      "kind": "data",
+      "text": "当前的前台触摸窗口。"
+    },
+    {
+      "at": 220,
+      "quote": "tempTouchState.getFirstForegroundWindowHandle(entry.deviceId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 221,
+      "quote": "LOG_ALWAYS_FATAL_IF(oldTouchedWindowHandle == nullptr);",
+      "kind": "note",
+      "text": "断言：slippery 状态下必然有前台窗口。"
+    },
+    {
+      "at": 222,
+      "quote": "sp<WindowInfoHandle> newTouchedWindowHandle =",
+      "kind": "data",
+      "text": "**重新做命中测试**：滑到哪个窗口了。"
+    },
+    {
+      "at": 223,
+      "quote": "mWindowInfos.findTouchedWindowAt(displayId, x, y, isStylus);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 224,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 225,
+      "quote": "// Verify targeted injection.",
+      "kind": "note",
+      "text": "注释：注入校验。"
+    },
+    {
+      "at": 226,
+      "quote": "if (const auto err = verifyTargetedInjection(newTouchedWindowHandle, entry); err) {",
+      "kind": "branch",
+      "text": "注入目标不符。"
+    },
+    {
+      "at": 227,
+      "quote": "ALOGW(\"Dropping injected event: %s\", (*err).c_str());",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 228,
+      "quote": "return injectionError(InputEventInjectionResult::TARGET_MISMATCH);",
+      "kind": "note",
+      "text": "TARGET_MISMATCH。"
+    },
+    {
+      "at": 229,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭校验分支。"
+    },
+    {
+      "at": 230,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 231,
+      "quote": "// Do not slide events to the window which can not receive motion event",
+      "kind": "note",
+      "text": "注释：ANR 的窗口不能接住滑入。"
+    },
+    {
+      "at": 232,
+      "quote": "if (newTouchedWindowHandle != nullptr &&",
+      "kind": "decision",
+      "text": "不能接收 motion。"
+    },
+    {
+      "at": 233,
+      "quote": "!canWindowReceiveMotion(newTouchedWindowHandle, entry)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 234,
+      "quote": "newTouchedWindowHandle = nullptr;",
+      "kind": "state",
+      "text": "置空，退回原窗口。"
+    },
+    {
+      "at": 235,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 236,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 237,
+      "quote": "if (newTouchedWindowHandle != nullptr &&",
+      "kind": "branch",
+      "text": "命中了另一个窗口。"
+    },
+    {
+      "at": 238,
+      "quote": "!haveSameToken(oldTouchedWindowHandle, newTouchedWindowHandle)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 239,
+      "quote": "ALOGI(\"Touch is slipping out of window %s into window %s in display %s\",",
+      "kind": "note",
+      "text": "INFO 日志：Touch is slipping out of window。"
+    },
+    {
+      "at": 240,
+      "quote": "oldTouchedWindowHandle->getName().c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 241,
+      "quote": "newTouchedWindowHandle->getName().c_str(), displayId.toString().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 242,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 243,
+      "quote": "// Make a slippery exit from the old window.",
+      "kind": "note",
+      "text": "注释：给旧窗口一个「滑出」的收尾事件。"
+    },
+    {
+      "at": 244,
+      "quote": "std::bitset<MAX_POINTER_ID + 1> pointerIds;",
+      "kind": "data",
+      "text": "指针 id 集合。"
+    },
+    {
+      "at": 245,
+      "quote": "const PointerProperties& pointer = entry.pointerProperties[0];",
+      "kind": "data",
+      "text": "取该指针属性。"
+    },
+    {
+      "at": 246,
+      "quote": "pointerIds.set(pointer.id);",
+      "kind": "call",
+      "text": "置位。"
+    },
+    {
+      "at": 247,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 248,
+      "quote": "const TouchedWindow& touchedWindow =",
+      "kind": "data",
+      "text": "取旧窗口的触摸记录。"
+    },
+    {
+      "at": 249,
+      "quote": "tempTouchState.getTouchedWindow(oldTouchedWindowHandle);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 250,
+      "quote": "addPointerWindowTarget(oldTouchedWindowHandle,",
+      "kind": "call",
+      "text": "**加入一个 SLIPPERY_EXIT 目标**，让它收到「手指滑走了」。"
+    },
+    {
+      "at": 251,
+      "quote": "InputTarget::DispatchMode::SLIPPERY_EXIT,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 252,
+      "quote": "ftl::Flags<InputTarget::Flags>(), pointerIds,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 253,
+      "quote": "touchedWindow.getDownTimeInTarget(entry.deviceId),",
+      "kind": "data",
+      "text": "沿用旧窗口的下降时间。"
+    },
+    {
+      "at": 254,
+      "quote": "/*pointerDisplayId=*/std::nullopt, dump, targets);",
+      "kind": "note",
+      "text": "pointerDisplayId=nullopt 表示不指定。"
+    },
+    {
+      "at": 255,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 256,
+      "quote": "// Make a slippery entrance into the new window.",
+      "kind": "note",
+      "text": "注释：再给新窗口一个「滑入」。"
+    },
+    {
+      "at": 257,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 258,
+      "quote": "ftl::Flags<InputTarget::Flags> targetFlags =",
+      "kind": "data",
+      "text": "新窗口的目标标志。"
+    },
+    {
+      "at": 259,
+      "quote": "getTargetFlags(newTouchedWindowHandle, {x, y}, isSplit);",
+      "kind": "call",
+      "text": "计算。"
+    },
+    {
+      "at": 260,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 261,
+      "quote": "tempTouchState.addOrUpdateWindow(newTouchedWindowHandle,",
+      "kind": "call",
+      "text": "**把新窗口以 SLIPPERY_ENTER 加入触摸态**。"
+    },
+    {
+      "at": 262,
+      "quote": "InputTarget::DispatchMode::SLIPPERY_ENTER,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 263,
+      "quote": "targetFlags, entry.deviceId, {pointer},",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 264,
+      "quote": "entry.eventTime,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 265,
+      "quote": "/*forwardingWindowToken=*/nullptr);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 266,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 267,
+      "quote": "// Check if the wallpaper window should deliver the corresponding event.",
+      "kind": "note",
+      "text": "注释：壁纸是否需要同步。"
+    },
+    {
+      "at": 268,
+      "quote": "slipWallpaperTouch(targetFlags, oldTouchedWindowHandle, newTouchedWindowHandle,",
+      "kind": "call",
+      "text": "处理壁纸的对应事件。"
+    },
+    {
+      "at": 269,
+      "quote": "tempTouchState, entry, targets, dump);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 270,
+      "quote": "tempTouchState.removeTouchingPointerFromWindow(entry.deviceId, pointer.id,",
+      "kind": "call",
+      "text": "从旧窗口移除该指针。"
+    },
+    {
+      "at": 271,
+      "quote": "oldTouchedWindowHandle);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 272,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 slippery 分支。"
+    },
+    {
+      "at": 273,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 MOVE 判断。"
+    },
+    {
+      "at": 274,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 275,
+      "quote": "// Update the pointerIds for non-splittable when it received pointer down.",
+      "kind": "note",
+      "text": "注释：非分裂模式下 POINTER_DOWN 要让所有已触摸窗口都收到。"
+    },
+    {
+      "at": 276,
+      "quote": "if (!isSplit && maskedAction == AMOTION_EVENT_ACTION_POINTER_DOWN) {",
+      "kind": "decision",
+      "text": "不分裂且有指针按下。"
+    },
+    {
+      "at": 277,
+      "quote": "// If no split, we suppose all touched windows should receive pointer down.",
+      "kind": "note",
+      "text": "注释：无分裂时假定所有触摸窗口都应收到 pointer down。"
+    },
+    {
+      "at": 278,
+      "quote": "const int32_t pointerIndex = MotionEvent::getActionIndex(action);",
+      "kind": "data",
+      "text": "取指针索引。"
+    },
+    {
+      "at": 279,
+      "quote": "std::vector<PointerProperties> touchingPointers{entry.pointerProperties[pointerIndex]};",
+      "kind": "data",
+      "text": "只构造这一个指针的列表。"
+    },
+    {
+      "at": 280,
+      "quote": "for (TouchedWindow& touchedWindow : tempTouchState.windows) {",
+      "kind": "note",
+      "text": "遍历触摸窗口。"
+    },
+    {
+      "at": 281,
+      "quote": "// Ignore drag window for it should just track one pointer.",
+      "kind": "note",
+      "text": "注释：拖拽窗口只跟一个指针，跳过。"
+    },
+    {
+      "at": 282,
+      "quote": "if (dragWindow == touchedWindow.windowHandle) {",
+      "kind": "branch",
+      "text": "是拖拽窗口。"
+    },
+    {
+      "at": 283,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 284,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 285,
+      "quote": "if (!touchedWindow.hasTouchingPointers(entry.deviceId)) {",
+      "kind": "branch",
+      "text": "该窗口没有触摸指针。"
+    },
+    {
+      "at": 286,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 287,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 288,
+      "quote": "touchedWindow.addTouchingPointers(entry.deviceId, touchingPointers);",
+      "kind": "call",
+      "text": "**补齐指针**，让所有窗口都收到这个 pointer down。"
+    },
+    {
+      "at": 289,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 290,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 291,
+      "quote": "}",
+      "kind": "note",
+      "text": "结束 Case1/Case2 分支。"
+    },
+    {
+      "at": 292,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 293,
+      "quote": "// Update dispatching for hover enter and exit.",
+      "kind": "note",
+      "text": "注释：处理 hover enter/exit 的目标。"
+    },
+    {
+      "at": 294,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 295,
+      "quote": "std::vector<TouchedWindow> hoveringWindows =",
+      "kind": "data",
+      "text": "计算悬停窗口集合（对比新旧状态得出 enter/exit）。"
+    },
+    {
+      "at": 296,
+      "quote": "getHoveringWindowsLocked(oldState, tempTouchState, entry, dump);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 297,
+      "quote": "// Hardcode to single hovering pointer for now.",
+      "kind": "note",
+      "text": "注释：目前只支持单个悬停指针。"
+    },
+    {
+      "at": 298,
+      "quote": "std::bitset<MAX_POINTER_ID + 1> pointerIds;",
+      "kind": "data",
+      "text": "指针 id 集合。"
+    },
+    {
+      "at": 299,
+      "quote": "pointerIds.set(entry.pointerProperties[0].id);",
+      "kind": "call",
+      "text": "置位。"
+    },
+    {
+      "at": 300,
+      "quote": "for (const TouchedWindow& touchedWindow : hoveringWindows) {",
+      "kind": "note",
+      "text": "遍历悬停窗口。"
+    },
+    {
+      "at": 301,
+      "quote": "addPointerWindowTarget(touchedWindow.windowHandle, touchedWindow.dispatchMode,",
+      "kind": "call",
+      "text": "**加入 hover 目标**，dispatchMode 由 enter/exit 决定。"
+    },
+    {
+      "at": 302,
+      "quote": "touchedWindow.targetFlags, pointerIds,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 303,
+      "quote": "touchedWindow.getDownTimeInTarget(entry.deviceId),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 304,
+      "quote": "/*pointerDisplayId=*/std::nullopt, dump, targets);",
+      "kind": "note",
+      "text": "pointerDisplayId=nullopt。"
+    },
+    {
+      "at": 305,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 306,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 307,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 308,
+      "quote": "// Ensure that all touched windows are valid for injection.",
+      "kind": "note",
+      "text": "注释：注入事件要求所有目标窗口都属于目标 uid。"
+    },
+    {
+      "at": 309,
+      "quote": "if (entry.injectionState != nullptr) {",
+      "kind": "branch",
+      "text": "是注入事件。"
+    },
+    {
+      "at": 310,
+      "quote": "std::string errs;",
+      "kind": "data",
+      "text": "错误累积。"
+    },
+    {
+      "at": 311,
+      "quote": "for (const TouchedWindow& touchedWindow : tempTouchState.windows) {",
+      "kind": "note",
+      "text": "遍历触摸窗口。"
+    },
+    {
+      "at": 312,
+      "quote": "const auto err = verifyTargetedInjection(touchedWindow.windowHandle, entry);",
+      "kind": "call",
+      "text": "校验。"
+    },
+    {
+      "at": 313,
+      "quote": "if (err) errs += \"\\n  - \" + *err;",
+      "kind": "branch",
+      "text": "有错误就累积。"
+    },
+    {
+      "at": 314,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 315,
+      "quote": "if (!errs.empty()) {",
+      "kind": "branch",
+      "text": "有任一窗口不合法。"
+    },
+    {
+      "at": 316,
+      "quote": "ALOGW(\"Dropping targeted injection: At least one touched window is not owned by uid \"",
+      "kind": "note",
+      "text": "W 级日志：Dropping targeted injection。"
+    },
+    {
+      "at": 317,
+      "quote": "\"%s:%s\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 318,
+      "quote": "entry.injectionState->targetUid->toString().c_str(), errs.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 319,
+      "quote": "return injectionError(InputEventInjectionResult::TARGET_MISMATCH);",
+      "kind": "note",
+      "text": "TARGET_MISMATCH。"
+    },
+    {
+      "at": 320,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭错误判断。"
+    },
+    {
+      "at": 321,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭注入分支。"
+    },
+    {
+      "at": 322,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 323,
+      "quote": "// Check whether windows listening for outside touches are owned by the same UID. If the owner",
+      "kind": "note",
+      "text": "注释：outside 目标若属于不同 uid，不能泄露坐标。"
+    },
+    {
+      "at": 324,
+      "quote": "// has a different UID, then we will not reveal coordinate information to this window.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 325,
+      "quote": "if (maskedAction == AMOTION_EVENT_ACTION_DOWN) {",
+      "kind": "branch",
+      "text": "DOWN 时处理。"
+    },
+    {
+      "at": 326,
+      "quote": "sp<WindowInfoHandle> foregroundWindowHandle =",
+      "kind": "data",
+      "text": "取前台窗口。"
+    },
+    {
+      "at": 327,
+      "quote": "tempTouchState.getFirstForegroundWindowHandle(entry.deviceId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 328,
+      "quote": "if (foregroundWindowHandle) {",
+      "kind": "branch",
+      "text": "存在前台窗口。"
+    },
+    {
+      "at": 329,
+      "quote": "const auto foregroundWindowUid = foregroundWindowHandle->getInfo()->ownerUid;",
+      "kind": "data",
+      "text": "它的 uid。"
+    },
+    {
+      "at": 330,
+      "quote": "for (InputTarget& target : targets) {",
+      "kind": "note",
+      "text": "遍历目标。"
+    },
+    {
+      "at": 331,
+      "quote": "if (target.dispatchMode == InputTarget::DispatchMode::OUTSIDE) {",
+      "kind": "branch",
+      "text": "该目标是 outside 类型。"
+    },
+    {
+      "at": 332,
+      "quote": "sp<WindowInfoHandle> targetWindow =",
+      "kind": "data",
+      "text": "取目标对应窗口。"
+    },
+    {
+      "at": 333,
+      "quote": "mWindowInfos.findWindowHandle(target.connection->getToken());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 334,
+      "quote": "if (targetWindow->getInfo()->ownerUid != foregroundWindowUid) {",
+      "kind": "decision",
+      "text": "**uid 不同**。"
+    },
+    {
+      "at": 335,
+      "quote": "target.flags |= InputTarget::Flags::ZERO_COORDS;",
+      "kind": "state",
+      "text": "**置零坐标**：该窗口只能知道「有人点了外面」，不能知道点在哪。"
+    },
+    {
+      "at": 336,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 337,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 338,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 339,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 340,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 DOWN 分支。"
+    },
+    {
+      "at": 341,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 342,
+      "quote": "// If this is a touchpad navigation gesture, it needs to only be sent to trusted targets, as we",
+      "kind": "note",
+      "text": "注释：触摸板导航手势只给可信目标（一般是 SystemUI）。"
+    },
+    {
+      "at": 343,
+      "quote": "// only want the system UI to handle these gestures.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 344,
+      "quote": "const bool isTouchpadNavGesture = isFromSource(entry.source, AINPUT_SOURCE_MOUSE) &&",
+      "kind": "decision",
+      "text": "鼠标源 + 多指滑动分类。"
+    },
+    {
+      "at": 345,
+      "quote": "entry.classification == MotionClassification::MULTI_FINGER_SWIPE;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 346,
+      "quote": "if (isTouchpadNavGesture) {",
+      "kind": "branch",
+      "text": "是导航手势。"
+    },
+    {
+      "at": 347,
+      "quote": "filterUntrustedTargets(/* byref */ tempTouchState, /* byref */ targets);",
+      "kind": "call",
+      "text": "过滤掉不可信目标。"
+    },
+    {
+      "at": 348,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 349,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 350,
+      "quote": "// Output targets from the touch state.",
+      "kind": "note",
+      "text": "注释：输出目标。"
+    },
+    {
+      "at": 351,
+      "quote": "for (const TouchedWindow& touchedWindow : tempTouchState.windows) {",
+      "kind": "note",
+      "text": "遍历触摸态中的窗口。"
+    },
+    {
+      "at": 352,
+      "quote": "std::vector<PointerProperties> touchingPointers =",
+      "kind": "data",
+      "text": "取该窗口的触摸指针。"
+    },
+    {
+      "at": 353,
+      "quote": "touchedWindow.getTouchingPointers(entry.deviceId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 354,
+      "quote": "if (touchingPointers.empty()) {",
+      "kind": "branch",
+      "text": "没有指针。"
+    },
+    {
+      "at": 355,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 356,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 357,
+      "quote": "addPointerWindowTarget(touchedWindow.windowHandle, touchedWindow.dispatchMode,",
+      "kind": "call",
+      "text": "**为每个有指针的窗口生成 InputTarget**。"
+    },
+    {
+      "at": 358,
+      "quote": "touchedWindow.targetFlags, getPointerIds(touchingPointers),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 359,
+      "quote": "touchedWindow.getDownTimeInTarget(entry.deviceId),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 360,
+      "quote": "/*pointerDisplayId=*/displayId, dump, targets);",
+      "kind": "note",
+      "text": "pointerDisplayId=displayId 表示按该显示换算坐标。"
+    },
+    {
+      "at": 361,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 362,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 363,
+      "quote": "// During targeted injection, only allow owned targets to receive events",
+      "kind": "note",
+      "text": "注释：注入时只保留合法目标。"
+    },
+    {
+      "at": 364,
+      "quote": "std::erase_if(targets, [&](const InputTarget& target) {",
+      "kind": "call",
+      "text": "就地删除不合法目标。"
+    },
+    {
+      "at": 365,
+      "quote": "LOG_ALWAYS_FATAL_IF(target.windowHandle == nullptr);",
+      "kind": "note",
+      "text": "断言 target 必有 windowHandle。"
+    },
+    {
+      "at": 366,
+      "quote": "const auto err = verifyTargetedInjection(target.windowHandle, entry);",
+      "kind": "call",
+      "text": "校验。"
+    },
+    {
+      "at": 367,
+      "quote": "if (err) {",
+      "kind": "branch",
+      "text": "不合法。"
+    },
+    {
+      "at": 368,
+      "quote": "LOG(WARNING) << \"Dropping injected event from \" << target.windowHandle->getName()",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 369,
+      "quote": "<< \": \" << (*err);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 370,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "标记删除。"
+    },
+    {
+      "at": 371,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 372,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "否则保留。"
+    },
+    {
+      "at": 373,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合 erase_if。"
+    },
+    {
+      "at": 374,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 375,
+      "quote": "if (targets.empty()) {",
+      "kind": "branch",
+      "text": "**所有目标都被筛掉**。"
+    },
+    {
+      "at": 376,
+      "quote": "LOG(INFO) << \"Dropping event because no targets were found: \" << entry.getDescription();",
+      "kind": "note",
+      "text": "INFO 日志：no targets were found。"
+    },
+    {
+      "at": 377,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "**FAILED**：直接丢弃。"
+    },
+    {
+      "at": 378,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 379,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 380,
+      "quote": "// If we only have windows getting ACTION_OUTSIDE, then drop the event, because there is no",
+      "kind": "note",
+      "text": "注释：只有 outside 目标时也要丢，因为没人真正接收整个手势。"
+    },
+    {
+      "at": 381,
+      "quote": "// window that is actually receiving the entire gesture.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 382,
+      "quote": "if (std::all_of(targets.begin(), targets.end(), [](const InputTarget& target) {",
+      "kind": "decision",
+      "text": "所有目标都是 OUTSIDE。"
+    },
+    {
+      "at": 383,
+      "quote": "return target.dispatchMode == InputTarget::DispatchMode::OUTSIDE;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 384,
+      "quote": "})) {",
+      "kind": "branch",
+      "text": "lambda 收尾。"
+    },
+    {
+      "at": 385,
+      "quote": "LOG(INFO) << \"Dropping event because all windows would just receive ACTION_OUTSIDE: \"",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 386,
+      "quote": "<< entry.getDescription();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 387,
+      "quote": "return injectionError(InputEventInjectionResult::FAILED);",
+      "kind": "note",
+      "text": "FAILED。"
+    },
+    {
+      "at": 388,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 389,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 390,
+      "quote": "// Now that we have generated all of the input targets for this event, reset the dispatch",
+      "kind": "note",
+      "text": "注释：目标已产出，把 dispatchMode 复位。"
+    },
+    {
+      "at": 391,
+      "quote": "// mode for all touched window to AS_IS.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 392,
+      "quote": "for (TouchedWindow& touchedWindow : tempTouchState.windows) {",
+      "kind": "note",
+      "text": "遍历窗口。"
+    },
+    {
+      "at": 393,
+      "quote": "touchedWindow.dispatchMode = InputTarget::DispatchMode::AS_IS;",
+      "kind": "state",
+      "text": "复位为 AS_IS。"
+    },
+    {
+      "at": 394,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 395,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 396,
+      "quote": "// Update final pieces of touch state if the injector had permission.",
+      "kind": "note",
+      "text": "注释：最后更新触摸状态（此时已确认允许注入）。"
+    },
+    {
+      "at": 397,
+      "quote": "if (maskedAction == AMOTION_EVENT_ACTION_UP) {",
+      "kind": "branch",
+      "text": "UP。"
+    },
+    {
+      "at": 398,
+      "quote": "// Pointer went up.",
+      "kind": "note",
+      "text": "注释：指针抬起。"
+    },
+    {
+      "at": 399,
+      "quote": "tempTouchState.removeTouchingPointer(entry.deviceId, entry.pointerProperties[0].id);",
+      "kind": "call",
+      "text": "移除该指针。"
+    },
+    {
+      "at": 400,
+      "quote": "} else if (maskedAction == AMOTION_EVENT_ACTION_CANCEL) {",
+      "kind": "note",
+      "text": "否则 CANCEL。"
+    },
+    {
+      "at": 401,
+      "quote": "// All pointers up or canceled.",
+      "kind": "branch",
+      "text": "CANCEL。"
+    },
+    {
+      "at": 402,
+      "quote": "tempTouchState.removeAllPointersForDevice(entry.deviceId);",
+      "kind": "call",
+      "text": "移除该设备所有指针。"
+    },
+    {
+      "at": 403,
+      "quote": "} else if (maskedAction == AMOTION_EVENT_ACTION_POINTER_UP) {",
+      "kind": "note",
+      "text": "否则 POINTER_UP。"
+    },
+    {
+      "at": 404,
+      "quote": "// One pointer went up.",
+      "kind": "note",
+      "text": "注释：只有一个指针抬起。"
+    },
+    {
+      "at": 405,
+      "quote": "const int32_t pointerIndex = MotionEvent::getActionIndex(action);",
+      "kind": "data",
+      "text": "取索引。"
+    },
+    {
+      "at": 406,
+      "quote": "const uint32_t pointerId = entry.pointerProperties[pointerIndex].id;",
+      "kind": "data",
+      "text": "取 id。"
+    },
+    {
+      "at": 407,
+      "quote": "tempTouchState.removeTouchingPointer(entry.deviceId, pointerId);",
+      "kind": "call",
+      "text": "移除该指针。"
+    },
+    {
+      "at": 408,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭指针状态分支。"
+    },
+    {
+      "at": 409,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 410,
+      "quote": "// Save changes unless the action was scroll in which case the temporary touch",
+      "kind": "note",
+      "text": "注释：SCROLL 的临时状态只对本次有效，不保存。"
+    },
+    {
+      "at": 411,
+      "quote": "// state was only valid for this one action.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 412,
+      "quote": "if (maskedAction != AMOTION_EVENT_ACTION_SCROLL) {",
+      "kind": "branch",
+      "text": "非 SCROLL。"
+    },
+    {
+      "at": 413,
+      "quote": "if (displayId >= ui::LogicalDisplayId::DEFAULT) {",
+      "kind": "branch",
+      "text": "有效显示。"
+    },
+    {
+      "at": 414,
+      "quote": "tempTouchState.clearWindowsWithoutPointers();",
+      "kind": "call",
+      "text": "清理没有指针的窗口。"
+    },
+    {
+      "at": 415,
+      "quote": "saveTouchStateForMotionEntry(entry, std::move(tempTouchState));",
+      "kind": "call",
+      "text": "**保存状态**：下一帧的 move/up 才能命中同一批窗口。"
+    },
+    {
+      "at": 416,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 417,
+      "quote": "eraseTouchStateForMotionEntry(entry);",
+      "kind": "call",
+      "text": "无效显示则清除状态。"
+    },
+    {
+      "at": 418,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 419,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭保存判断。"
+    },
+    {
+      "at": 420,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 421,
+      "quote": "return targets;",
+      "kind": "note",
+      "text": "返回目标列表；空列表表示本事件没有可用目标。"
+    },
+    {
+      "at": 422,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

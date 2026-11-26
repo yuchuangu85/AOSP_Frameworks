@@ -1,0 +1,51 @@
+{
+  "step": "s04",
+  "title": "找到 DisplayContent 与父窗口",
+  "tldr": "子窗口先按 attrs.token 找到父 WindowState，再继承父窗口的 DisplayContent；否则按 displayId 查找。",
+  "why": "「子窗口必须跟着父窗口走」不是可选的优化，而是正确性要求：对话框、PopupWindow 必须与其宿主在同一屏上，否则会出现「弹窗跑到另一块屏」或者输入通道跨屏的怪异现象。这也解释了为什么子窗口的 token 校验异常严格——它同时决定了归属屏、归属 token 与继承的策略。",
+  "concepts": [
+    {
+      "term": "getDisplayContentOrCreate",
+      "text": "按 displayId 找，没有则尝试创建。"
+    },
+    {
+      "term": "hasAccess(uid)",
+      "text": "该 uid 能否访问此 display（如虚拟屏）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (type >= FIRST_SUB_WINDOW && type <= LAST_SUB_WINDOW) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1700",
+      "what": "子窗口分支。"
+    },
+    {
+      "call": "parentWindow = windowForClient(null /* session */, attrs.token);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1701",
+      "what": "按 token 找父窗口。"
+    },
+    {
+      "call": "final DisplayContent displayContent = parentWindow != null",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1720",
+      "what": "继承父窗口的 DisplayContent。"
+    }
+  ],
+  "state": [
+    {
+      "field": "parentWindow",
+      "before": "null",
+      "after": "子窗口时为父 WindowState",
+      "note": "后续 token 与 type 校验都依赖它。"
+    }
+  ],
+  "threads": "binder 线程，已持 mGlobalLock。",
+  "pitfalls": [
+    "子窗口跨屏：不可能，会继承父窗口的屏。",
+    "忽略 hasAccess：虚拟屏上普通应用加不了窗口。"
+  ],
+  "debug": [
+    "dumpsys window displays 看每屏的窗口。",
+    "ADD_BAD_SUBWINDOW_TOKEN 说明父窗口没找到。"
+  ],
+  "next": "WindowToken 起什么作用？见第 5 步。"
+}

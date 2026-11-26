@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Service ANR「放炸弹 / 拆炸弹」机制源码深度解析 · ANR</title>
+<script>
+(function(){try{
+  var s=localStorage.getItem('st-theme');
+  var sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+  var f=null;try{f=new URLSearchParams(location.search).get('theme');}catch(e){}
+  document.documentElement.dataset.theme=(f==='light'||f==='dark')?f:(s||sys);
+}catch(e){document.documentElement.dataset.theme='dark';}})();
+</script>
+<style>:root {
+  --bg: #23262b;
+  --bg-2: #2a2e34;
+  --panel: #2d3138;
+  --panel-2: #363b43;
+  --line: rgba(255, 255, 255, 0.16);
+  --line-2: rgba(255, 255, 255, 0.30);
+  --tx: #f5f8fc;
+  --tx-2: #c8d1dd;
+  --tx-3: #98a5b5;
+  --wms: #ffb454;
+  --shell: #33d6c0;
+  --app: #4c8dff;
+  --sf: #c792ea;
+  --code: #dbe4ee;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --panel-solid: #2d3138;
+  --accent: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--tx);
+  font: 14px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bg-grid {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* ---------------- header ---------------- */
+.hdr {
+  position: relative; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 28px;
+  padding: 30px 40px 22px;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.kicker { font: 11px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--wms); }
+.hdr h1 { margin: 10px 0 6px; font-size: 30px; line-height: 1.25; letter-spacing: -0.01em; }
+.sub { margin: 0; color: var(--tx-2); font-size: 13.5px; max-width: 760px; }
+.hdr-stats { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.stat {
+  min-width: 86px; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: 10px; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+}
+.stat b { display: block; font: 600 20px/1.2 var(--mono); color: var(--tx); }
+.stat span { font-size: 11px; color: var(--tx-3); }
+
+/* ---------------- layout ---------------- */
+.app { position: relative; z-index: 1; display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: calc(100vh - 210px); }
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 18px 10px 40px 14px;
+  position: sticky; top: 0; align-self: start;
+  max-height: 100vh; overflow-y: auto;
+}
+.rail::-webkit-scrollbar, .code-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.rail::-webkit-scrollbar-thumb, .code-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+.phase { margin: 16px 0 6px; font: 10.5px/1.5 var(--mono); letter-spacing: 0.04em; color: var(--tx-3); }
+.phase span { letter-spacing: 0; opacity: .7; }
+.phase:first-child { margin-top: 2px; }
+.step {
+  position: relative; display: grid; grid-template-columns: 26px 1fr; gap: 9px;
+  padding: 8px 10px 8px 8px; margin: 2px 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.step:hover { background: rgba(255,255,255,0.035); }
+.step.is-on { background: rgba(255,255,255,0.055); border-color: var(--line-2); }
+.step .n { font: 600 11px/1.5 var(--mono); color: var(--tx-3); text-align: right; padding-top: 2px; }
+.step .t { font-size: 12.5px; line-height: 1.45; color: var(--tx-2); }
+.step.is-on .t { color: var(--tx); }
+.step .lane-dot { position: absolute; left: 0; top: 12px; width: 3px; height: 16px; border-radius: 2px; opacity: 0.85; }
+.step .p0tag { display: inline-block; margin-left: 6px; padding: 0 5px; font: 10px/16px var(--mono); border-radius: 4px;
+  color: var(--wms); border: 1px solid rgba(255,180,84,0.35); background: rgba(255,180,84,0.08); }
+
+/* ---------------- stage ---------------- */
+.stage { padding: 18px 34px 60px 26px; min-width: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+.tab {
+  appearance: none; border: 0; background: transparent; color: var(--tx-3);
+  font: 500 13px/1 inherit; padding: 12px 14px; cursor: pointer; position: relative;
+}
+.tab:hover { color: var(--tx-2); }
+.tab.is-on { color: var(--tx); }
+.tab.is-on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--wms); border-radius: 2px; }
+.view { display: none; }
+.view.is-on { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+.panel { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); margin-bottom: 16px; overflow: hidden; }
+.panel-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.panel-hd h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+.hint { font-size: 11.5px; color: var(--tx-3); }
+.grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+.diagram-wrap { padding: 12px 16px 18px; overflow: auto; }
+
+/* 图缩放/拖拽容器：盖住原有 padding，控件浮在右上角 */
+.zoom-wrap { position: relative; overflow: hidden; padding: 0; touch-action: none; height: 62vh; min-height: 360px; }
+.zoom-wrap > svg {
+  display: block; position: absolute; left: 0; top: 0;
+  max-width: none; user-select: none;
+  /* 放大是改布局尺寸，文字与描边会重新栅格化，因此放大后依然锐利 */
+}
+.zoom-wrap.is-dragging { cursor: grabbing; }
+.zoom-wrap.grab { cursor: grab; }
+.zoom-ui {
+  position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 4px;
+  padding: 4px; border-radius: 9px; z-index: 3;
+  border: 1px solid var(--line); background: var(--panel-solid, rgba(12,16,22,0.82));
+  backdrop-filter: blur(6px);
+}
+.zoom-ui button {
+  min-width: 26px; height: 24px; padding: 0 7px; cursor: pointer;
+  font: 12px/1 var(--mono); color: var(--tx-2);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.zoom-ui button:hover { color: var(--tx); border-color: var(--accent, #4c8dff); }
+.zoom-ui .zoom-val { min-width: 46px; text-align: center; font: 11.5px/1 var(--mono); color: var(--tx-3); }
+.zoom-hint { position: absolute; left: 12px; bottom: 8px; z-index: 3; font: 10.5px/1.4 var(--mono); color: var(--tx-3); opacity: 0.75; pointer-events: none; }
+.zoom-wrap.is-zoomed .zoom-hint { opacity: 0; }
+
+.diagram { width: 100%; height: auto; display: block; }
+
+/* svg text */
+.grp { fill: rgba(255,255,255,0.012); stroke-dasharray: 4 5; stroke-opacity: 0.45; }
+.grp-label { font: 11px/1 var(--mono); letter-spacing: 0.1em; opacity: 0.85; }
+.box rect { fill: rgba(255,255,255,0.04); stroke: rgba(255,255,255,0.14); }
+.bx { fill: var(--tx); font-size: 12.5px; font-weight: 600; }
+.bs { fill: var(--tx-3); font-size: 10.5px; }
+.edge { fill: none; stroke-width: 1.4; opacity: 0.95; }
+.el { fill: var(--tx-2); font-size: 10px; }
+.halo { paint-order: stroke; stroke: #26292e; stroke-width: 4px; stroke-linejoin: round; }
+.band { fill: rgba(255,255,255,0.014); }
+.lane-hd { fill: rgba(255,255,255,0.035); }
+.lane-t { font: 600 12px/1 -apple-system, sans-serif; }
+.lane-vl { stroke-width: 1.1; stroke-dasharray: 3 6; opacity: 0.5; }
+.msg { cursor: pointer; }
+.msg line, .msg path { stroke-width: 1.4; }
+.msg:hover line, .msg:hover path { stroke-width: 2.2; }
+.ml { fill: var(--tx-2); font-size: 11px; }
+.msg.is-on .ml { fill: var(--tx); font-weight: 600; }
+.mn { fill: var(--tx-3); font: 10px/1 var(--mono); }
+.tier { fill: var(--tx-3); font: 11px/1 var(--mono); letter-spacing: 0.1em; }
+.cls rect { fill: rgba(255,255,255,0.035); }
+.cn { font-size: 13px; font-weight: 600; }
+.cs { fill: var(--tx-3); font-size: 10.5px; }
+.cm { fill: var(--tx-2); font: 11px/1.4 var(--mono); }
+.rel { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 1.2; }
+.rl { fill: var(--tx-3); font-size: 9.5px; }
+.fproc { fill: rgba(255,255,255,0.045); stroke: rgba(255,255,255,0.14); }
+.fterm { fill: rgba(255,180,84,0.10); stroke: rgba(255,180,84,0.45); }
+.fd { fill: rgba(51,214,192,0.07); stroke: rgba(51,214,192,0.45); }
+.fn { fill: var(--tx); font-size: 12px; }
+.fedge { fill: none; stroke: rgba(255,255,255,0.34); stroke-width: 1.4; }
+.fl { fill: var(--tx-3); font-size: 10.5px; }
+
+/* ---------------- step card ---------------- */
+.step-card { display: none; border: 1px solid var(--line-2); border-left: 3px solid var(--wms); border-radius: 12px; padding: 14px 18px; margin-bottom: 16px; background: linear-gradient(90deg, rgba(255,180,84,0.06), transparent 60%); }
+.step-card.is-on { display: block; }
+.step-card .sc-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-card .sc-n { font: 600 11px/1 var(--mono); color: var(--wms); }
+.step-card h3 { margin: 0; font-size: 15px; }
+.step-card p { margin: 6px 0 10px; color: var(--tx-2); font-size: 13px; }
+.refs { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref { font: 11px/1.6 var(--mono); color: var(--tx-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: rgba(255,255,255,0.03); }
+.ref b { color: var(--shell); font-weight: 600; }
+
+/* ---------------- p0 list ---------------- */
+.p0-list { padding: 6px 0 10px; }
+.p0-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 9px 18px; border-bottom: 1px dashed rgba(255,255,255,0.06); cursor: pointer; }
+.p0-item:last-child { border-bottom: 0; }
+.p0-item:hover { background: rgba(255,255,255,0.03); }
+.p0-item .nm { font: 12.5px/1.4 var(--mono); color: var(--tx); }
+.p0-item .wh { font-size: 11.5px; color: var(--tx-3); margin-top: 3px; }
+.cov { font: 11px/1 var(--mono); color: var(--shell); white-space: nowrap; padding-top: 4px; }
+.cov.low { color: #ff9f43; }
+
+/* ---------------- code ---------------- */
+.code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font: 11.5px/1 var(--mono); padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); color: var(--tx-2); background: rgba(255,255,255,0.02); cursor: pointer; }
+.chip:hover { border-color: var(--line-2); color: var(--tx); }
+.chip.is-on { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.code-tools { display: flex; align-items: center; gap: 10px; }
+.code-tools input[type="search"] { width: 210px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+.code-tools input[type="search"]:focus { border-color: var(--shell); }
+.sw { font-size: 11.5px; color: var(--tx-3); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.step-hint { display: none; margin-bottom: 10px; font-size: 12px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 10px; }
+.step-hint.is-on { display: block; }
+.code-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: auto; max-height: calc(100vh - 260px); background: #191c21; }
+.code { min-width: 900px; font: 12px/1.85 var(--mono); }
+.crow { display: grid; grid-template-columns: 58px minmax(0, 1fr) 360px; align-items: start; border-bottom: 1px solid rgba(255,255,255,0.024); }
+.crow:hover { background: rgba(255,255,255,0.035); }
+.crow.has-note { background: rgba(255,255,255,0.017); }
+.crow.is-focus { background: rgba(255,180,84,0.09); }
+.crow .ln { color: #4b5869; text-align: right; padding: 0 10px 0 0; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); }
+.crow .lc { padding: 0 14px; white-space: pre; overflow-x: auto; color: var(--code); }
+.crow .la { padding: 1px 12px 3px 12px; font: 11.5px/1.6 -apple-system, "PingFang SC", sans-serif; color: var(--tx-2); border-left: 1px solid rgba(255,255,255,0.05); }
+.crow .la .k { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.crow.hidden { display: none; }
+.code-empty { padding: 40px; text-align: center; color: var(--tx-3); }
+
+/* ---------------- risk ---------------- */
+.risk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.risk-table th, .risk-table td { text-align: left; padding: 11px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.risk-table th { font: 11px/1 var(--mono); letter-spacing: 0.08em; color: var(--tx-3); text-transform: uppercase; }
+.risk-table td:first-child { color: var(--tx); width: 30%; }
+.risk-table td:nth-child(2) { color: var(--tx-2); }
+.risk-table code { color: var(--sf); font-size: 11.5px; }
+
+.facts { margin: 0; padding: 14px 18px 14px 36px; color: var(--tx-2); font-size: 12.5px; }
+.facts li { margin: 8px 0; }
+.facts b { color: var(--tx); }
+
+/* ---------------- footer ---------------- */
+.ftr { position: relative; z-index: 1; border-top: 1px solid var(--line); padding: 14px 40px 26px; color: var(--tx-3); font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+.ftr code { color: var(--tx-2); }
+.dot { opacity: 0.5; }
+
+@media (max-width: 1180px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { position: relative; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  .grid-2 { grid-template-columns: 1fr; }
+  .crow { grid-template-columns: 46px minmax(0, 1fr) 240px; }
+  .hdr { flex-direction: column; align-items: flex-start; }
+}
+
+/* code tokens */
+.crow .lc .k { color: #ff9e64; }
+.crow .lc .s { color: #9ece6a; }
+.crow .lc .c1 { color: #5f6b7a; font-style: italic; }
+.crow .lc .n { color: #7dcfff; }
+.crow .lc .a { color: #bb9af7; }
+
+
+.msg.is-on .band { fill: rgba(255,180,84,0.06); }
+.line-hd { fill: none; }
+
+/* ---------------- inventory ---------------- */
+.inv-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.inv-bar select, .inv-bar input[type="search"] {
+  padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none;
+}
+.inv-bar input[type="search"] { width: 220px; }
+.inv-bar select:focus, .inv-bar input:focus { border-color: var(--shell); }
+.inv-wrap { max-height: calc(100vh - 300px); overflow: auto; }
+.inv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv-table th { position: sticky; top: 0; background: #0a0e15; text-align: left; padding: 9px 14px;
+  font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; color: var(--tx-3); border-bottom: 1px solid var(--line); }
+.inv-table td { padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.inv-table tr.row:hover { background: rgba(255,255,255,0.035); cursor: pointer; }
+.inv-table .fn { font: 12px/1.5 var(--mono); color: var(--tx); }
+.inv-table .fl { color: var(--tx-3); font: 10.5px/1.5 var(--mono); }
+.inv-table .rg { font: 11px/1.5 var(--mono); color: var(--tx-2); white-space: nowrap; }
+.inv-table .act-hd { width: 82px; }
+.inv-table td.act { text-align: right; }
+.inv-table button.go-code, .inv-table button.go-card {
+  appearance: none; cursor: pointer; white-space: nowrap;
+  font: 11px/1 var(--mono); padding: 5px 9px; border-radius: 6px;
+  border: 1px solid rgba(255,180,84,0.45); background: rgba(255,180,84,0.10); color: var(--wms);
+}
+.inv-table button.go-code:hover { background: rgba(255,180,84,0.20); }
+.inv-table button.go-card {
+  border-color: var(--line-2); background: rgba(255,255,255,0.03); color: var(--tx-2);
+}
+.inv-table button.go-card:hover { color: var(--tx); border-color: var(--wms); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font: 10.5px/1.6 var(--mono); border: 1px solid; }
+.badge.covered { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.badge.partial { color: var(--wms); border-color: rgba(255,180,84,0.4); background: rgba(255,180,84,0.08); }
+.badge.uncovered { color: var(--tx-3); border-color: var(--line); }
+.card-row td { background: rgba(255,255,255,0.02); }
+.card-box { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px 18px; font-size: 12px; color: var(--tx-2); }
+.card-box .k { color: var(--tx-3); font: 10px/1.4 var(--mono); letter-spacing: 0.08em; display: block; }
+.card-box .wide { grid-column: 1 / -1; }
+.card-box b { color: var(--tx); font-weight: 600; }
+@media (max-width: 1180px) { .card-box { grid-template-columns: 1fr 1fr; } }
+
+#diagram-seq { max-height: 78vh; overflow: auto; }
+
+/* ---------------- deep read ---------------- */
+.scenario { display: flex; gap: 0; align-items: stretch; overflow-x: auto; border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 14px; background: linear-gradient(90deg, rgba(255,180,84,0.05), transparent 55%); }
+.scenario .ev { min-width: 150px; padding: 10px 14px; border-right: 1px dashed rgba(255,255,255,0.06); }
+.scenario .ev:last-child { border-right: 0; }
+.scenario .t { font: 11px/1.4 var(--mono); color: var(--wms); }
+.scenario .l { font-size: 12px; color: var(--tx); margin-top: 3px; }
+.scenario .d { font-size: 10.5px; color: var(--tx-3); margin-top: 2px; line-height: 1.45; }
+
+.deep-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.navbtn { appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,0.03); color: var(--tx-2);
+  border-radius: 7px; padding: 7px 12px; font: 12px/1 var(--mono); cursor: pointer; }
+.navbtn:hover { border-color: var(--line-2); color: var(--tx); }
+.deep-progress { font: 11.5px/1 var(--mono); color: var(--tx-3); flex: 1; text-align: center; }
+
+.deep-wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+.deep-body { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 26px 30px 34px; }
+.deep-body .kicker { font: 11px/1.4 var(--mono); letter-spacing: 0.1em; color: var(--wms); }
+.deep-body h1 { margin: 8px 0 6px; font-size: 25px; letter-spacing: -0.01em; }
+.deep-body .tldr { margin: 0 0 22px; font-size: 15px; line-height: 1.75; color: var(--tx); border-left: 2px solid var(--wms); padding-left: 14px; }
+.deep-body h2 { margin: 26px 0 10px; font-size: 13px; letter-spacing: 0.06em; color: var(--tx-3); font-weight: 600;
+  text-transform: uppercase; font-family: var(--mono); }
+.deep-body p { margin: 8px 0; color: var(--tx-2); line-height: 1.85; }
+.deep-body .why { font-size: 14px; color: var(--tx); line-height: 1.85; }
+.deep-body ol.walk { margin: 6px 0 0; padding-left: 0; list-style: none; counter-reset: w; }
+.deep-body ol.walk li { position: relative; padding: 10px 0 12px 38px; border-bottom: 1px dashed rgba(255,255,255,0.06); counter-increment: w; }
+.deep-body ol.walk li::before { content: counter(w); position: absolute; left: 0; top: 10px; width: 22px; height: 22px;
+  border-radius: 50%; border: 1px solid var(--line-2); color: var(--wms); font: 11px/22px var(--mono); text-align: center; }
+.deep-body ol.walk .call { font: 12.5px/1.6 var(--mono); color: var(--tx); }
+.deep-body ol.walk .ref { display: inline-block; margin-left: 8px; font: 10.5px/1.6 var(--mono); color: var(--shell);
+  border: 1px solid rgba(51,214,192,0.25); background: rgba(51,214,192,0.06); border-radius: 5px; padding: 0 6px; }
+.deep-body ol.walk .what { margin-top: 4px; font-size: 13px; color: var(--tx-2); }
+.deep-body table.state { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.deep-body table.state th, .deep-body table.state td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.deep-body table.state th { font: 10.5px/1.4 var(--mono); color: var(--tx-3); letter-spacing: 0.06em; }
+.deep-body table.state code { color: var(--tx); font: 11.5px/1.5 var(--mono); }
+.deep-body .threads { font-size: 13px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 12px; }
+.deep-body ul.plain { margin: 6px 0; padding-left: 18px; color: var(--tx-2); font-size: 13px; }
+.deep-body ul.plain li { margin: 6px 0; line-height: 1.7; }
+.deep-body .next { margin-top: 26px; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,180,84,0.25);
+  background: rgba(255,180,84,0.06); color: var(--tx); font-size: 13px; }
+.deep-body .concept { display: inline-block; margin: 4px 8px 0 0; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.03); font-size: 12px; color: var(--tx-2); }
+.deep-body .concept b { color: var(--tx); font-weight: 600; }
+.deep-body .missing { color: var(--tx-3); font-size: 13px; }
+.deep-body abbr.term { text-decoration: none; border-bottom: 1px dotted var(--shell); cursor: help; }
+.deep-side { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px; position: sticky; top: 10px; }
+.deep-side .side-hd { font-size: 12px; color: var(--tx); margin-bottom: 8px; }
+.deep-side dl { margin: 0; }
+.deep-side dt { font: 11.5px/1.6 var(--mono); color: var(--shell); margin-top: 8px; }
+.deep-side dd { margin: 2px 0 0; font-size: 11.5px; color: var(--tx-3); line-height: 1.6; }
+.branch-tbl { margin-top: 8px; font-size: 12.5px; }
+.branch-tbl .row { display: grid; grid-template-columns: 1.1fr 1.2fr 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); }
+.branch-tbl .row.head { color: var(--tx-3); font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; }
+.branch-tbl .cond { color: var(--tx); font: 11.5px/1.6 var(--mono); }
+.branch-tbl .then { color: var(--tx-2); }
+.branch-tbl .eff { color: var(--tx-3); }
+@media (max-width: 1180px) { .deep-wrap { grid-template-columns: 1fr; } .deep-side { position: relative; } }
+
+/* learning path */
+.lp { padding: 8px 18px 14px; }
+.lp-row { display: grid; grid-template-columns: 80px 1fr 1.4fr; gap: 12px; padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); font-size: 12.5px; }
+.lp-row:last-child { border-bottom: 0; }
+.lp-t { font: 11px/1.6 var(--mono); color: var(--wms); }
+.lp-g { color: var(--tx); }
+.lp-r { color: var(--tx-3); }
+
+
+/* ============================ light theme ============================ */
+[data-theme="light"] {
+  --bg: #f3efe5;
+  --bg-2: #e9e2d4;
+  --panel: #fcf9f1;
+  --panel-2: #f4ede0;
+  --line: rgba(62, 50, 34, 0.15);
+  --line-2: rgba(62, 50, 34, 0.28);
+  --tx: #2b2620;
+  --tx-2: #564f42;
+  --tx-3: #7d7362;
+  --wms: #9a5900;
+  --shell: #0a7365;
+  --app: #24589f;
+  --sf: #61419c;
+  --code: #2f2a22;
+  --panel-solid: rgba(251, 247, 238, 0.92);
+  --accent: #24589f;
+}
+[data-theme="light"] body {
+  background: radial-gradient(1100px 520px at 16% -12%, rgba(176, 116, 30, 0.075), transparent 62%),
+              radial-gradient(900px 460px at 92% 0%, rgba(10, 115, 101, 0.05), transparent 58%),
+              var(--bg);
+}
+[data-theme="light"] .bg-grid {
+  background-image: linear-gradient(rgba(62, 50, 34, 0.055) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(62, 50, 34, 0.055) 1px, transparent 1px);
+}
+[data-theme="light"] .hdr { background: rgba(243, 239, 229, 0.78); }
+[data-theme="light"] .stat {
+  background: linear-gradient(180deg, #fdfaf3, #f1eada);
+  box-shadow: 0 1px 0 rgba(62, 50, 34, 0.06);
+}
+[data-theme="light"] .step:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .step.is-on { background: #fdfaf3; border-color: var(--line-2); box-shadow: 0 1px 3px rgba(62, 50, 34, 0.10); }
+[data-theme="light"] .step .n { color: var(--tx-3); }
+[data-theme="light"] .step .t { color: var(--tx-2); }
+[data-theme="light"] .chip { background: #fdfaf3; }
+[data-theme="light"] .chip.is-on { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .navbtn { background: #fdfaf3; }
+[data-theme="light"] .code-tools input[type="search"],
+[data-theme="light"] .inv-bar select,
+[data-theme="light"] .inv-bar input[type="search"] { background: #fdfaf3; }
+[data-theme="light"] .code-wrap { background: #faf6eb; }
+[data-theme="light"] .crow:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .crow.has-note { background: rgba(62, 50, 34, 0.026); }
+[data-theme="light"] .crow.is-focus { background: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .crow .ln { color: #a9a08c; border-right-color: var(--line); }
+[data-theme="light"] .crow .la { border-left-color: var(--line); color: var(--tx-2); }
+[data-theme="light"] .crow .lc .k { color: #9a3f00; }
+[data-theme="light"] .crow .lc .s { color: #2c6f2c; }
+[data-theme="light"] .crow .lc .c1 { color: #948b78; }
+[data-theme="light"] .crow .lc .n { color: #0a6c9e; }
+[data-theme="light"] .crow .lc .a { color: #7133a8; }
+[data-theme="light"] .inv-table th { background: #efe8d8; }
+[data-theme="light"] .inv-table tr.row:hover { background: rgba(62, 50, 34, 0.045); }
+[data-theme="light"] .card-row td { background: #f9f4e8; }
+[data-theme="light"] .badge.covered { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code { background: rgba(154,89,0,0.10); border-color: rgba(154,89,0,0.42); color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code:hover { background: rgba(154,89,0,0.18); }
+[data-theme="light"] .inv-table button.go-card { background: rgba(14,24,38,0.04); border-color: var(--line-2); }
+[data-theme="light"] .badge.partial { color: #8a5200; background: rgba(154, 89, 0, 0.10); }
+[data-theme="light"] .scenario { background: linear-gradient(90deg, rgba(176, 116, 30, 0.06), transparent 55%); }
+[data-theme="light"] .scenario .ev { border-right-color: var(--line); }
+[data-theme="light"] .deep-body .concept { background: #f7f1e4; }
+[data-theme="light"] .ref { background: #f7f1e4; }
+[data-theme="light"] .deep-body .next { background: rgba(196, 124, 22, 0.08); }
+[data-theme="light"] .theme-toggle { background: #fdfaf3; }
+[data-theme="light"] .theme-toggle .ico-moon { display: none; }
+[data-theme="light"] .theme-toggle .ico-sun { display: block; }
+
+/* SVG 在亮色下的适配 */
+[data-theme="light"] .halo { stroke: #f3efe5; }
+[data-theme="light"] .band { fill: rgba(14, 24, 38, 0.022); }
+[data-theme="light"] .msg.is-on .band { fill: rgba(196, 124, 22, 0.09); }
+[data-theme="light"] .grp { fill: rgba(253, 249, 241, 0.65); stroke-opacity: 0.7; }
+[data-theme="light"] .box rect { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .bx { fill: var(--tx); }
+[data-theme="light"] .bs { fill: var(--tx-3); }
+[data-theme="light"] .lane-hd { fill: #fdfaf3; }
+[data-theme="light"] .lane-vl { opacity: 0.28; }
+[data-theme="light"] .cls rect { fill: #fdfaf3; }
+[data-theme="light"] .cm { fill: var(--tx-2); }
+[data-theme="light"] .rel { stroke: rgba(14, 24, 38, 0.22); }
+[data-theme="light"] .fproc { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .fterm { fill: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .fd { fill: rgba(10, 115, 101, 0.07); }
+[data-theme="light"] .fedge { stroke: rgba(14, 24, 38, 0.30); }
+[data-theme="light"] .edge.edge-binder, [data-theme="light"] .msg.msg-binder line,
+[data-theme="light"] .msg.msg-binder path { stroke: #a86400; }
+[data-theme="light"] .edge.edge-oneway, [data-theme="light"] .msg.msg-oneway line,
+[data-theme="light"] .msg.msg-oneway path { stroke: #6f44a8; }
+[data-theme="light"] .edge.edge-callback, [data-theme="light"] .msg.msg-callback line,
+[data-theme="light"] .msg.msg-callback path { stroke: #0a7365; }
+[data-theme="light"] .edge.edge-call, [data-theme="light"] .msg.msg-call line,
+[data-theme="light"] .msg.msg-call path { stroke: #5f6b7a; }
+[data-theme="light"] .msg.msg-state line, [data-theme="light"] .msg.msg-state path { stroke: #8a5200; }
+[data-theme="light"] .ml { fill: var(--tx-2); }
+[data-theme="light"] .el { fill: var(--tx-2); }
+[data-theme="light"] .fn { fill: var(--tx); }
+
+/* 语义色在亮色下加深（只作用于文字，避免染到容器矩形） */
+[data-theme="light"] .grp-label.grp-wms, [data-theme="light"] .lane-t.lane-WMS,
+[data-theme="light"] .cn.side-WMS { fill: #8a5200; }
+[data-theme="light"] .grp-label.grp-app, [data-theme="light"] .lane-t.lane-APP,
+[data-theme="light"] .cn.side-APP { fill: #24589f; }
+[data-theme="light"] .grp-label.grp-shell, [data-theme="light"] .lane-t.lane-SHELL,
+[data-theme="light"] .cn.side-SHELL { fill: #0a7365; }
+[data-theme="light"] .grp-label.grp-sf, [data-theme="light"] .lane-t.lane-SF,
+[data-theme="light"] .cn.side-SF { fill: #61419c; }
+[data-theme="light"] .cn.side-AIDL { fill: #4c5766; }
+[data-theme="light"] .grp.grp-wms, [data-theme="light"] .lane-hd.lane-WMS { stroke: #9a5900; }
+[data-theme="light"] .grp.grp-app, [data-theme="light"] .lane-hd.lane-APP { stroke: #24589f; }
+[data-theme="light"] .grp.grp-shell, [data-theme="light"] .lane-hd.lane-SHELL { stroke: #0a7365; }
+[data-theme="light"] .grp.grp-sf, [data-theme="light"] .lane-hd.lane-SF { stroke: #61419c; }
+[data-theme="light"] .cls.side-WMS rect { stroke: #9a5900; }
+[data-theme="light"] .cls.side-SHELL rect { stroke: #0a7365; }
+[data-theme="light"] .cls.side-AIDL rect { stroke: #7b8798; }
+[data-theme="light"] .cls.side-APP rect { stroke: #24589f; }
+[data-theme="light"] .cls.side-SF rect { stroke: #61419c; }
+
+/* header 上的主题按钮 */
+.hdr-right { display: flex; align-items: flex-end; gap: 14px; }
+.theme-toggle {
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--tx-2);
+  background: rgba(255, 255, 255, 0.04); cursor: pointer; font: 12px/1 inherit;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.theme-toggle:hover { border-color: var(--line-2); color: var(--tx); }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .ico-moon { display: block; }
+.theme-toggle .ico-sun { display: none; }
+.theme-toggle svg path, .theme-toggle svg circle { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.theme-toggle .ico-moon path { fill: currentColor; stroke: none; }
+@media (max-width: 1180px) { .hdr-right { width: 100%; justify-content: space-between; } }
+
+/* ---------------- file tree ---------------- */
+.files-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.files-bar input[type="search"] { width: 260px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+[data-theme="light"] .files-bar input[type="search"] { background: #fdfaf3; }
+.files-wrap { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: 0; }
+.tree { padding: 10px 8px 18px 14px; font: 12px/1.9 var(--mono); max-height: calc(100vh - 300px); overflow: auto; }
+.tnode { white-space: nowrap; }
+.tnode .row { display: flex; align-items: center; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; }
+.tnode .row:hover { background: rgba(255,255,255,0.05); }
+[data-theme="light"] .tnode .row:hover { background: rgba(14,24,38,0.05); }
+.tnode .caret { width: 12px; color: var(--tx-3); flex: none; }
+.tnode .ico { width: 14px; height: 14px; flex: none; opacity: .85; }
+.tnode .nm { color: var(--tx); }
+.tnode.dir > .row .nm { color: var(--tx-2); }
+.tnode .meta { color: var(--tx-3); font-size: 10.5px; }
+.tnode .badge-mini { font: 10px/1.6 var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--tx-3); }
+.tnode .badge-mini.hit { color: var(--wms); border-color: rgba(255,180,84,0.35); }
+.tnode .badge-mini.p0 { color: var(--shell); border-color: rgba(51,214,192,0.35); }
+.tnode .children { margin-left: 16px; border-left: 1px dashed rgba(255,255,255,0.10); padding-left: 8px; }
+[data-theme="light"] .tnode .children { border-left-color: rgba(14,24,38,0.12); }
+.tnode.collapsed > .children { display: none; }
+.tnode.sel > .row { background: rgba(255,180,84,0.12); }
+[data-theme="light"] .tnode.sel > .row { background: rgba(196,124,22,0.12); }
+.tnode.hidden { display: none; }
+.file-detail { border-left: 1px solid var(--line); padding: 14px 18px; max-height: calc(100vh - 300px); overflow: auto; font-size: 12.5px; }
+.file-detail h3 { margin: 0 0 4px; font-size: 13.5px; font-family: var(--mono); word-break: break-all; }
+.file-detail .fp { color: var(--tx-3); font: 10.5px/1.6 var(--mono); word-break: break-all; margin-bottom: 10px; }
+.file-detail dt { color: var(--tx-3); font: 10px/1.6 var(--mono); letter-spacing: .08em; margin-top: 12px; }
+.file-detail dd { margin: 2px 0 0; color: var(--tx-2); }
+.file-detail .chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.file-detail .stepchip { font: 11px/1.6 var(--mono); padding: 1px 8px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: rgba(255,255,255,0.035); color: var(--tx-2); cursor: pointer; }
+[data-theme="light"] .file-detail .stepchip { background: #fdfaf3; }
+.file-detail .stepchip:hover { border-color: var(--wms); color: var(--wms); }
+.file-detail .meth { font: 11.5px/1.7 var(--mono); color: var(--tx-2); }
+.file-detail .meth b { color: var(--tx); font-weight: 500; }
+@media (max-width: 1180px) { .files-wrap { grid-template-columns: 1fr; } .file-detail { border-left: 0; border-top: 1px solid var(--line); } }
+
+/* ---------------- detailed diagrams ---------------- */
+.rowband { fill: rgba(255,255,255,0.035); }
+[data-theme="light"] .rowband { fill: rgba(14,24,38,0.028); }
+.rn { font: 600 12px/1 var(--mono); fill: var(--tx); letter-spacing: .04em; }
+.rnote { font-size: 10.5px; fill: var(--tx-3); }
+.colhd { fill: rgba(255,255,255,0.055); }
+[data-theme="light"] .colhd { fill: #fdfaf3; }
+.colt { font: 600 11.5px/1.2 -apple-system, sans-serif; }
+.colseam { stroke: rgba(255,255,255,0.12); stroke-dasharray: 3 7; }
+[data-theme="light"] .colseam { stroke: rgba(14,24,38,0.10); }
+.anode rect { fill: rgba(255,255,255,0.07); }
+[data-theme="light"] .anode rect { fill: #fdfaf3; }
+.anl { font-size: 11.5px; fill: var(--tx); font-family: var(--mono); }
+.ans { font-size: 10px; fill: var(--tx-3); }
+.ant { font: 9.5px/1 var(--mono); fill: var(--tx-3); text-anchor: end; }
+.anb { font: 9.5px/1 var(--mono); fill: var(--wms); }
+.aedge { fill: none; stroke-width: 1.4; opacity: 1; }
+.ael { font-size: 10px; fill: var(--tx-2); }
+.aed { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.lg { font: 9.5px/1 var(--mono); fill: var(--tx-3); }
+.phasebar { fill: rgba(255,255,255,0.05); }
+[data-theme="light"] .phasebar { fill: rgba(62, 50, 34, 0.06); }
+.phasebar-t { font: 600 10.5px/1 var(--mono); fill: var(--tx-2); letter-spacing: .04em; }
+.md { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.blockmark { fill: rgba(255,107,107,0.10); stroke: rgba(255,107,107,0.45); }
+.blockmark-t { font-size: 9.5px; fill: #ff8b8b; text-anchor: middle; }
+[data-theme="light"] .blockmark { fill: rgba(200,40,40,0.07); }
+[data-theme="light"] .blockmark-t { fill: #b03030; }
+.region { fill: rgba(255,255,255,0.012); stroke: rgba(255,255,255,0.10); stroke-dasharray: 5 6; }
+[data-theme="light"] .region { fill: rgba(253, 249, 241, 0.65); stroke: rgba(62, 50, 34, 0.18); }
+.region-t { font: 600 11.5px/1 var(--mono); fill: var(--tx-3); letter-spacing: .04em; }
+.fnote { font-size: 9.5px; fill: var(--tx-3); }
+
+
+/* ---------- ANR 文档：沿用 wiki 的 hdr/rail/stage/panel，只补正文排版 ---------- */
+.anr-toc { padding: 4px 0 40px; }
+.anr-toc a { display: block; padding: 5px 10px 5px 12px; border-left: 2px solid transparent;
+  color: var(--tx-2); font-size: 12.5px; line-height: 1.55; text-decoration: none;
+  overflow-wrap: anywhere; word-break: break-word; }
+.anr-toc a:hover { color: var(--tx); background: rgba(255,255,255,.04); }
+[data-theme="light"] .anr-toc a:hover { background: rgba(62,50,34,.05); }
+.anr-toc a.lv3 { padding-left: 24px; font-size: 12px; color: var(--tx-3); }
+.anr-toc a.active { border-left-color: var(--wms); color: var(--tx); background: rgba(255,180,84,.08); }
+.anr-doc { padding: 24px 30px 30px; }
+.anr-doc > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.anr-doc h2 { margin: 30px 0 10px; padding-top: 20px; border-top: 1px solid var(--line);
+  font-size: 20px; letter-spacing: 0; color: var(--tx); text-transform: none; }
+.anr-doc h3 { margin: 22px 0 8px; font-size: 15.5px; color: var(--tx); letter-spacing: 0; text-transform: none; }
+.anr-doc h4 { margin: 16px 0 6px; font-size: 13.5px; color: var(--tx-2); }
+.anr-doc p { margin: 9px 0; color: var(--tx-2); line-height: 1.85; }
+.anr-doc strong { color: var(--tx); }
+.anr-doc ul, .anr-doc ol { margin: 8px 0; padding-left: 22px; color: var(--tx-2); }
+.anr-doc li { margin: 4px 0; line-height: 1.75; }
+.anr-doc blockquote { margin: 14px 0; padding: 10px 16px; border-left: 3px solid var(--wms);
+  background: rgba(255,180,84,.07); border-radius: 0 8px 8px 0; color: var(--tx-2); }
+[data-theme="light"] .anr-doc blockquote { background: rgba(138,82,0,.07); }
+.anr-doc code { font: 12.5px/1.6 var(--mono); background: #191c21; padding: 1px 5px; border-radius: 4px; color: var(--tx); }
+[data-theme="light"] .anr-doc code { background: #f3ecdf; }
+.anr-doc pre { position: relative; background: #191c21; border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; overflow: auto; margin: 14px 0; }
+[data-theme="light"] .anr-doc pre { background: #faf6eb; }
+.anr-doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.75; }
+.anr-doc hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+.anr-doc a { color: var(--wms); }
+.anr-doc img { max-width: 100%; }
+.anr-doc .table-wrap { overflow: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; }
+.anr-doc table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.anr-doc th, .anr-doc td { border-bottom: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+.anr-doc th { background: var(--panel-2); color: var(--tx); font-weight: 600; white-space: nowrap; }
+.anr-doc tr:last-child td { border-bottom: 0; }
+.mermaid-box { margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); overflow: hidden; }
+.mermaid-hd { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font: 10.5px/1.6 var(--mono); color: var(--tx-3); letter-spacing: .06em; }
+.mermaid { padding: 16px; margin: 0; background: none; border: 0; overflow: auto; text-align: center; }
+pre.mermaid { white-space: pre-wrap; text-align: left; font: 12px/1.7 var(--mono); color: var(--tx-3); }
+.mermaid svg { max-width: 100%; height: auto; }
+.anr-pager { display: flex; justify-content: space-between; gap: 14px; margin: 4px 0 40px; font-size: 12.5px; }
+.anr-pager a { color: var(--tx-2); text-decoration: none; border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 14px; background: var(--panel); }
+.anr-pager a:hover { border-color: var(--line-2); color: var(--tx); }
+.anr-cards { display: grid; gap: 12px; margin-top: 18px; }
+.anr-card { display: block; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: inherit; text-decoration: none; transition: border-color .16s, transform .16s; }
+.anr-card:hover { border-color: var(--wms); transform: translateY(-1px); }
+.anr-card .hd { display: flex; align-items: baseline; gap: 12px; }
+.anr-card .no { font: 600 11px/1 var(--mono); color: var(--tx-3); }
+.anr-card h2 { margin: 0; font-size: 16px; letter-spacing: 0; text-transform: none; border: 0; padding: 0; }
+.anr-card .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.anr-card .pill { font: 10.5px/1.8 var(--mono); padding: 0 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--tx-3); }
+</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <div class="kicker">AOSP · android17-release · ANR</div>
+    <h1>Service ANR「放炸弹 / 拆炸弹」机制源码深度解析</h1>
+    <p class="sub">Service-ANR放炸弹与拆炸弹机制源码深度解析.md · 13 个小节 · 4 张 mermaid 图 · 48 行表格 · 28K 字</p>
+  </div>
+  <div class="hdr-right">
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" title="切换亮/暗色">
+      <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span class="tt-label">亮色</span>
+    </button>
+    <div class="hdr-stats"><div class="stat"><b>13</b><span>小节</span></div><div class="stat"><b>4</b><span>mermaid 图</span></div><div class="stat"><b>48</b><span>表格行</span></div><div class="stat"><b>28K</b><span>字数</span></div></div>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="rail">
+    <div class="phase">返回 <a href="../dist/index.html">站点索引</a> · <a href="index.html">ANR 索引</a></div>
+    <nav class="anr-toc" id="toc"><a class="lv2" href="#一什么是放炸弹--拆炸弹">一、什么是「放炸弹 / 拆炸弹」</a>
+<a class="lv2" href="#二设计意图">二、设计意图</a>
+<a class="lv3" href="#21-为什么需要这套机制">2.1 为什么需要这套机制</a>
+<a class="lv3" href="#22-几个关键设计权衡">2.2 几个关键设计权衡</a>
+<a class="lv2" href="#三三种炸弹对比">三、三种「炸弹」对比</a>
+<a class="lv2" href="#四架构图">四、架构图</a>
+<a class="lv2" href="#五核心流程图">五、核心流程图</a>
+<a class="lv3" href="#51-放炸弹--拆炸弹正常路径">5.1 放炸弹 → 拆炸弹（正常路径）</a>
+<a class="lv3" href="#52-炸弹爆炸anr-路径">5.2 炸弹爆炸（ANR 路径）</a>
+<a class="lv2" href="#六放炸弹逐行精度解析">六、放炸弹：逐行精度解析</a>
+<a class="lv3" href="#61-入口bumpserviceexecutinglocked--进入执行态并埋雷">6.1 入口：bumpServiceExecutingLocked —— 进入「执行态」并埋雷</a>
+<a class="lv3" href="#62-真正放炸弹scheduleservicetimeoutlocked">6.2 真正放炸弹：scheduleServiceTimeoutLocked</a>
+<a class="lv3" href="#63-放炸弹的三个典型调用现场">6.3 放炸弹的三个典型调用现场</a>
+<a class="lv2" href="#七拆炸弹逐行精度解析">七、拆炸弹：逐行精度解析</a>
+<a class="lv3" href="#71-应用回调入口servicedoneexecutinglocked带-type-的重载">7.1 应用回调入口：serviceDoneExecutingLocked（带 type 的重载）</a>
+<a class="lv3" href="#72-核心拆弹servicedoneexecutinglocked带-indestroying-的重载">7.2 核心拆弹：serviceDoneExecutingLocked（带 inDestroying 的重载）</a>
+<a class="lv3" href="#73-拆弹的其它现场">7.3 拆弹的其它现场</a>
+<a class="lv2" href="#八炸弹爆炸servicetimeout-逐行解析">八、炸弹爆炸：serviceTimeout 逐行解析</a>
+<a class="lv2" href="#九底层引信anrtimer-抽象层">九、底层引信：AnrTimer 抽象层</a>
+<a class="lv3" href="#91-两种实现模式">9.1 两种实现模式</a>
+<a class="lv3" href="#92-expirenative-到点后如何引爆">9.2 expire：native 到点后如何引爆</a>
+<a class="lv3" href="#93-accept-vs-discard-的-native-配合">9.3 accept vs discard 的 native 配合</a>
+<a class="lv2" href="#十完整时序总览放拆爆-三态">十、完整时序总览（放→拆→爆 三态）</a>
+<a class="lv2" href="#十一补充炸弹②startforeground-超时">十一、补充：炸弹②——startForeground 超时</a>
+<a class="lv2" href="#十二总结一图记住核心设计">十二、总结：一图记住核心设计</a>
+<a class="lv2" href="#附录关键代码位置索引">附录：关键代码位置索引</a></nav>
+  </aside>
+  <section class="stage">
+    <div class="panel">
+      <div class="panel-hd"><h2>正文</h2><span class="hint">Service-ANR放炸弹与拆炸弹机制源码深度解析.md · 13 个小节 · 4 张 mermaid 图 · 48 行表格 · 28K 字</span></div>
+      <article class="deep-body anr-doc"><blockquote>
+<p>基于本仓库 <code>base/services/core/java/com/android/server/am/ActiveServices.java</code>、 <code>ActivityManagerService.java</code>、<code>ActivityManagerConstants.java</code> 以及 <code>base/services/core/java/com/android/server/utils/AnrTimer.java</code> 的实现。</p>
+<p>本文所有行号均对应当前仓库代码。</p>
+</blockquote>
+<hr />
+<h2 id="一什么是放炸弹--拆炸弹">一、什么是「放炸弹 / 拆炸弹」</h2>
+<p>「放炸弹 / 拆炸弹」是 AOSP 圈对 <strong>Service ANR 超时检测机制</strong> 的形象说法：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>形象说法</th>
+<th>实际含义</th>
+<th>代码动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>放炸弹（埋雷）</strong></td>
+<td>在 system_server 侧投递一个<strong>延时超时消息</strong>，约定「应用必须在 N 毫秒内完成某个生命周期回调」</td>
+<td><code>scheduleServiceTimeoutLocked()</code> → <code>AnrTimer.start()</code></td>
+</tr>
+<tr>
+<td><strong>拆炸弹（排雷）</strong></td>
+<td>应用按时完成回调后，把那个延时消息<strong>取消掉</strong>，炸弹失效</td>
+<td><code>serviceDoneExecutingLocked()</code> → <code>AnrTimer.cancel()</code></td>
+</tr>
+<tr>
+<td><strong>炸弹爆炸</strong></td>
+<td>应用没能按时完成，延时消息到点被处理，触发 ANR</td>
+<td><code>serviceTimeout()</code> → <code>AnrHelper.appNotResponding()</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>核心思想就一句话：</p>
+<blockquote>
+<p><strong>system_server 是「裁判」，应用进程是「选手」。每次让应用执行一段生命周期回调 （onCreate / onStartCommand / onBind / onUnbind / onDestroy）之前，裁判先按下一个倒计时； 应用执行完会反向通知裁判「我做完了」，裁判随即清掉倒计时。如果倒计时先到点，说明应用卡死，判 ANR。</strong></p>
+</blockquote>
+<hr />
+<h2 id="二设计意图">二、设计意图</h2>
+<h3 id="21-为什么需要这套机制">2.1 为什么需要这套机制</h3>
+<p>Android 的 Service 生命周期回调（<code>onCreate</code>、<code>onStartCommand</code>、<code>onBind</code>…）是<strong>在应用主线程</strong>执行的。 如果开发者在这些回调里写了耗时操作（IO、网络、死锁、死循环），主线程会被阻塞。 但 system_server 无法直接「看见」应用主线程在干什么——它们是两个进程，只能通过 Binder 通信。</p>
+<p>因此设计者采用了**「超时兜底」**思路：</p>
+<ol type="1">
+<li><strong>不信任应用会主动汇报卡顿</strong>：应用卡死时根本没机会汇报。</li>
+<li><strong>用延时消息做「死亡开关（dead-man switch）」</strong>：裁判主动设一个超时，应用必须主动来「续命/拆弹」。</li>
+<li><strong>沉默即异常</strong>：只要应用在规定时间内没有回 <code>serviceDoneExecuting</code>，就认定它出了问题。</li>
+</ol>
+<p>这是一种典型的 <strong>「乐观执行 + 超时回收」</strong> 容错模型：正常情况几乎零开销（拆弹只是 remove 一个 message）， 异常情况能可靠兜底。</p>
+<h3 id="22-几个关键设计权衡">2.2 几个关键设计权衡</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>设计点</th>
+<th>意图</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>前台/后台不同超时</strong></td>
+<td>前台 Service 影响用户感知，必须严（20s）；后台不影响交互，放宽（200s）以减少误杀</td>
+</tr>
+<tr>
+<td><strong>按进程聚合计时（<code>ProcessAnrTimer</code>）</strong></td>
+<td>同一进程内多个 Service 共用一个计时器，避免 N 个 Service 起 N 个 timer，降低开销</td>
+</tr>
+<tr>
+<td><strong><code>executeNesting</code> 嵌套计数</strong></td>
+<td>一个 Service 可能同时处于 create+bind+start 多个执行段，用引用计数保证「全部完成」才拆弹</td>
+</tr>
+<tr>
+<td><strong><code>AnrTimer</code> 抽象层</strong></td>
+<td>把「延时消息」从 Java Handler 下沉到 native 实现，解决「system_server 自己卡顿导致计时不准」的问题</td>
+</tr>
+<tr>
+<td><strong>debug 进程豁免</strong></td>
+<td>应用被调试器断点暂停时不应判 ANR（<code>proc.isDebugging()</code> 直接 discard）</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="三三种炸弹对比">三、三种「炸弹」对比</h2>
+<p><code>ActiveServices</code> 构造函数（<code>ActiveServices.java:788-801</code>）一次性创建了 <strong>3 个独立的计时器</strong>， 对应三种不同的超时场景：</p>
+<pre><code>this.mActiveServiceAnrTimer = new ProcessAnrTimer(service,
+        ActivityManagerService.SERVICE_TIMEOUT_MSG, &quot;SERVICE_TIMEOUT&quot;, ...);      // 炸弹①
+this.mShortFGSAnrTimer = new ServiceAnrTimer(service,
+        ActivityManagerService.SERVICE_SHORT_FGS_ANR_TIMEOUT_MSG, ...);           // 炸弹③(short FGS)
+this.mServiceFGAnrTimer = new ServiceAnrTimer(service,
+        ActivityManagerService.SERVICE_FOREGROUND_TIMEOUT_MSG, ...);             // 炸弹②</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>炸弹</th>
+<th>计时器字段</th>
+<th>监控对象</th>
+<th>超时常量</th>
+<th>默认值</th>
+<th>触发场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 生命周期执行超时</strong></td>
+<td><code>mActiveServiceAnrTimer</code></td>
+<td><strong>进程</strong> <code>ProcessRecord</code></td>
+<td><code>SERVICE_TIMEOUT</code> / <code>SERVICE_BACKGROUND_TIMEOUT</code></td>
+<td><strong>前台 20s</strong> / <strong>后台 200s</strong></td>
+<td>onCreate/onStartCommand/onBind/onUnbind/onDestroy 卡死</td>
+</tr>
+<tr>
+<td><strong>② startForeground 超时</strong></td>
+<td><code>mServiceFGAnrTimer</code></td>
+<td><strong>Service</strong> <code>ServiceRecord</code></td>
+<td><code>mServiceStartForegroundTimeoutMs</code> (+ANR delay)</td>
+<td><strong>30s</strong> (+10s)</td>
+<td><code>startForegroundService()</code> 后没在 30s 内调 <code>startForeground()</code></td>
+</tr>
+<tr>
+<td><strong>③ short FGS 超时</strong></td>
+<td><code>mShortFGSAnrTimer</code></td>
+<td>Service</td>
+<td>short-FGS 相关</td>
+<td>—</td>
+<td>shortService 类型 FGS 超时未停止</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>本文聚焦最经典、最核心的 <strong>炸弹①（生命周期执行超时）</strong>，并在第八节补充炸弹②。</p>
+</blockquote>
+<p>超时常量定义在 <code>ActivityManagerConstants.java</code>：</p>
+<pre><code>// ActivityManagerConstants.java:317
+private static final long DEFAULT_SERVICE_TIMEOUT = 20 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;     // 前台 20s
+// ActivityManagerConstants.java:322
+private static final long DEFAULT_SERVICE_BACKGROUND_TIMEOUT = DEFAULT_SERVICE_TIMEOUT * 10;     // 后台 200s
+// ActivityManagerConstants.java:308
+private static final int DEFAULT_SERVICE_START_FOREGROUND_TIMEOUT_MS = 30 * 1000;                // FGS 30s
+// ActivityManagerConstants.java:310
+private static final int DEFAULT_SERVICE_START_FOREGROUND_ANR_DELAY_MS = 10 * 1000;              // FGS 额外 10s</code></pre>
+<blockquote>
+<p><code>Build.HW_TIMEOUT_MULTIPLIER</code> 用于低性能/模拟器设备整体放大超时，避免硬件慢导致误判。</p>
+</blockquote>
+<hr />
+<h2 id="四架构图">四、架构图</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>graph TB
+    subgraph App[&quot;应用进程 (e.g. com.example)&quot;]
+        MT[&quot;主线程 / ActivityThread&lt;br/&gt;H Handler&quot;]
+        SVC[&quot;Service 实例&lt;br/&gt;onCreate/onStartCommand/onBind...&quot;]
+        MT --&gt;|执行回调| SVC
+    end
+
+    subgraph SS[&quot;system_server 进程&quot;]
+        AMS[&quot;ActivityManagerService&lt;br/&gt;MainHandler&quot;]
+        AS[&quot;ActiveServices&lt;br/&gt;(Service 状态机)&quot;]
+        subgraph Timers[&quot;三个 AnrTimer (炸弹引信)&quot;]
+            T1[&quot;mActiveServiceAnrTimer&lt;br/&gt;(进程级·生命周期超时)&quot;]
+            T2[&quot;mServiceFGAnrTimer&lt;br/&gt;(startForeground 超时)&quot;]
+            T3[&quot;mShortFGSAnrTimer&lt;br/&gt;(short FGS 超时)&quot;]
+        end
+        AT[&quot;AnrTimer 抽象层&lt;br/&gt;FeatureEnabled→native&lt;br/&gt;FeatureDisabled→Handler&quot;]
+        AH[&quot;AnrHelper&lt;br/&gt;appNotResponding()&quot;]
+        AS --&gt; T1 &amp; T2 &amp; T3
+        T1 &amp; T2 &amp; T3 --&gt; AT
+        AMS --&gt; AS
+        AS --&gt; AH
+    end
+
+    Native[&quot;native AnrTimerService&lt;br/&gt;(独立高精度计时)&quot;]
+
+    AS --&gt;|&quot;1.放炸弹: bumpServiceExecutingLocked&lt;br/&gt;→ scheduleServiceTimeoutLocked&quot;| T1
+    AS -.-&gt;|&quot;2.scheduleCreateService / scheduleServiceArgs&lt;br/&gt;(Binder 派发回调)&quot;| MT
+    MT -.-&gt;|&quot;3.拆炸弹: serviceDoneExecuting&lt;br/&gt;(Binder 回调汇报完成)&quot;| AS
+    AS --&gt;|&quot;4.拆炸弹: serviceDoneExecutingLocked&lt;br/&gt;→ AnrTimer.cancel&quot;| T1
+    AT &lt;--&gt;|&quot;enabled 模式&quot;| Native
+    T1 --&gt;|&quot;超时未拆 → SERVICE_TIMEOUT_MSG&quot;| AMS
+    AMS --&gt;|&quot;serviceTimeout() → accept()&quot;| AH
+
+    style App fill:#e8f4ff
+    style SS fill:#fff4e6
+    style Native fill:#f0e6ff
+    style Timers fill:#ffe6e6</code></pre></div>
+<p><strong>分层职责</strong>：</p>
+<ul>
+<li><strong><code>ActiveServices</code></strong>：Service 全生命周期状态机，决定<strong>何时放/何时拆</strong>炸弹（业务逻辑层）。</li>
+<li><strong><code>AnrTimer</code></strong>：把「放/拆/爆炸」抽象成 <code>start / cancel / accept / discard / expire</code> 五个动作（机制层）。
+<ul>
+<li><code>FeatureEnabled</code>：走 native 计时器，即使 system_server Handler 积压也能准时引爆。</li>
+<li><code>FeatureDisabled</code>：退化为普通 <code>Handler.sendMessageDelayed</code>（兼容/降级路径）。</li>
+</ul></li>
+<li><strong><code>AnrHelper</code></strong>：真正生成 ANR、抓 trace、弹窗（执行层）。</li>
+</ul>
+<hr />
+<h2 id="五核心流程图">五、核心流程图</h2>
+<h3 id="51-放炸弹--拆炸弹正常路径">5.1 放炸弹 → 拆炸弹（正常路径）</h3>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant AS as ActiveServices&lt;br/&gt;(system_server)
+    participant T as mActiveServiceAnrTimer
+    participant N as native/Handler
+    participant App as 应用主线程
+
+    Note over AS: 准备让应用执行 onCreate
+    AS-&gt;&gt;AS: realStartServiceLocked()
+    AS-&gt;&gt;AS: bumpServiceExecutingLocked(r,&quot;create&quot;)
+    Note over AS,T: 💣 放炸弹
+    AS-&gt;&gt;T: scheduleServiceTimeoutLocked(proc)
+    T-&gt;&gt;N: AnrTimer.start(proc, 20s/200s)
+    N--&gt;&gt;N: 启动 20s 倒计时
+    AS-&gt;&gt;App: thread.scheduleCreateService() (Binder)
+    activate App
+    App-&gt;&gt;App: 执行 Service.onCreate()
+    App--&gt;&gt;AS: serviceDoneExecuting() (Binder 回调)
+    deactivate App
+    Note over AS: ✂️ 拆炸弹
+    AS-&gt;&gt;AS: serviceDoneExecutingLocked()
+    AS-&gt;&gt;AS: executeNesting-- == 0?
+    AS-&gt;&gt;T: AnrTimer.cancel(proc)
+    T-&gt;&gt;N: removeMessages / nativeCancel
+    N--&gt;&gt;N: 倒计时作废 ✅ 安全</code></pre></div>
+<h3 id="52-炸弹爆炸anr-路径">5.2 炸弹爆炸（ANR 路径）</h3>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant App as 应用主线程
+    participant N as native/Handler
+    participant AMS as AMS.MainHandler
+    participant AS as ActiveServices
+    participant AH as AnrHelper
+
+    AS-&gt;&gt;N: 放炸弹 start(proc, 20s)
+    AS-&gt;&gt;App: scheduleCreateService()
+    activate App
+    App--xApp: onCreate() 内卡死/死锁&lt;br/&gt;(永不返回 serviceDoneExecuting)
+    Note over N: 20s 到点，无人拆弹
+    N-&gt;&gt;AMS: 💥 SERVICE_TIMEOUT_MSG (msg.obj=proc)
+    deactivate App
+    AMS-&gt;&gt;AS: serviceTimeout(proc)
+    AS-&gt;&gt;AS: 校验: 非 debug / 有执行中 Service / 在 LRU
+    AS-&gt;&gt;AS: 找出 executingStart &lt; now-timeout 的 Service
+    AS-&gt;&gt;N: mActiveServiceAnrTimer.accept(proc, timeoutRecord)
+    AS-&gt;&gt;AH: appNotResponding(proc, timeoutRecord)
+    AH--&gt;&gt;App: 抓取 trace / 弹 ANR 对话框</code></pre></div>
+<hr />
+<h2 id="六放炸弹逐行精度解析">六、放炸弹：逐行精度解析</h2>
+<h3 id="61-入口bumpserviceexecutinglocked--进入执行态并埋雷">6.1 入口：<code>bumpServiceExecutingLocked</code> —— 进入「执行态」并埋雷</h3>
+<blockquote>
+<p>位置：<code>ActiveServices.java:5320-5407</code></p>
+<p>每次 system_server 要驱动应用执行一段 Service 回调前，<strong>必定</strong>先调用它。 <code>why</code> 参数标明本次执行段是 <code>"create"</code> / <code>"start"</code> / <code>"bind"</code> / <code>"unbind"</code> / <code>"destroy"</code>。</p>
+</blockquote>
+<pre><code>private void bumpServiceExecutingLocked(
+        ServiceRecord r, boolean fg, String why, @OomAdjReason int oomAdjReason,
+        boolean skipTimeoutIfPossible) {</code></pre>
+<ul>
+<li><code>fg</code>：本次执行是否处于前台（决定用 20s 还是 200s 超时）。</li>
+<li><code>skipTimeoutIfPossible</code>：是否允许在「进程被冻结」时跳过埋雷（见下）。</li>
+</ul>
+<pre><code>    boolean timeoutNeeded = true;
+    if ((mAm.mBootPhase &lt; SystemService.PHASE_THIRD_PARTY_APPS_CAN_START)
+            &amp;&amp; (r.app != null) &amp;&amp; (r.app.getPid() == ActivityManagerService.MY_PID)) {
+        Slog.w(TAG, &quot;Too early to start/bind service in system_server: ...&quot;);
+        timeoutNeeded = false;
+    }</code></pre>
+<blockquote>
+<p><strong>第 5337-5344 行</strong>：开机早期，system_server 自己的 Service 还没 <code>Looper.loop()</code>， 此时埋雷会误爆，所以 <code>timeoutNeeded=false</code>（不放炸弹）。对应注释引用的 bug 是 b/34123235。</p>
+</blockquote>
+<pre><code>    final boolean shouldSkipTimeout = skipTimeoutIfPossible &amp;&amp; r.app != null
+            &amp;&amp; (r.app.mOptRecord.isPendingFreeze() || r.app.mOptRecord.isFrozen());</code></pre>
+<blockquote>
+<p><strong>第 5347-5348 行</strong>：如果进程<strong>已冻结/将冻结</strong>（Cached App Freezer），它根本不会运行， 此时也不该放炸弹——否则解冻前必爆。这里记下「应跳过」。</p>
+</blockquote>
+<pre><code>    try (var unused = mAm.mProcessStateController.startServiceBatchSession(oomAdjReason)) {
+        ProcessServiceRecord psr;
+        if (r.executeNesting == 0) {                       // ← 本 Service 当前没有任何执行段
+            r.executeFg = fg;
+            ...
+            if (r.app != null) {
+                psr = r.app.mServices;
+                mAm.mProcessStateController.startExecutingService(psr, r);   // 加入「执行中」集合
+                mAm.mProcessStateController.setExecServicesFg(psr, psr.isExecServicesFg() || fg);
+                if (timeoutNeeded &amp;&amp; psr.numberOfExecutingServices() == 1) {  // ← 进程内第一个执行中的 Service
+                    if (!shouldSkipTimeout) {
+                        scheduleServiceTimeoutLocked(r.app);                  // 💣 真正放炸弹
+                    } else {
+                        r.app.mServices.noteScheduleServiceTimeoutPending(true);  // 冻结中，标记「待补放」
+                    }
+                }
+            }
+        } else if (r.app != null &amp;&amp; fg) {                  // ← 已有执行段，但本次升级为前台
+            psr = r.app.mServices;
+            if (!psr.isExecServicesFg()) {
+                mAm.mProcessStateController.setExecServicesFg(psr, true);
+                if (timeoutNeeded) {
+                    if (!shouldSkipTimeout) {
+                        scheduleServiceTimeoutLocked(r.app);  // 后台→前台，重放更短的炸弹
+                    } else {
+                        r.app.mServices.noteScheduleServiceTimeoutPending(true);
+                    }
+                }
+            }
+        }</code></pre>
+<blockquote>
+<p><strong>关键设计点（第 5352、5366 行）</strong>：</p>
+<ul>
+<li>炸弹是 <strong>进程级（<code>ProcessRecord</code>）</strong> 的，不是 Service 级。</li>
+<li>只有当进程内「执行中 Service 数量从 0 变成 1」时才放炸弹（<code>numberOfExecutingServices() == 1</code>）。 后续同进程的其它 Service 进入执行态，<strong>复用同一个炸弹</strong>，不重复放。</li>
+<li>当一个<strong>后台</strong>执行段升级成<strong>前台</strong>执行段时，会用更短的前台超时<strong>重新放</strong>炸弹 （<code>AnrTimer.start</code> 内部会先 cancel 旧的，见第七节）。</li>
+</ul>
+</blockquote>
+<pre><code>    r.executeFg |= fg;
+    r.executeNesting++;                                    // ← 引用计数 +1
+    r.executingStart = SystemClock.uptimeMillis();         // ← 记录本段开始时刻，爆炸时用来判断是谁超时
+}</code></pre>
+<blockquote>
+<p><strong>第 5404-5406 行</strong>：</p>
+<ul>
+<li><code>executeNesting++</code>：一个 Service 可能同时 create+bind+start，每段 +1，<strong>拆弹时减到 0 才算全部完成</strong>。</li>
+<li><code>executingStart</code>：本执行段开始的时间戳，<code>serviceTimeout()</code> 靠它精确定位「到底哪个 Service 卡了」。</li>
+</ul>
+</blockquote>
+<h3 id="62-真正放炸弹scheduleservicetimeoutlocked">6.2 真正放炸弹：<code>scheduleServiceTimeoutLocked</code></h3>
+<blockquote>
+<p>位置：<code>ActiveServices.java:8042-8050</code></p>
+</blockquote>
+<pre><code>void scheduleServiceTimeoutLocked(ProcessRecord proc) {
+    if (proc.mServices.numberOfExecutingServices() == 0 || proc.getThread() == null) {
+        return;                                            // 没有执行中 Service / 进程已死 → 不放
+    }
+    final long delay = proc.mServices.isExecServicesFg()
+            ? mAm.mConstants.SERVICE_TIMEOUT                // 前台 20s
+            : mAm.mConstants.SERVICE_BACKGROUND_TIMEOUT;    // 后台 200s
+    mActiveServiceAnrTimer.start(proc, delay);             // 💣 引信点火
+    proc.mServices.noteScheduleServiceTimeoutPending(false);  // 清除「待补放」标记
+}</code></pre>
+<blockquote>
+<p>这里就是「放炸弹」的<strong>物理动作</strong>：以 <code>proc</code> 为 key，向 <code>AnrTimer</code> 注册一个 <code>delay</code> 毫秒后引爆的定时器。 一旦 <code>delay</code> 到点且没人 <code>cancel</code>，<code>AnrTimer</code> 会向 <code>AMS.MainHandler</code> 投递 <code>SERVICE_TIMEOUT_MSG</code>（<code>msg.obj == proc</code>）。</p>
+</blockquote>
+<h3 id="63-放炸弹的三个典型调用现场">6.3 放炸弹的三个典型调用现场</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>现场</th>
+<th>代码位置</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>create</strong>（启动 Service）</td>
+<td><code>realStartServiceLocked</code> → <code>bumpServiceExecutingLocked(r, ..., "create", ...)</code> （<code>6262</code>），随后 <code>thread.scheduleCreateService()</code>（<code>6306</code>）</td>
+<td>让应用执行 <code>onCreate</code> 前埋雷</td>
+</tr>
+<tr>
+<td><strong>start</strong>（派发 Intent）</td>
+<td><code>sendServiceArgsLocked</code> → <code>bumpServiceExecutingLocked(r, ..., "start", ...)</code>（<code>6409</code>），随后 <code>scheduleServiceArgs()</code>（<code>6450</code>）</td>
+<td>让应用执行 <code>onStartCommand</code> 前埋雷</td>
+</tr>
+<tr>
+<td><strong>bind</strong>（绑定）</td>
+<td><code>requestServiceBindingLocked</code> → <code>bumpServiceExecutingLocked(r, ..., "bind", ...)</code>（<code>5423</code>）</td>
+<td>让应用执行 <code>onBind</code> 前埋雷</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p>三者都遵循同一个铁律：<strong>先 <code>bump</code>（埋雷）+ Binder 派发回调 → 等应用回 <code>serviceDoneExecuting</code>（拆雷）</strong>。</p>
+</blockquote>
+<hr />
+<h2 id="七拆炸弹逐行精度解析">七、拆炸弹：逐行精度解析</h2>
+<h3 id="71-应用回调入口servicedoneexecutinglocked带-type-的重载">7.1 应用回调入口：<code>serviceDoneExecutingLocked</code>（带 type 的重载）</h3>
+<blockquote>
+<p>位置：<code>ActiveServices.java:6948-7041</code></p>
+<p>应用主线程执行完 <code>onCreate/onStartCommand/onDestroy</code> 后， 通过 Binder 调回 <code>ActivityManagerService.serviceDoneExecuting()</code>，最终进到这里。 <code>type</code> 表示完成的是哪类执行段：<code>SERVICE_DONE_EXECUTING_START</code> / <code>..._STOP</code> / <code>..._ANON</code>。</p>
+</blockquote>
+<pre><code>void serviceDoneExecutingLocked(ServiceRecord r, int type, int startId, int res,
+        boolean enqueueOomAdj) {
+    boolean inDestroying = mDestroyingServices.contains(r);
+    if (r != null) {
+        ...
+        if (type == ActivityThread.SERVICE_DONE_EXECUTING_START) {
+            r.callStart = true;
+            if (res != Service.START_TASK_REMOVED_COMPLETE) {
+                r.startCommandResult = res;                // 记录 onStartCommand 的返回值
+            }
+            switch (res) {
+                case Service.START_STICKY: ...             // 处理 START_STICKY/NOT_STICKY/REDELIVER 语义
+                ...
+            }
+        } else if (type == ActivityThread.SERVICE_DONE_EXECUTING_STOP) {
+            if (!inDestroying) { ... }
+            else if (r.executeNesting != 1) {
+                Slog.w(TAG, &quot;Service done with onDestroy, but executeNesting=&quot; + r.executeNesting);
+                r.executeNesting = 1;                      // 容错：修正计数，避免「孤儿执行段」永不拆弹
+            }
+            needOomAdj = true;
+        }
+        final long origId = mAm.mInjector.clearCallingIdentity();
+        serviceDoneExecutingLocked(r, inDestroying, inDestroying, enqueueOomAdj, ...);  // ← 转入核心拆弹
+        mAm.mInjector.restoreCallingIdentity(origId);
+    }
+}</code></pre>
+<blockquote>
+<p>这一层主要做 <code>onStartCommand</code> 返回值（STICKY 语义）的记账，然后转调真正负责拆弹的核心重载。 注意第 7026-7027 行的容错：如果 onDestroy 完成时嵌套计数异常，强行修正为 1，防止 Service 永远拆不掉雷而误 ANR。</p>
+</blockquote>
+<h3 id="72-核心拆弹servicedoneexecutinglocked带-indestroying-的重载">7.2 核心拆弹：<code>serviceDoneExecutingLocked</code>（带 inDestroying 的重载）</h3>
+<blockquote>
+<p>位置：<code>ActiveServices.java:7057-7101</code>（核心片段）</p>
+</blockquote>
+<pre><code>private void serviceDoneExecutingLocked(ServiceRecord r, boolean inDestroying,
+        boolean finishing, boolean enqueueOomAdj, @OomAdjReason int oomAdjReason) {
+    ...
+    r.executeNesting--;                                    // ← 引用计数 -1（对应 bump 的 ++）
+    if (r.executeNesting &lt;= 0) {                           // ← 本 Service 所有执行段都完成了
+        if (r.app != null) {
+            final ProcessServiceRecord psr = r.app.mServices;
+            mAm.mProcessStateController.setExecServicesFg(psr, false);
+            mAm.mProcessStateController.stopExecutingService(psr, r);   // 从「执行中」集合移除
+            if (psr.numberOfExecutingServices() == 0) {    // ← 进程内已无任何执行中 Service
+                if (r.app.mPid != 0) mActiveServiceAnrTimer.cancel(r.app);   // ✂️ 拆炸弹！
+            } else if (r.executeFg) {
+                // 还有别的执行中 Service，重新评估进程是否仍需前台
+                for (int i = psr.numberOfExecutingServices() - 1; i &gt;= 0; i--) {
+                    if (psr.getExecutingServiceAt(i).executeFg) {
+                        mAm.mProcessStateController.setExecServicesFg(psr, true);
+                        break;
+                    }
+                }
+            }
+            if (inDestroying) {
+                mDestroyingServices.remove(r);
+                r.bindings.clear();
+            }
+            ...
+        }
+        r.executeFg = false;
+        ...
+    }
+}</code></pre>
+<blockquote>
+<p><strong>拆弹的精髓全在第 7064-7075 行</strong>：</p>
+<ol type="1">
+<li><code>r.executeNesting--</code>：与 <code>bump</code> 时的 <code>++</code> 配对。一个 Service 的 create/bind/start 各自独立计数。</li>
+<li><code>if (r.executeNesting &lt;= 0)</code>：<strong>只有当这个 Service 的所有执行段都汇报完成</strong>，才往下走。</li>
+<li><code>stopExecutingService(psr, r)</code>：把 Service 从进程的「执行中」集合移除。</li>
+<li><strong><code>if (psr.numberOfExecutingServices() == 0)</code></strong>： 炸弹是<strong>进程级</strong>的——只有进程内<strong>最后一个</strong>执行中 Service 也完成了， 才调用 <code>mActiveServiceAnrTimer.cancel(r.app)</code> <strong>真正拆弹</strong>。 只要进程里还有别的 Service 在执行，炸弹保留（继续守护那些 Service）。</li>
+</ol>
+<p>这就解释了为什么放弹用「0→1」判定、拆弹用「→0」判定：<strong>进程级一个炸弹守护多个 Service</strong>。</p>
+</blockquote>
+<h3 id="73-拆弹的其它现场">7.3 拆弹的其它现场</h3>
+<p>除了应用正常回调，以下场景也会触发拆弹（殊途同归到 7.2 的核心逻辑）：</p>
+<ul>
+<li><strong>进程死亡</strong>：<code>serviceProcessGoneLocked</code>（<code>7043</code>）→ <code>serviceDoneExecutingLocked(r, true, true, ...)</code>。 进程都没了，自然要拆弹，不能再判 ANR。</li>
+<li><strong>创建失败</strong>：<code>realStartServiceLocked</code> 的 <code>finally</code> 块（<code>6319</code>），<code>scheduleCreateService</code> 抛异常时拆弹并保持计数正确。</li>
+<li><strong>派发失败</strong>：<code>sendServiceArgsLocked</code> 的 catch 块（<code>6472</code>），Binder 调用失败时为每个 arg 拆弹。</li>
+</ul>
+<hr />
+<h2 id="八炸弹爆炸servicetimeout-逐行解析">八、炸弹爆炸：<code>serviceTimeout</code> 逐行解析</h2>
+<blockquote>
+<p>位置：<code>ActiveServices.java:7852-7916</code></p>
+<p>当 20s/200s 到点且无人拆弹，<code>AnrTimer</code> 向 <code>AMS.MainHandler</code> 投递 <code>SERVICE_TIMEOUT_MSG</code>， <code>AMS</code> 在 <code>ActivityManagerService.java:1777</code> 调用 <code>mServices.serviceTimeout((ProcessRecord) msg.obj)</code>。</p>
+</blockquote>
+<pre><code>void serviceTimeout(ProcessRecord proc) {
+    try {
+        Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, &quot;serviceTimeout()&quot;);
+        TimeoutRecord timeoutRecord = null;
+        synchronized (mAm) {
+            if (proc.isDebugging()) {                      // ① 被调试 → 不算 ANR
+                mActiveServiceAnrTimer.discard(proc);
+                return;
+            }
+            final ProcessServiceRecord psr = proc.mServices;
+            if (psr.numberOfExecutingServices() == 0 || proc.getThread() == null
+                    || proc.isKilled()) {                  // ② 已无执行中 Service / 进程已死 → 误报，丢弃
+                mActiveServiceAnrTimer.discard(proc);
+                return;
+            }
+            final long now = SystemClock.uptimeMillis();
+            final long maxTime = now
+                    - (psr.isExecServicesFg()
+                    ? mAm.mConstants.SERVICE_TIMEOUT
+                    : mAm.mConstants.SERVICE_BACKGROUND_TIMEOUT);   // 超时分界线
+            ServiceRecord timeout = null;
+            long nextTime = 0;
+            for (int i = psr.numberOfExecutingServices() - 1; i &gt;= 0; i--) {  // ③ 找真正超时的 Service
+                ServiceRecord sr = psr.getExecutingServiceAt(i);
+                if (sr.executingStart &lt; maxTime) {         // 该 Service 开始执行的时刻已超过分界线
+                    timeout = sr;
+                    break;
+                }
+                if (sr.executingStart &gt; nextTime) {
+                    nextTime = sr.executingStart;          // 记录最晚开始的，用于重排下一颗炸弹
+                }
+            }
+            if (timeout != null &amp;&amp; mAm.mProcessList.isInLruListLOSP(proc)) {  // ④ 确认超时且进程仍被管理
+                Slog.w(TAG, &quot;Timeout executing service: &quot; + timeout);
+                StringWriter sw = new StringWriter();
+                PrintWriter pw = new FastPrintWriter(sw, false, 1024);
+                pw.println(timeout);
+                timeout.dump(pw, &quot;    &quot;);                   // dump 卡住的 Service 信息
+                pw.close();
+                mLastAnrDump = sw.toString();
+                mAm.mHandler.removeCallbacks(mLastAnrDumpClearer);
+                mAm.mHandler.postDelayed(mLastAnrDumpClearer, LAST_ANR_LIFETIME_DURATION_MSECS);
+                long waitedMillis = now - timeout.executingStart;
+                timeoutRecord = TimeoutRecord.forServiceExec(timeout.shortInstanceName, waitedMillis);
+                mActiveServiceAnrTimer.accept(proc, timeoutRecord);   // ⑤ 确认引爆：accept
+            } else {
+                mActiveServiceAnrTimer.discard(proc);       // ⑥ 没找到真超时的 → 丢弃并重排炸弹
+                final long delay = psr.isExecServicesFg()
+                        ? (nextTime + mAm.mConstants.SERVICE_TIMEOUT)
+                        : (nextTime + mAm.mConstants.SERVICE_BACKGROUND_TIMEOUT)
+                        - SystemClock.uptimeMillis();
+                mActiveServiceAnrTimer.start(proc, delay);  // 为「还没到点」的 Service 重新放弹
+            }
+        }
+        if (timeoutRecord != null) {
+            mAm.mAnrHelper.appNotResponding(proc, timeoutRecord);   // ⑦ 真正触发 ANR
+        }
+    } finally {
+        Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+    }
+}</code></pre>
+<blockquote>
+<p><strong>爆炸时的 7 个关键判断</strong>：</p>
+<ol type="1">
+<li><strong>调试豁免</strong>（<code>isDebugging</code>）：断点暂停不是 ANR → <code>discard</code>。</li>
+<li><strong>误报过滤</strong>：进程已无执行中 Service / 已死 → <code>discard</code>（炸弹已失效但消息在途）。</li>
+<li><strong>精确定位</strong>：遍历执行中 Service，用 <code>executingStart &lt; maxTime</code> 找出<strong>真正</strong>超时的那个 （因为进程级炸弹守护多个 Service，不能盲目把进程里随便一个 Service 判刑）。</li>
+<li><strong>LRU 校验</strong>：进程必须仍在被管理列表里。</li>
+<li><strong><code>accept</code></strong>：确认这是一次真 ANR，把超时信息封装进 <code>TimeoutRecord</code>。</li>
+<li><strong><code>discard</code> + 重排</strong>：如果遍历下来没有谁真超时（说明剩下的 Service 都是后来才进执行态的）， 丢弃当前炸弹，并按「最晚开始的 Service」重新计算延时、<strong>重放一颗炸弹</strong>继续守护。</li>
+<li><strong><code>appNotResponding</code></strong>：脱离锁后调用 <code>AnrHelper</code>，抓 trace、生成 ANR、弹窗。</li>
+</ol>
+</blockquote>
+<blockquote>
+<p><code>accept</code> / <code>discard</code> 的区别（见 <code>AnrTimer.java:65-69</code> 文档）：</p>
+<ul>
+<li><strong><code>accept</code></strong> = 「确认这颗炸弹该炸」→ 生成 ANR。</li>
+<li><strong><code>discard</code></strong> = 「这颗炸弹炸错了/不该炸」→ 静默清账，不生成 ANR。</li>
+</ul>
+</blockquote>
+<hr />
+<h2 id="九底层引信anrtimer-抽象层">九、底层引信：<code>AnrTimer</code> 抽象层</h2>
+<blockquote>
+<p>位置：<code>base/services/core/java/com/android/server/utils/AnrTimer.java</code></p>
+</blockquote>
+<p><code>AnrTimer</code> 把「放/拆/爆炸」抽象成 5 个动作（类文档 <code>AnrTimer.java:56-76</code>）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>动作</th>
+<th>方法</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>放炸弹</td>
+<td><code>start(arg, timeoutMs)</code></td>
+<td>启动计时器，key=arg（proc 或 service）</td>
+</tr>
+<tr>
+<td>拆炸弹</td>
+<td><code>cancel(arg)</code></td>
+<td>停止计时器并移除在途消息</td>
+</tr>
+<tr>
+<td>确认引爆</td>
+<td><code>accept(arg, record)</code></td>
+<td>承认超时，应生成 ANR</td>
+</tr>
+<tr>
+<td>取消引爆</td>
+<td><code>discard(arg)</code></td>
+<td>超时了但不生成 ANR（误报/调试）</td>
+</tr>
+<tr>
+<td>内部到点</td>
+<td><code>expire(...)</code></td>
+<td>native/Handler 到点后回调，投递超时消息</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="91-两种实现模式">9.1 两种实现模式</h3>
+<p><code>AnrTimer</code> 内部用策略模式在两种实现间切换（<code>AnrTimer.java:507</code>）：</p>
+<p><strong>① <code>FeatureDisabled</code>（降级 / 兼容模式，<code>AnrTimer.java:530-585</code>）</strong></p>
+<pre><code>void start(@NonNull V arg, int pid, int uid, long timeoutMs) {
+    cancel(arg);
+    final Message msg = mHandler.obtainMessage(mWhat, arg);
+    mHandler.sendMessageDelayed(msg, timeoutMs);           // 就是传统的延时消息
+}
+boolean cancel(@NonNull V arg) {
+    mHandler.removeMessages(mWhat, arg);                   // 就是传统的 removeMessages
+    return true;
+}</code></pre>
+<blockquote>
+<p>这正是<strong>老版本 AOSP 的经典实现</strong>：放炸弹 = <code>sendMessageDelayed</code>，拆炸弹 = <code>removeMessages</code>。 简单，但有个致命缺陷：如果 system_server 的 MainHandler <strong>自己积压</strong>了， 延时消息的实际触发时间会被推迟，导致<strong>计时不准</strong>（误判或漏判）。</p>
+</blockquote>
+<p><strong>② <code>FeatureEnabled</code>（现代模式，<code>AnrTimer.java:599-643</code>）</strong></p>
+<pre><code>void start(@NonNull V arg, int pid, int uid, long timeoutMs) {
+    synchronized (mLock) {
+        if (cancel(arg)) mTotalRestarted++;                // 同 key 已有计时器 → 先取消（实现「重放」）
+        final int timerId = nativeAnrTimerStart(mNative, pid, uid, timeoutMs);  // 下沉到 native 计时
+        if (timerId &gt; 0) {
+            mTimerIdMap.put(arg, timerId);
+            mTimerArgMap.put(timerId, arg);
+            ...
+        }
+    }
+}</code></pre>
+<blockquote>
+<p>现代模式把计时<strong>下沉到 native 的 <code>AnrTimerService</code></strong>（独立计时，不受 Java Handler 积压影响）。 到点时 native 回调 <code>expire()</code>（<code>AnrTimer.java:888-909</code>），此时才向 Handler 投递超时消息—— <strong>消息是「零延时」投递的</strong>，从而把「计时精度」和「消息处理延时」解耦。</p>
+</blockquote>
+<h3 id="92-expirenative-到点后如何引爆">9.2 <code>expire</code>：native 到点后如何引爆</h3>
+<pre><code>private boolean expire(int timerId, int pid, int uid, long startMs, long elapsedMs) {
+    final V arg;
+    synchronized (mLock) {
+        arg = mTimerArgMap.get(timerId);
+        if (arg == null) { ...; return false; }
+        mExpiredTimers.put(timerId, new ExpiredTimer(timerId, startMs, elapsedMs));
+        mTotalExpired++;
+    }
+    final Message msg = Message.obtain(mHandler, mWhat, arg);
+    msg.arg1 = TOKEN_EXPIRATION;
+    mHandler.sendMessage(msg);                             // 零延时投递 → AMS 收到 SERVICE_TIMEOUT_MSG
+    return true;
+}</code></pre>
+<blockquote>
+<p>native 计到点 → 找回 key（proc）→ 记录到 <code>mExpiredTimers</code>（供 ANR 报告取 <code>elapsedMs</code> 真实耗时）→ 立刻 <code>sendMessage</code>。AMS 主线程随即调用 <code>serviceTimeout(proc)</code>（第八节）。</p>
+</blockquote>
+<h3 id="93-accept-vs-discard-的-native-配合">9.3 <code>accept</code> vs <code>discard</code> 的 native 配合</h3>
+<ul>
+<li><code>accept</code>（<code>AnrTimer.java:673-694</code>）：从 <code>mExpiredTimers</code> 取出该 timer，调 <code>nativeAnrTimerAccept</code>， 返回 <code>ExpiredTimer</code> 给上层（其中含真实 <code>elapsedMs</code>，可能 ≠ 名义超时，因为可能被 extend 过）。</li>
+<li><code>discard</code>（<code>AnrTimer.java:701-715</code>）：调 <code>nativeAnrTimerDiscard</code>，静默清账，不产出 ANR。</li>
+</ul>
+<hr />
+<h2 id="十完整时序总览放拆爆-三态">十、完整时序总览（放→拆→爆 三态）</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>stateDiagram-v2
+    [*] --&gt; 空闲: Service 未执行回调
+    空闲 --&gt; 已埋雷: bumpServiceExecutingLocked&lt;br/&gt;+ scheduleServiceTimeoutLocked&lt;br/&gt;(executeNesting 0→1, 进程执行中 0→1)
+    已埋雷 --&gt; 已埋雷: 同进程其它 Service 进入执行态&lt;br/&gt;(复用炸弹, nesting++)
+    已埋雷 --&gt; 空闲: serviceDoneExecutingLocked&lt;br/&gt;nesting→0 且进程执行中→0&lt;br/&gt;→ AnrTimer.cancel ✂️
+    已埋雷 --&gt; 爆炸判定: 超时到点&lt;br/&gt;AnrTimer.expire → SERVICE_TIMEOUT_MSG 💥
+    爆炸判定 --&gt; 空闲: discard&lt;br/&gt;(调试/误报/无真超时→重排炸弹)
+    爆炸判定 --&gt; ANR: accept&lt;br/&gt;+ AnrHelper.appNotResponding
+    ANR --&gt; [*]</code></pre></div>
+<hr />
+<h2 id="十一补充炸弹②startforeground-超时">十一、补充：炸弹②——startForeground 超时</h2>
+<p><code>startForegroundService()</code> 要求应用必须在 <strong>30s</strong> 内调用 <code>Service.startForeground()</code> 显示通知， 否则判 ANR。这是独立的一颗炸弹：</p>
+<p><strong>放弹</strong>：<code>sendServiceArgsLocked</code>（<code>ActiveServices.java:6412-6419</code>）</p>
+<pre><code>if (r.fgRequired &amp;&amp; !r.fgWaiting) {
+    if (!r.isForeground()) {
+        scheduleServiceForegroundTransitionTimeoutLocked(r);   // 💣 放 30s FGS 炸弹
+    } else {
+        r.fgRequired = false;                                  // 已经是前台了，无需炸弹
+    }
+}</code></pre>
+<p><code>scheduleServiceForegroundTransitionTimeoutLocked</code>（<code>ActiveServices.java:8052-8058</code>）：</p>
+<pre><code>void scheduleServiceForegroundTransitionTimeoutLocked(ServiceRecord r) {
+    if (r.app.mServices.numberOfExecutingServices() == 0 || r.app.getThread() == null) return;
+    r.fgWaiting = true;
+    mServiceFGAnrTimer.start(r, mAm.mConstants.mServiceStartForegroundTimeoutMs);  // key 是 Service 不是 proc
+}</code></pre>
+<p><strong>拆弹</strong>：应用调用 <code>startForeground()</code> 后，<code>setServiceForegroundInnerLocked</code> 内 <code>r.fgWaiting = false</code> 并 <code>mServiceFGAnrTimer.cancel/discard(r)</code>（搜索 <code>SERVICE_FOREGROUND_TIMEOUT_MSG</code> 的 <code>removeMessages</code> 路径，<code>ActiveServices.java:3864</code> 附近）。</p>
+<p><strong>爆炸</strong>：<code>serviceForegroundTimeout</code>（<code>ActiveServices.java:7918-7966</code>）</p>
+<pre><code>void serviceForegroundTimeout(ServiceRecord r) {
+    ...
+    if (!r.fgRequired || !r.fgWaiting || r.destroying) {
+        mServiceFGAnrTimer.discard(r); return;                 // 状态已变 → 丢弃
+    }
+    if (app != null &amp;&amp; app.isDebugging()) {
+        mServiceFGAnrTimer.discard(r); return;                 // 调试豁免
+    }
+    mServiceFGAnrTimer.accept(r, timeoutRecord);               // 确认引爆
+    r.fgWaiting = false;
+    stopServiceLocked(r, false);                               // 先把这个违规 Service 停掉
+    ...
+    // 注意：不是立刻弹 ANR，而是再延时 mServiceStartForegroundAnrDelayMs(10s) 后才 ANR
+    mAm.mHandler.sendMessageDelayed(msg /*SERVICE_FOREGROUND_TIMEOUT_ANR_MSG*/,
+            mAm.mConstants.mServiceStartForegroundAnrDelayMs);
+}</code></pre>
+<blockquote>
+<p>与炸弹①的区别：</p>
+<ul>
+<li><strong>key 是 <code>ServiceRecord</code></strong>（用 <code>mServiceFGAnrTimer = ServiceAnrTimer</code>），不是进程级。</li>
+<li>这颗炸弹的 <code>AnrTimer</code> 构造时开了 <code>.extend(true)</code>（<code>ActiveServices.java:800</code>），允许自动延展。</li>
+<li>引爆后先 <code>stopServiceLocked</code> 停掉违规 Service，再<strong>额外延时 10s</strong> 才真正 ANR，给系统缓冲。</li>
+</ul>
+</blockquote>
+<hr />
+<h2 id="十二总结一图记住核心设计">十二、总结：一图记住核心设计</h2>
+<pre><code>                  ┌─────────────────────────────────────────────────────┐
+                  │  铁律：每段 Service 回调执行 = 先埋雷，回调完 = 拆雷  │
+                  └─────────────────────────────────────────────────────┘
+
+  放炸弹 (bump)                    应用执行                     拆炸弹 (done)
+ ┌──────────────┐   Binder派发   ┌──────────────┐   Binder回调  ┌──────────────┐
+ │executeNesting│ ────────────▶  │  onCreate    │ ───────────▶  │executeNesting│
+ │    0 → 1     │ scheduleCreate │ onStartCommand│ serviceDone  │    1 → 0     │
+ │ Timer.start  │   ServiceArgs  │   onBind ...  │  Executing   │ Timer.cancel │
+ └──────┬───────┘                └──────┬───────┘               └──────────────┘
+        │                               │ 卡死(永不返回)
+        │ 20s/200s 无人拆               ▼
+        ▼                        ┌──────────────┐
+ SERVICE_TIMEOUT_MSG ──────────▶ │ serviceTimeout│──accept──▶ AnrHelper.appNotResponding ▶ ANR
+                                 │  定位真超时   │──discard─▶ 误报/调试，重排炸弹
+                                 └──────────────┘</code></pre>
+<p><strong>三句话记住本质：</strong></p>
+<ol type="1">
+<li><strong>放炸弹</strong>＝执行回调前 <code>bumpServiceExecutingLocked</code> → <code>scheduleServiceTimeoutLocked</code> → <code>AnrTimer.start</code>（进程级，前台 20s / 后台 200s）。</li>
+<li><strong>拆炸弹</strong>＝应用回 <code>serviceDoneExecutingLocked</code>，<code>executeNesting</code> 减到 0 且进程内 无执行中 Service → <code>AnrTimer.cancel</code>。</li>
+<li><strong>爆炸</strong>＝超时无人拆 → <code>SERVICE_TIMEOUT_MSG</code> → <code>serviceTimeout</code> 精确定位卡住的 Service → <code>accept</code> → <code>appNotResponding</code> 生成 ANR；若是误报则 <code>discard</code> 并重排。</li>
+</ol>
+<hr />
+<h2 id="附录关键代码位置索引">附录：关键代码位置索引</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>功能</th>
+<th>文件:行号</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>三个 AnrTimer 创建</td>
+<td><code>ActiveServices.java:788-801</code></td>
+</tr>
+<tr>
+<td>进入执行态/放弹判定</td>
+<td><code>ActiveServices.java:5320-5407</code> (<code>bumpServiceExecutingLocked</code>)</td>
+</tr>
+<tr>
+<td>放弹物理动作</td>
+<td><code>ActiveServices.java:8042-8050</code> (<code>scheduleServiceTimeoutLocked</code>)</td>
+</tr>
+<tr>
+<td>create 现场</td>
+<td><code>ActiveServices.java:6242-6357</code> (<code>realStartServiceLocked</code>)</td>
+</tr>
+<tr>
+<td>start 现场</td>
+<td><code>ActiveServices.java:6376-6435</code> (<code>sendServiceArgsLocked</code>)</td>
+</tr>
+<tr>
+<td>bind 现场</td>
+<td><code>ActiveServices.java:5409-5448</code> (<code>requestServiceBindingLocked</code>)</td>
+</tr>
+<tr>
+<td>拆弹入口(带type)</td>
+<td><code>ActiveServices.java:6948-7041</code></td>
+</tr>
+<tr>
+<td>拆弹核心</td>
+<td><code>ActiveServices.java:7057-7101</code></td>
+</tr>
+<tr>
+<td>爆炸处理</td>
+<td><code>ActiveServices.java:7852-7916</code> (<code>serviceTimeout</code>)</td>
+</tr>
+<tr>
+<td>FGS 放弹</td>
+<td><code>ActiveServices.java:8052-8058</code></td>
+</tr>
+<tr>
+<td>FGS 爆炸</td>
+<td><code>ActiveServices.java:7918-7966</code> (<code>serviceForegroundTimeout</code>)</td>
+</tr>
+<tr>
+<td>AMS 消息分发</td>
+<td><code>ActivityManagerService.java:1777-1788</code></td>
+</tr>
+<tr>
+<td>超时常量</td>
+<td><code>ActivityManagerConstants.java:308-322, 593-596</code></td>
+</tr>
+<tr>
+<td>AnrTimer 五动作语义</td>
+<td><code>AnrTimer.java:56-76</code></td>
+</tr>
+<tr>
+<td>FeatureDisabled(老式)</td>
+<td><code>AnrTimer.java:530-585</code></td>
+</tr>
+<tr>
+<td>FeatureEnabled(native)</td>
+<td><code>AnrTimer.java:599-715</code></td>
+</tr>
+<tr>
+<td>expire 引爆</td>
+<td><code>AnrTimer.java:888-909</code></td>
+</tr>
+</tbody>
+</table></div>
+</article>
+    </div>
+    <div class="anr-pager"><a class="prv" href="Provider-ANR放炸弹与拆炸弹机制源码深度解析.html">← ContentProvider ANR「放炸弹 / 拆炸弹」机制源码深度解析</a>
+<span></span></div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <span>docs/ANR/Service-ANR放炸弹与拆炸弹机制源码深度解析.md</span><span class="dot">·</span>
+  <span>由 docs/ANR/tools/md2html.py 生成，样式复用 wiki（docs/wiki_site/src/app.css）</span>
+</footer>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>
+(function(){
+  var srcs=[];
+  document.querySelectorAll('pre.mermaid').forEach(function(el,i){ srcs[i]=el.textContent; });
+  function themeName(){ return document.documentElement.dataset.theme==='light'?'default':'dark'; }
+  function render(){
+    if(!window.mermaid) return;
+    document.querySelectorAll('pre.mermaid').forEach(function(el,i){
+      el.removeAttribute('data-processed'); el.textContent = srcs[i];
+    });
+    var dark = themeName()==='dark';
+    try{
+      mermaid.initialize({startOnLoad:false,theme:themeName(),securityLevel:'loose',
+        themeVariables: dark ? {
+          background:'transparent', primaryColor:'#30343a', primaryTextColor:'#f5f8fc',
+          primaryBorderColor:'#5a6068', lineColor:'#9aa4b2', secondaryColor:'#2a2e34',
+          tertiaryColor:'#2a2e34', textColor:'#e8eef6', mainBkg:'#30343a',
+          nodeBorder:'#5a6068', clusterBkg:'#2a2e34', clusterBorder:'#4a5058',
+          edgeLabelBackground:'#23262b', actorBkg:'#30343a', actorBorder:'#5a6068',
+          signalColor:'#9aa4b2'
+        } : {},
+        flowchart:{htmlLabels:true,useMaxWidth:true},sequence:{useMaxWidth:true}});
+      mermaid.run({nodes:document.querySelectorAll('pre.mermaid')});
+    }catch(e){ console.warn('mermaid render failed', e); }
+  }
+  render();
+
+  var btn=document.getElementById('theme-toggle');
+  function apply(){
+    var light=document.documentElement.dataset.theme==='light';
+    btn.setAttribute('aria-pressed',String(light));
+    var lab=btn.querySelector('.tt-label'); if(lab) lab.textContent = light?'暗色':'亮色';
+  }
+  btn.addEventListener('click',function(){
+    var root=document.documentElement;
+    root.dataset.theme = root.dataset.theme==='light'?'dark':'light';
+    try{ localStorage.setItem('st-theme',root.dataset.theme); }catch(e){}
+    apply(); render();
+  });
+  apply();
+
+  var links=[].slice.call(document.querySelectorAll('#toc a'));
+  var heads=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){
+        links.forEach(function(a){a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id);});
+      }});
+    },{rootMargin:'-8% 0px -82% 0px'});
+    heads.forEach(function(h){io.observe(h);});
+  }
+})();
+</script>
+</body>
+</html>

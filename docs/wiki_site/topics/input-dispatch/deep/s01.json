@@ -1,0 +1,56 @@
+{
+  "step": "s01",
+  "title": "evdev 产生原始事件（仓库外）",
+  "tldr": "触摸在驱动层变成 input_event 写进 /dev/input/eventN，用户态靠 epoll 得知可读。",
+  "why": "这条链路的一切都从内核开始，但内核不在本仓库里。很多输入延迟问题其实发生在这一层之前——设备固件、驱动上报阈值、触控 IC 的采样率——而 Android 侧只能通过 readTime 与 when 的差值（读延迟）间接观察。明确这条边界，才能判断一个问题是否值得继续往用户态查。",
+  "concepts": [
+    {
+      "term": "struct input_event",
+      "text": "evdev 的标准三元组：type（EV_KEY/EV_SYN 等）、code、value，外加时间戳。"
+    },
+    {
+      "term": "/dev/input/eventN",
+      "text": "每个输入设备一个字符设备节点，由 EventHub 打开并 epoll 监听。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::vector<RawEvent> EventHub::getEvents(int timeoutMillis) {",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2016",
+      "what": "用户态从这里开始接管内核产生的数据。"
+    },
+    {
+      "call": "int pollResult = epoll_wait(mEpollFd, mPendingEventItems, EPOLL_MAX_EVENTS, timeoutMillis);",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2202",
+      "what": "内核通知用户态的唯一通道。"
+    },
+    {
+      "call": "std::vector<RawEvent> EventHub::getEvents(int timeoutMillis) {",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2016",
+      "what": "用户态在这之后才拿到 struct input_event。"
+    },
+    {
+      "call": "void InputReader::loopOnce() {",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:172",
+      "what": "读出来的 RawEvent 交给 reader 解析。"
+    }
+  ],
+  "state": [
+    {
+      "field": "设备驱动内的事件队列",
+      "before": "事件堆积",
+      "after": "被用户态读走",
+      "note": "驱动在有待读事件时会持有 kernel wakelock。"
+    }
+  ],
+  "threads": "驱动在自己的上下文上报；用户态在 InputReader 线程上 epoll。",
+  "pitfalls": [
+    "把「输入延迟大」直接归因到 Android 侧：必须先看读延迟（readTime - when）排除设备侧。",
+    "忽略触控 IC 的报点率：它决定了最小可分辨延迟。"
+  ],
+  "debug": [
+    "atrace 的 input 分类下能看到 EventHub 读事件的时机。",
+    "`adb shell getevent -lt` 可观察原始上报节奏。"
+  ],
+  "next": "用户态如何把内核事件摊平并打上时间戳？见第 2 步。"
+}

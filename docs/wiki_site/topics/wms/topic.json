@@ -1,0 +1,1013 @@
+{
+  "meta": {
+    "slug": "wms",
+    "title": "WMS：容器层次 → 加窗口 → 布局 → 上屏",
+    "subtitle": "从 Session.addToDisplayAsUser 进入 WindowManagerService.addWindow 开始：权限校验、WindowToken 归属、WindowState 创建与 InputChannel 配对，再到 RootWindowContainer 的 DisplayContent/Task/ActivityRecord 层次、performLayout 的测量与层级排序、DisplayContent.applySurfaceChangesTransaction 把 frame/position 写进 SurfaceControl，最后经 SurfaceFlinger 的 Transaction 提交；含焦点、Insets、动画与转场",
+    "version": "android17-release",
+    "built": "2026-11-26",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲 WMS 这一条：客户端经 Session（IWindowSession）调 addWindow/relayoutWindow；WMS 校验权限与 type、按 WindowToken（ActivityRecord/Task/DisplayArea）归属 WindowState、与客户端配对 InputChannel；布局由 WindowSurfacePlacer 驱动 performLayout，DisplayPolicy 与 InsetsPolicy 决定 frame 与可见性；applySurfaceChangesTransaction 把位置/裁剪/透明度写进 SurfaceControl；最终以 Transaction 提交给 SurfaceFlinger。层级结构为 RootWindowContainer → DisplayContent → DisplayArea → Task → ActivityRecord → WindowState。ATMS 负责生命周期，ClientLifecycleManager 用 ClientTransaction 驱动客户端 resume。",
+    "kicker": "AOSP · android17-release · WindowManagerService"
+  },
+  "lanes": [
+    {
+      "id": "APP",
+      "label": "app 进程（ViewRootImpl）",
+      "color": "#7bd88f"
+    },
+    {
+      "id": "WMS",
+      "label": "WMS / system_server",
+      "color": "#c792ea"
+    },
+    {
+      "id": "LAY",
+      "label": "容器层次",
+      "color": "#ffb454"
+    },
+    {
+      "id": "SF",
+      "label": "SurfaceControl → SF",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "INP",
+      "label": "InputChannel",
+      "color": "#33d6c0"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "会话与入口",
+      "hint": "IWindowSession"
+    },
+    {
+      "id": "P1",
+      "label": "加窗口",
+      "hint": "权限 / Token / InputChannel"
+    },
+    {
+      "id": "P2",
+      "label": "容器归属",
+      "hint": "DisplayContent/Task/ARecord"
+    },
+    {
+      "id": "P3",
+      "label": "布局与测量",
+      "hint": "performLayout"
+    },
+    {
+      "id": "P4",
+      "label": "应用 surface",
+      "hint": "frame → SurfaceControl"
+    },
+    {
+      "id": "P5",
+      "label": "提交与上屏",
+      "hint": "Transaction → SF"
+    },
+    {
+      "id": "P6",
+      "label": "焦点与 Insets",
+      "hint": "policy 副作用"
+    },
+    {
+      "id": "P7",
+      "label": "生命周期与分支",
+      "hint": "ATMS / 转场 / 排障"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "APP",
+      "title": "客户端持有 IWindowSession",
+      "brief": "ViewRootImpl 通过 WindowManagerGlobal 拿到一个 IWindowSession（实为 WMS 内部 Session 的代理），后续 addWindow/relayout/remove 都走这个会话。会话在进程里是单例，绑定到该进程的 WMS 侧 Session 对象。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Session.java",
+          "line": 272,
+          "symbol": "addToDisplayAsUser"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1672,
+          "symbol": "addWindow"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "WMS",
+      "title": "Session 转发：会话即权限与身份",
+      "brief": "Session 保存了 uid/pid 与该客户端的 WindowEventReceiver，转发时把调用身份一并带上。WMS 侧的很多权限判断依赖 Session 而不是当次 binder 调用者。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Session.java",
+          "line": 275,
+          "symbol": "mService.addWindow"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "addWindow：权限与 type 校验",
+      "brief": "第一步是 WindowManagerPolicy.checkAddPermission：普通应用只能加 APPLICATION_WINDOW 等受限 type，系统窗口需要对应权限。校验不过直接返回 ADD_* 错误码，客户端会抛 BadTokenException 或显示不出窗口。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1679,
+          "symbol": "checkAddPermission"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1682,
+          "symbol": "return res"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "找到 DisplayContent 与父窗口",
+      "brief": "按 displayId 取 DisplayContent，按 token 找到宿主。带子窗口（如对话框、PopupWindow）会先解析出父窗口 WindowState 并继承其 DisplayContent，避免跨屏挂载。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1701,
+          "symbol": "子窗口分支"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1702,
+          "symbol": "windowForClient"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1721,
+          "symbol": "displayContent 继承"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P1",
+      "lane": "LAY",
+      "title": "WindowToken：窗口的归属契约",
+      "brief": "token 决定「这个窗口属于哪个容器」。应用窗口的 token 来自 ActivityRecord，系统窗口用 WindowToken 挂在 DisplayArea 上。attachWindow 时把 WindowState 登记到 token 的窗口列表，同时决定它参与哪一层布局。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1779,
+          "symbol": "getWindowToken("
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P1",
+      "lane": "INP",
+      "title": "InputChannel 配对",
+      "brief": "addWindow 输出一个 InputChannel：一半留在 WMS/InputDispatcher 侧，另一半经 binder 交给 app。这条通道在窗口存在期间一直有效，窗口移除时才关闭。它也是「点击落到哪个窗口」的物理路径。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1907,
+          "symbol": "openInputChannels"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1910,
+          "symbol": "win.openInputChannel()"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1911,
+          "symbol": "channel.copyTo(outInputChannel)"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "addWindowInner：创建 WindowState",
+      "brief": "真正的落库在 addWindowInner：new WindowState（携带 attrs/token/Session）、注册到 DisplayPolicy、设置初始可见性，并把窗口加入 DisplayContent 的待布局列表。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2113,
+          "symbol": "setUpdateInputWindowsNeededLw"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2147,
+          "symbol": "Don't do layout here"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2151,
+          "symbol": "assignChildLayers()"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P2",
+      "lane": "LAY",
+      "title": "层级：RootWindowContainer 往下",
+      "brief": "WMS 的容器树是 RootWindowContainer → DisplayContent → DisplayArea → Task → ActivityRecord → WindowState。每一层负责自己那一级的布局与可见性；查询「当前焦点」通常是自上而下逐层问。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/RootWindowContainer.java",
+          "line": 2546,
+          "symbol": "resumeFocusedTasksTopActivities"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Task.java",
+          "line": 5369,
+          "symbol": "resumeTopActivityUncheckedLocked"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P2",
+      "lane": "LAY",
+      "title": "ActivityRecord 与 Task 的关系",
+      "brief": "Task 是「任务栈」，ActivityRecord 是任务里的一个 Activity 实例。一个 ActivityRecord 可以有多个 WindowState（主窗口 + 子窗口），但只有一个主窗口决定它的可见性。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "line": 6015,
+          "symbol": "makeVisibleIfNeeded"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "line": 6032,
+          "symbol": "setVisibility"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Task.java",
+          "line": 5369,
+          "symbol": "resumeTopActivityUncheckedLocked"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "performLayout：谁来触发布局",
+      "brief": "布局不是每次调用都同步做，而是由 WindowSurfacePlacer 攒批：设置 layoutNeeded 后请求 traversal，在下一拍统一 performLayoutAndPlaceSurfacesLocked。这是「同一帧内多次修改只布局一次」的原因。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2389,
+          "symbol": "mWindowPlacerLocked.performSurfacePlacement"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5617,
+          "symbol": "performLayout(true /* initial */"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P3",
+      "lane": "LAY",
+      "title": "relayout 与 measure",
+      "brief": "客户端请求 relayoutWindow 时，WMS 按当前 DisplayPolicy 与 InsetsPolicy 计算窗口的 parentFrame 与 displayFrame，再据此决定 measuredWidth/Height。返回的 frames 会被 ViewRootImpl 用于 setFrame。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2548,
+          "symbol": "public int relayoutWindow("
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2584,
+          "symbol": "if (win.mRelayoutSeq < seq)"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+          "line": 5106,
+          "symbol": "RELAYOUT_RES_FIRST_TIME"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "层级排序与 z-order",
+      "brief": "同一 DisplayArea 下的窗口按 type 与 layer 排序，应用窗口之间按添加顺序，系统窗口按预设 layer 段。排序结果决定谁盖住谁，也决定 InputDispatcher 的命中顺序。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 4549,
+          "symbol": "void assignWindowLayers("
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 4560,
+          "symbol": "scheduleAnimation();"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "焦点窗口的确定",
+      "brief": "焦点由 DisplayContent 的焦点策略决定：可见、可聚焦、且不是 paused 的 Activity。焦点变化会触发 InputDispatcher 的焦点目标更新，也会触发 Insets 与 IME 调整。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2116,
+          "symbol": "win.canReceiveKeys()"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2117,
+          "symbol": "updateFocusedWindowLocked(UPDATE_FOCUS_WILL_ASSIGN_LAYERS"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2157,
+          "symbol": "setInputFocusLw(displayContent.mCurrentFocus"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P4",
+      "lane": "WMS",
+      "title": "applySurfaceChangesTransaction",
+      "brief": "布局完成后，这一步把 WindowState 的 frame、crop、alpha、layer 写进对应的 SurfaceControl。注意它只改「期望值」，真正提交在 SurfaceFlinger 的 Transaction。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5594,
+          "symbol": "void applySurfaceChangesTransaction()"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5617,
+          "symbol": "performLayout(true /* initial */"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5634,
+          "symbol": "forAllWindows(mApplySurfaceChangesTransaction"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "SurfaceControl 的写入",
+      "brief": "WindowState 持有的 SurfaceControl 由 SurfaceControl.Transaction 批量修改：setPosition/setMatrix/setCrop/setAlpha/setLayer/setVisibility。一次 traversal 内的所有窗口改动会被合并成较少的 transaction。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowStateAnimator.java",
+          "line": 74,
+          "symbol": "class WindowStateAnimator {"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5594,
+          "symbol": "void applySurfaceChangesTransaction()"
+        },
+        {
+          "file": "native/libs/gui/SurfaceComposerClient.cpp",
+          "line": 1146,
+          "symbol": "status_t SurfaceComposerClient::Transaction::apply"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P5",
+      "lane": "SF",
+      "title": "提交给 SurfaceFlinger",
+      "brief": "transaction 最终经 setTransactionState 交给 SF，由 SF 在某个 vsync 拍子上应用。所以「WMS 布局完成」与「画面更新」之间还隔着一到两帧——这是「改了布局但还没看到」的常见原因。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5579,
+          "symbol": "setTransactionState"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 5757,
+          "symbol": "applyTransactionState"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2807,
+          "symbol": "flushTransactions"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "Insets：谁占了屏幕边缘",
+      "brief": "状态栏、导航栏、IME、刘海都是 Insets 来源。WindowState 的 fitInsetsTypes 决定它受哪些 insets 影响；InsetsPolicy 在每帧根据可见性重新计算，并驱动客户端的 InsetsState 更新。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5628,
+          "symbol": "mInsetsStateController.onPostLayout"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1900,
+          "symbol": "setRequestedVisibleTypes"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "动画与转场：WindowStateAnimator",
+      "brief": "窗口的进出场动画由 WindowStateAnimator 驱动，改变的是 alpha 与 matrix 而不是 frame。转场（AppTransition）负责协调多个窗口的动画时间轴，Shell Transition 接管了大部分跨窗口转场。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowStateAnimator.java",
+          "line": 74,
+          "symbol": "class WindowStateAnimator {"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+          "line": 5125,
+          "symbol": "mEnterAnimationPending = true"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+          "line": 5103,
+          "symbol": "int relayoutVisibleWindow("
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P7",
+      "lane": "LAY",
+      "title": "生命周期：ATMS 与 WMS 的分工",
+      "brief": "Activity 的启动与生命周期归 ATMS（ActivityTaskManagerService），窗口的创建与布局归 WMS，两者在 system_server 里是同一进程的不同服务。resume 一个 Activity 会通过 ClientLifecycleManager 发 ClientTransaction 给客户端，客户端再在 resume 后 addWindow。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java",
+          "line": 1289,
+          "symbol": "startActivityAsUser"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+          "line": 73,
+          "symbol": "scheduleTransaction"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+          "line": 74,
+          "symbol": "transaction.schedule"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P7",
+      "lane": "LAY",
+      "title": "resume 与 makeVisible",
+      "brief": "Task.resumeTopActivityUncheckedLocked 挑出要 resume 的 ActivityRecord，RootWindowContainer 负责跨 display 的顶层恢复。ActivityRecord.makeVisibleIfNeeded 在窗口可见时才真正把 Activity 设为 visible。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Task.java",
+          "line": 5369,
+          "symbol": "resumeTopActivityUncheckedLocked"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Task.java",
+          "line": 5383,
+          "symbol": "resumeTopActivityInnerLocked"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "line": 6015,
+          "symbol": "makeVisibleIfNeeded"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P7",
+      "lane": "WMS",
+      "title": "分支：加窗口失败",
+      "brief": "ADD_BAD_APP_TOKEN、ADD_BAD_SUBWINDOW_TOKEN、ADD_DUPLICATE_ADD、ADD_INVALID_TYPE 各有明确含义。最常见的两个是：token 已失效（Activity 已销毁）与子窗口 token 不是父窗口的 token。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1706,
+          "symbol": "ADD_BAD_SUBWINDOW_TOKEN"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1698,
+          "symbol": "ADD_APP_EXITING"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 1740,
+          "symbol": "ADD_DUPLICATE_ADD"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P7",
+      "lane": "WMS",
+      "title": "分支：布局重复与稳定性",
+      "brief": "一次 traversal 里如果布局改变了 pendingLayoutChanges，会重新走一遍布局（debugLayoutRepeats 可看到重复次数）。重复次数过多通常意味着某处布局不稳定（例如每次布局都改 frame），会拖慢整帧。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5608,
+          "symbol": "FINISH_LAYOUT_REDO_LAYOUT"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5618,
+          "symbol": "pendingLayoutChanges = 0"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "WMS",
+      "title": "诊断：dumpsys window 与 trace",
+      "brief": "dumpsys window 能看窗口树、每个窗口的 frame、可见性与焦点；dumpsys window displays 看 DisplayArea 层次；trace 里 performLayout 与 applySurfaceChangesTransaction 是最关键的两个切片。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 5594,
+          "symbol": "void applySurfaceChangesTransaction()"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2807,
+          "symbol": "flushTransactions()"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "WMS",
+      "title": "边界：哪些不在本仓库",
+      "brief": "SystemUI 的具体窗口实现、Shell（WMShell）的转场编排、vendor 的显示策略都不在本仓库。所以「转场动画由谁决定」这类问题只能看到 WMS 暴露的接口，看不到具体实现。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+          "line": 2009,
+          "symbol": "startTransit(\"addWin\")"
+        }
+      ]
+    }
+  ],
+  "extends": [
+    "topic_render.json"
+  ],
+  "pitfalls": [
+    {
+      "case": "布局不是即时的",
+      "behavior": "设 layoutNeeded 只是打标记，真正布局在下一拍 traversal 统一做；同一帧多次修改只布局一次",
+      "ref": "WindowManagerService.java:2389"
+    },
+    {
+      "case": "addWindow 失败码含义不同",
+      "behavior": "ADD_BAD_APP_TOKEN（token 失效）、ADD_BAD_SUBWINDOW_TOKEN（子窗口 token 与父窗口不一致）、ADD_DUPLICATE_ADD（重复添加）、ADD_INVALID_TYPE（type 不允许该 uid）",
+      "ref": "WindowManagerService.java:1679"
+    },
+    {
+      "case": "InputChannel 在 addWindow 时配对",
+      "behavior": "窗口存在期间通道一直有效，窗口移除才关闭；点击落错窗口本质上是 InputChannel/WindowState 与命中测试不一致",
+      "ref": "WindowManagerService.java:1674"
+    },
+    {
+      "case": "SurfaceControl 改动不等于立即上屏",
+      "behavior": "applySurfaceChangesTransaction 只写期望值，Transaction 要到 SF 的某个 vsync 才应用",
+      "ref": "DisplayContent.java:5594 / SurfaceFlinger.cpp:5579"
+    },
+    {
+      "case": "z-order 与输入命中同源",
+      "behavior": "assignWindowLayers 决定的顺序同时影响「谁盖住谁」与 InputDispatcher 的命中顺序",
+      "ref": "DisplayContent.java:4549"
+    },
+    {
+      "case": "ATMS 与 WMS 分工不同",
+      "behavior": "Activity 启动/生命周期归 ATMS，窗口创建/布局归 WMS；两者同进程但职责边界清楚",
+      "ref": "ActivityTaskManagerService.java:1289"
+    },
+    {
+      "case": "resume 不一定立刻有窗口",
+      "behavior": "ClientTransaction 驱动客户端 resume，客户端 resume 后才 addWindow，所以「resumed 但没窗口」是正常中间态",
+      "ref": "ClientLifecycleManager.java:73"
+    },
+    {
+      "case": "布局重复过多",
+      "behavior": "一次 traversal 里若 pendingLayoutChanges 反复变化会重复布局，debugLayoutRepeats 可看到次数",
+      "ref": "DisplayContent.java:5594"
+    },
+    {
+      "case": "焦点窗口受 Activity 状态约束",
+      "behavior": "paused 的 Activity 通常拿不到焦点，即使窗口可见",
+      "ref": "DisplayContent.java:5594"
+    },
+    {
+      "case": "转场实现不在本仓库",
+      "behavior": "Shell/WMShell 的转场编排、SystemUI 的具体窗口实现都不在本仓库",
+      "ref": "WindowManagerService.java:1672"
+    }
+  ],
+  "facts": [
+    "<b>两条主线</b>：ATMS 管 Activity 与任务，WMS 管窗口与布局，同进程不同服务。",
+    "<b>容器树决定一切</b>：RootWindowContainer → DisplayContent → DisplayArea → Task → ActivityRecord → WindowState，每层只对自己的子节点负责。",
+    "<b>token 是归属契约</b>：应用窗口的 token 来自 ActivityRecord，系统窗口挂在 DisplayArea，addWindow 用它决定挂到哪。",
+    "<b>布局是攒批的</b>：设标记 + 下一拍 traversal，同帧多次改动只布局一次。",
+    "<b>WMS 与合成只通过 SurfaceControl 交互</b>：frame/crop/alpha/layer 写进去，Transaction 提交后由 SF 在 vsync 上应用。"
+  ],
+  "glossary": [
+    {
+      "term": "IWindowSession",
+      "text": "客户端与 WMS 的会话接口，进程内单例。"
+    },
+    {
+      "term": "WindowToken",
+      "text": "窗口归属契约，决定挂到哪个容器。"
+    },
+    {
+      "term": "WindowState",
+      "text": "单个窗口的完整状态：attrs/frame/surface/可见性。"
+    },
+    {
+      "term": "DisplayContent",
+      "text": "一块屏幕的窗口集合与布局单元。"
+    },
+    {
+      "term": "DisplayArea",
+      "text": "窗口分层容器，TaskDisplayArea 是其子类。"
+    },
+    {
+      "term": "traversal",
+      "text": "一次完整的布局+应用+提交过程。"
+    },
+    {
+      "term": "pendingLayoutChanges",
+      "text": "布局未完成的标记集合，驱动重复布局。"
+    },
+    {
+      "term": "relayoutWindow",
+      "text": "客户端请求尺寸/可见性变更并取回 frames。"
+    },
+    {
+      "term": "InputChannel",
+      "text": "WMS 与 app 之间的输入通道，addWindow 时配对。"
+    },
+    {
+      "term": "InsetsState",
+      "text": "当前所有 insets 来源与取值，回传给客户端。"
+    },
+    {
+      "term": "WindowStateAnimator",
+      "text": "窗口 surface 与动画状态，操作 alpha/matrix。"
+    },
+    {
+      "term": "AppTransition",
+      "text": "跨窗口转场的时间轴协调。"
+    },
+    {
+      "term": "ClientTransaction",
+      "text": "下发给客户端的生命周期事务。"
+    },
+    {
+      "term": "ActivityRecord",
+      "text": "一个 Activity 实例在 system_server 的表示。"
+    },
+    {
+      "term": "Task",
+      "text": "任务栈，一组 ActivityRecord。"
+    },
+    {
+      "term": "ADD_BAD_APP_TOKEN",
+      "text": "token 已失效导致加窗口失败。"
+    }
+  ],
+  "scenario": {
+    "title": "一次窗口添加与上屏（数量级示意）",
+    "events": [
+      {
+        "t": "0.00 ms",
+        "label": "setView",
+        "detail": "ViewRootImpl 调 IWindowSession.addToDisplayAsUser"
+      },
+      {
+        "t": "0.05 ms",
+        "label": "权限",
+        "detail": "checkAddPermission 校验 type 与 uid"
+      },
+      {
+        "t": "0.10 ms",
+        "label": "归属",
+        "detail": "解析 token 与父窗口，取 DisplayContent"
+      },
+      {
+        "t": "0.15 ms",
+        "label": "建窗",
+        "detail": "创建 WindowState，配对 InputChannel"
+      },
+      {
+        "t": "0.16 ms",
+        "label": "请求布局",
+        "detail": "setLayoutNeeded + 请求 traversal"
+      },
+      {
+        "t": "≈8.3 ms",
+        "label": "布局",
+        "detail": "下一次 traversal 里 performLayout"
+      },
+      {
+        "t": "8.5 ms",
+        "label": "应用",
+        "detail": "applySurfaceChangesTransaction 写 SurfaceControl"
+      },
+      {
+        "t": "8.6 ms",
+        "label": "提交",
+        "detail": "Transaction.apply → setTransactionState"
+      },
+      {
+        "t": "16.6 ms",
+        "label": "上屏",
+        "detail": "SF 在该 vsync 应用并合成"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：容器层次与两条主线",
+      "route": "全景·架构 → 流程图 → 时序图"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：加窗口 → 布局 → 应用 → 提交",
+      "route": "精读第 1→16 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "理解焦点、Insets 与生命周期协作",
+      "route": "精读第 17→20 步 + 第 21→24 步"
+    },
+    {
+      "time": "半天",
+      "goal": "能抓现场",
+      "route": "代码逐行 12 个 P0 函数 + dumpsys window"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "WMS.addWindow",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "line": 1672,
+      "size": 371,
+      "thread": "binder 线程（持 mGlobalLock）",
+      "lock": "mGlobalLock",
+      "purpose": "窗口进入系统的唯一入口。",
+      "risk": "权限判断缺失会造成跨应用窗口注入。",
+      "status": "card"
+    },
+    {
+      "fn": "WMS.relayoutWindow",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "line": 2548,
+      "size": 173,
+      "thread": "binder 线程",
+      "lock": "mGlobalLock",
+      "purpose": "尺寸/可见性变更与 frames 回传。",
+      "risk": "frames 与 Insets 算错会导致应用布局错位。",
+      "status": "card"
+    },
+    {
+      "fn": "DisplayContent.applySurfaceChangesTransaction",
+      "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+      "line": 5594,
+      "size": 75,
+      "thread": "WMS 主线程",
+      "lock": "mGlobalLock",
+      "purpose": "把布局结果写进 SurfaceControl。",
+      "risk": "这里出错表现为「布局对但画面不对」。",
+      "status": "card"
+    },
+    {
+      "fn": "DisplayContent.assignWindowLayers",
+      "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+      "line": 4549,
+      "size": 52,
+      "thread": "WMS 主线程",
+      "lock": "mGlobalLock",
+      "purpose": "z-order 赋值。",
+      "risk": "层级错乱同时影响遮挡与输入命中。",
+      "status": "card"
+    },
+    {
+      "fn": "Task.resumeTopActivityUncheckedLocked",
+      "file": "base/services/core/java/com/android/server/wm/Task.java",
+      "line": 5369,
+      "size": 68,
+      "thread": "WMS 主线程",
+      "lock": "mGlobalLock",
+      "purpose": "栈顶 Activity 恢复决策。",
+      "risk": "恢复顺序错会导致焦点与窗口不同步。",
+      "status": "card"
+    },
+    {
+      "fn": "ClientLifecycleManager.scheduleTransaction",
+      "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+      "line": 73,
+      "size": 12,
+      "thread": "system_server",
+      "lock": "无",
+      "purpose": "下发客户端生命周期事务。",
+      "risk": "这里的阻塞会连锁到 Activity 状态机。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s03",
+      "fn": "addWindow 权限与失败码",
+      "ref": "WindowManagerService.java:1679-1683",
+      "rows": [
+        {
+          "cond": "uid 无权限加该 type",
+          "then": "ADD_INVALID_TYPE / 权限错误",
+          "effect": "客户端抛 BadTokenException 等"
+        },
+        {
+          "cond": "token 已失效",
+          "then": "ADD_BAD_APP_TOKEN",
+          "effect": "通常 Activity 已销毁仍尝试加窗"
+        },
+        {
+          "cond": "子窗口 token 与父不一致",
+          "then": "ADD_BAD_SUBWINDOW_TOKEN",
+          "effect": "Popup/Dialog 挂错父窗口"
+        },
+        {
+          "cond": "同一窗口重复添加",
+          "then": "ADD_DUPLICATE_ADD",
+          "effect": "客户端逻辑错误"
+        }
+      ]
+    },
+    {
+      "step": "s07",
+      "fn": "addWindowInner 落库步骤",
+      "ref": "WindowManagerService.java:2044",
+      "rows": [
+        {
+          "cond": "正常",
+          "then": "创建 WindowState 并注册策略",
+          "effect": "进入待布局列表"
+        },
+        {
+          "cond": "需要 InputChannel",
+          "then": "配对两半并回传一半",
+          "effect": "app 侧开始收输入"
+        },
+        {
+          "cond": "不可见初始状态",
+          "then": "不进入可见窗口集合",
+          "effect": "首次 relayout 才可见"
+        }
+      ]
+    },
+    {
+      "step": "s22",
+      "fn": "布局重复",
+      "ref": "DisplayContent.java:5594",
+      "rows": [
+        {
+          "cond": "pendingLayoutChanges 含 REDO_LAYOUT",
+          "then": "setLayoutNeeded 并重跑",
+          "effect": "重复次数++"
+        },
+        {
+          "cond": "重复次数过多",
+          "then": "debugLayoutRepeats 打出警告",
+          "effect": "说明布局不稳定"
+        },
+        {
+          "cond": "无变化",
+          "then": "进入 apply 阶段",
+          "effect": "正常"
+        }
+      ]
+    },
+    {
+      "step": "s21",
+      "fn": "relayout 的可见性",
+      "ref": "WindowState.java:5103",
+      "rows": [
+        {
+          "cond": "viewVisibility=VISIBLE",
+          "then": "走 relayoutVisibleWindow",
+          "effect": "参与布局与应用"
+        },
+        {
+          "cond": "viewVisibility=GONE",
+          "then": "不参与布局",
+          "effect": "窗口不可见"
+        },
+        {
+          "cond": "首次可见",
+          "then": "触发 enter 动画",
+          "effect": "由 WindowStateAnimator 驱动"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 6
+  },
+  "scope": [
+    "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+    "base/services/core/java/com/android/server/wm/Session.java",
+    "base/services/core/java/com/android/server/wm/DisplayContent.java",
+    "base/services/core/java/com/android/server/wm/RootWindowContainer.java",
+    "base/services/core/java/com/android/server/wm/Task.java",
+    "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+    "base/services/core/java/com/android/server/wm/WindowState.java",
+    "base/services/core/java/com/android/server/wm/WindowToken.java",
+    "base/services/core/java/com/android/server/wm/WindowStateAnimator.java",
+    "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+    "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java"
+  ],
+  "inventorySpans": [
+    "addWindow",
+    "addWindowInner",
+    "relayoutWindow",
+    "applySurfaceChangesTransaction",
+    "assignWindowLayers",
+    "relayoutVisibleWindow",
+    "addToDisplayAsUser",
+    "resumeTopActivityUncheckedLocked",
+    "resumeFocusedTasksTopActivities",
+    "makeVisibleIfNeeded",
+    "scheduleTransaction",
+    "startActivityAsUser",
+    "performSurfacePlacement",
+    "removeWindow"
+  ]
+}

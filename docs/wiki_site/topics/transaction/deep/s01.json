@@ -1,0 +1,55 @@
+{
+  "step": "s01",
+  "title": "Transaction 只是一个变更集合",
+  "tldr": "Transaction 内部只有一份 TransactionState：层状态、display 状态、barrier 与 flags，不立刻生效。",
+  "why": "理解这一点是理解整条链路的前提。很多人把 Transaction 当成「命令」或「一次提交」，实际上它只是一个可以随意累积、合并、丢弃的变更集合：你可以在里面写几十个层的属性，也可以写一半就丢掉不提交，什么都不会发生。真正的提交只发生在 apply() 那一刻。这个模型带来两个好处——批量修改天然原子（要么一起提交要么都不提交），以及复用成本极低（clear() 后可以继续用）。",
+  "concepts": [
+    {
+      "term": "TransactionState",
+      "text": "可跨进程的状态载体：ComposerState 列表、DisplayState 列表、barrier、flags、时间戳。"
+    },
+    {
+      "term": "ComposerState",
+      "text": "一条 layer_state_t 加上它的 SurfaceControl 句柄。"
+    },
+    {
+      "term": "layer_state_t.what",
+      "text": "位图，标记这条状态里哪些字段有效。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::vector<ComposerState> mComposerStates = {};",
+      "ref": "native/libs/gui/include/gui/TransactionState.h:99",
+      "what": "层状态列表，一条对应一个被修改的层。"
+    },
+    {
+      "call": "std::vector<DisplayState> mDisplayStates = {};",
+      "ref": "native/libs/gui/include/gui/TransactionState.h:100",
+      "what": "display 状态（分辨率、旋转等）单独一组。"
+    },
+    {
+      "call": "std::vector<gui::TransactionBarrier> mBarriers = {};",
+      "ref": "native/libs/gui/include/gui/TransactionState.h:101",
+      "what": "本事务携带的排序 barrier。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mState",
+      "before": "空集合",
+      "after": "累积若干 layer_state_t",
+      "note": "此时还没有任何跨进程动作。"
+    }
+  ],
+  "threads": "在调用它的线程上（通常是 UI 线程或 RenderThread）累积，无锁需求。",
+  "pitfalls": [
+    "以为 setPosition 会立即生效：它只写进集合。",
+    "在不同线程同时改同一个 Transaction：它本身不是线程安全的。"
+  ],
+  "debug": [
+    "debug.stagefright.tracing 或 dumpsys SurfaceFlinger 能看到已提交事务的字段。",
+    "源码里 layer_state_t 的 what 位定义是最好的字段清单。"
+  ],
+  "next": "setXxx 具体怎么往集合里写？见第 2 步。"
+}

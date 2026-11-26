@@ -1,0 +1,35 @@
+{
+  "step": "s03",
+  "title": "scheduleTraversals：幂等 + 同步屏障 + vsync 回调",
+  "tldr": "一帧只排一次；先立同步屏障再请 vsync，顺序本身承载了公开 API 的正确性。",
+  "why": "这是整条链路里最容易被误读的方法：它不画、不量、不排布，只做「排队」。但排队的前后顺序被 AOSP 明确标注为 load-bearing：必须先 postTraversalBarrier，再 postVsyncCallback。反过来的话，屏障与 vsync 之间会出现一个窗口，期间投递的同步消息可能先于 traversal 执行，于是 setText 之后立刻 post 的回调会读到旧宽度——这正是官方注释里举的例子。理解这一点，才能解释为什么某些「把 invalidate 挪到 post 里」的改法会引发时序类 bug。",
+  "concepts": [
+    { "term": "mTraversalScheduled", "text": "幂等闸门；同一帧内的第二次 scheduleTraversals 直接走空。" },
+    { "term": "postSyncBarrier", "text": "MessageQueue 的同步屏障：挡住其后的同步消息，只放行 setAsynchronous 过的消息。" },
+    { "term": "CALLBACK_TRAVERSAL", "text": "Choreographer 五类回调之一，位于 INPUT/ANIMATION/INSETS_ANIMATION 之后、COMMIT 之前。" }
+  ],
+  "walk": [
+    { "call": "void scheduleTraversals()", "ref": "base/core/java/android/view/ViewRootImpl.java:3307", "what": "入口，第一行是 checkThreadCompat。" },
+    { "call": "if (!mTraversalScheduled) {", "ref": "base/core/java/android/view/ViewRootImpl.java:3309", "what": "幂等：已排过就不再重复注册 vsync 回调。" },
+    { "call": "postTraversalBarrier();", "ref": "base/core/java/android/view/ViewRootImpl.java:3329", "what": "先立屏障，挡住其后所有同步消息。" },
+    { "call": "mChoreographer.postVsyncCallback(", "ref": "base/core/java/android/view/ViewRootImpl.java:3330", "what": "再向 Choreographer 注册遍历回调。" },
+    { "call": "Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);", "ref": "base/core/java/android/view/ViewRootImpl.java:3331", "what": "回调类型固定，决定了它在 doFrame 里的执行位置。" },
+    { "call": "notifyRendererOfFramePending();", "ref": "base/core/java/android/view/ViewRootImpl.java:3332", "what": "通知渲染器本帧有活，让它提前准备。" }
+  ],
+  "state": [
+    { "field": "mTraversalScheduled", "before": "false", "after": "true", "note": "置位在建屏障之前，保证重入调用看到的是「已排队」。" },
+    { "field": "MessageQueue 的同步屏障", "before": "无屏障", "after": "竖立，其后同步消息排队", "note": "由 doTraversal 负责拆除，二者必须成对。" }
+  ],
+  "threads": "UI 线程。整个过程不阻塞、不等待，返回时只是「排上了」。",
+  "pitfalls": [
+    "把屏障与 vsync 注册的顺序调换：会造成 setText 后 post 读到旧宽度的时序 bug。",
+    "以为 scheduleTraversals 会立刻 measure：它只是排队，真正的遍历在 vsync 后的 doTraversal。",
+    "在别处手动 postSyncBarrier 却忘了拆：app 的消息队列会被永久堵住，表现为整体卡死。"
+  ],
+  "debug": [
+    "trace 里 Choreographer#doFrame 与 draw 切片之间的间隔，就是本方法到真正遍历的等待时间。",
+    "在 ViewRootImpl.java:3309 断点观察 mTraversalScheduled，可确认是否被合并。",
+    "若怀疑屏障泄漏，检查 doTraversal 是否被异常跳过（mTraversalScheduled 为真但从不进 traversal）。"
+  ],
+  "next": "vsync 到达后，Choreographer 怎样把控制权交回 ViewRootImpl？见第 4 步。"
+}

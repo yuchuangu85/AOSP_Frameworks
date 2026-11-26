@@ -1,0 +1,55 @@
+{
+  "step": "s19",
+  "title": "分支：样本被拒与重新校准",
+  "tldr": "周期未确认、模式切换中、预测器要更多样本时样本被拒，三个布尔描述过渡态。",
+  "why": "过渡态是「模型不可信」的显式表达。它存在的意义是让上层能做出正确决策：例如过渡期间不关闭硬件 vsync、不基于预测做激进的掉帧判定。如果不知道这几个布尔的含义，看到「唤醒点在一段时间内不稳定」就会误判成 bug，而实际上系统正在自我校准。",
+  "concepts": [
+    {
+      "term": "mPeriodConfirmationInProgress",
+      "text": "周期确认中。"
+    },
+    {
+      "term": "mModeChangeInProgress",
+      "text": "显示模式切换中（present fence 被整体忽略）。"
+    },
+    {
+      "term": "mMoreSamplesNeeded",
+      "text": "需要更多硬件样本。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (mExternalIgnoreFences || mInternalIgnoreFences) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:85",
+      "what": "忽略 fence 的两种情况。"
+    },
+    {
+      "call": "mPeriodConfirmationInProgress = true;",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:104",
+      "what": "进入过渡态。"
+    },
+    {
+      "call": "mMoreSamplesNeeded = mTracker.needsMoreSamples();",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:219",
+      "what": "由预测器决定何时退出。"
+    }
+  ],
+  "state": [
+    {
+      "field": "过渡态布尔",
+      "before": "全部 false",
+      "after": "部分 true",
+      "note": "期间预测不准。"
+    }
+  ],
+  "threads": "SF 主线程 / HAL 回调线程。",
+  "pitfalls": [
+    "把过渡期抖动当 bug。",
+    "在过渡期基于预测做掉帧结论。"
+  ],
+  "debug": [
+    "trace 里 VSR 相关打点与两条 ignore 标志。",
+    "dumpsys --vsync 的 reactor 段。"
+  ],
+  "next": "重复唤醒怎么避免？见第 20 步。"
+}

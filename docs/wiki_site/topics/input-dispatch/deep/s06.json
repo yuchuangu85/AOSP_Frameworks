@@ -1,0 +1,55 @@
+{
+  "step": "s06",
+  "title": "listener 链：过滤、编排、分类",
+  "tldr": "链序固定：Reader→UnwantedInteractionBlocker→Filter→PointerChoreographer→Processor→Dispatcher。",
+  "why": "这条链的顺序就是语义：无障碍过滤必须在指针编排之前（否则被判为手势的事件无法再被拦截），编排必须在分类之前（分类依赖编排后的指针流）。改顺序不会立刻崩溃，但会让某些场景行为错乱——例如无障碍用户拿不到本该被拦截的手势。InputFilter 还有一个反直觉的点：按键在启用无障碍过滤时会被灌进 Rust 过滤器后**直接 return**，不再往下传，回注是另一条路径。",
+  "concepts": [
+    {
+      "term": "InputFilter",
+      "text": "无障碍输入过滤：按键走 Rust 过滤器，motion 直接下传。"
+    },
+    {
+      "term": "PointerChoreographer",
+      "text": "指针编排：把多设备指针组合成统一的手势语义。"
+    },
+    {
+      "term": "InputProcessor",
+      "text": "分类与手势识别，产出 MotionClassification。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "// The input pipeline reads:",
+      "ref": "native/services/inputflinger/InputManager.cpp:122",
+      "what": "注释里给出了完整的管道顺序，是这份代码的权威说明。"
+    },
+    {
+      "call": "void InputFilter::notifyKey(const NotifyKeyArgs* args) {",
+      "ref": "native/services/inputflinger/InputFilter.cpp:73",
+      "what": "按键过滤入口。"
+    },
+    {
+      "call": "void InputProcessor::notifyMotion(const NotifyMotionArgs* args) {",
+      "ref": "native/services/inputflinger/InputProcessor.h:152",
+      "what": "分类职责在这里，而不是独立类。"
+    }
+  ],
+  "state": [
+    {
+      "field": "设备的 filter 启用状态",
+      "before": "随无障碍服务变化",
+      "after": "启用后按键不再下传",
+      "note": "这是「开无障碍后按键行为变化」的原因。"
+    }
+  ],
+  "threads": "InputReader 线程，逐级同步调用。",
+  "pitfalls": [
+    "以为存在 InputClassifier 类：本分支只有 InputProcessor，详见页面降级说明。",
+    "以为按键总会到 dispatcher：无障碍过滤启用时可能被拦截。"
+  ],
+  "debug": [
+    "dumpsys input 的 Input Filter 段显示是否启用。",
+    "atrace 里链上各级各有切片。"
+  ],
+  "next": "事件如何进入 dispatcher 的队列？见第 7 步。"
+}

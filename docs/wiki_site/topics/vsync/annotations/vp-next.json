@@ -1,0 +1,258 @@
+{
+  "id": "vp-next",
+  "title": "VSyncPredictor::nextAnticipatedVSyncTimeFrom",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+  "sig": "nsecs_t VSyncPredictor::nextAnticipatedVSyncTimeFrom",
+  "span": [
+    380,
+    420
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "nsecs_t VSyncPredictor::nextAnticipatedVSyncTimeFrom(nsecs_t timePoint,",
+      "kind": "note",
+      "text": "「给定时间点之后的第一拍 vsync 是什么时候」——整个两相唤醒的计算基础。"
+    },
+    {
+      "at": 2,
+      "quote": "std::optional<nsecs_t> lastVsyncOpt) {",
+      "kind": "note",
+      "text": "lastVsyncOpt 是上次分发的目标拍，用来把结果钉在「已经告诉过别人的那一拍」上。"
+    },
+    {
+      "at": 3,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 4,
+      "quote": "std::lock_guard lock(mMutex);",
+      "kind": "lock",
+      "text": "保护 timelines 与已提交状态。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "const auto now = TimePoint::fromNs(mClock->now());",
+      "kind": "data",
+      "text": "当前时间。"
+    },
+    {
+      "at": 7,
+      "quote": "purgeTimelines(now);",
+      "kind": "call",
+      "text": "清理过期的时间线（刷新率切换会留多条）。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "if (lastVsyncOpt && *lastVsyncOpt > timePoint) {",
+      "kind": "branch",
+      "text": "上次的 vsync 比请求点还晚。"
+    },
+    {
+      "at": 10,
+      "quote": "timePoint = *lastVsyncOpt;",
+      "kind": "state",
+      "text": "**以更晚者为准**：这保证「已经承诺过的拍」不会被推翻。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "const auto model = getVSyncPredictionModelLocked();",
+      "kind": "data",
+      "text": "取当前预测模型（周期 + 截距）。"
+    },
+    {
+      "at": 14,
+      "quote": "const auto threshold = model.slope / 2;",
+      "kind": "data",
+      "text": "半周期阈值，用于 snap。"
+    },
+    {
+      "at": 15,
+      "quote": "std::optional<Period> minFramePeriodOpt;",
+      "kind": "data",
+      "text": "最小帧周期（多拍一帧时用）。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "if (mNumVsyncsForFrame > 1) {",
+      "kind": "branch",
+      "text": "一次帧跨多个 vsync。"
+    },
+    {
+      "at": 18,
+      "quote": "minFramePeriodOpt = minFramePeriodLocked();",
+      "kind": "call",
+      "text": "算出最小帧周期，用于避免落在半拍上。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "std::optional<TimePoint> vsyncOpt;",
+      "kind": "data",
+      "text": "结果。"
+    },
+    {
+      "at": 22,
+      "quote": "for (auto& timeline : mTimelines) {",
+      "kind": "note",
+      "text": "遍历候选时间线（多刷新率时可能多条）。"
+    },
+    {
+      "at": 23,
+      "quote": "vsyncOpt = timeline.nextAnticipatedVSyncTimeFrom(model, minFramePeriodOpt,",
+      "kind": "call",
+      "text": "**真正计算**：把请求点 snap 到网格后取下一拍。"
+    },
+    {
+      "at": 24,
+      "quote": "snapToVsync(timePoint), mMissedVsync,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "lastVsyncOpt ? snapToVsync(*lastVsyncOpt -",
+      "kind": "data",
+      "text": "lastVsync 减去半周期再 snap，避免边界误判。"
+    },
+    {
+      "at": 26,
+      "quote": "threshold)",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": ": lastVsyncOpt);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 28,
+      "quote": "if (vsyncOpt) {",
+      "kind": "branch",
+      "text": "得到结果就停。"
+    },
+    {
+      "at": 29,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 30,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 32,
+      "quote": "LOG_ALWAYS_FATAL_IF(!vsyncOpt);",
+      "kind": "note",
+      "text": "取不到就 FATAL：说明模型彻底失效，宁可崩也不要静默不刷新。"
+    },
+    {
+      "at": 33,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 34,
+      "quote": "if (*vsyncOpt > mLastCommittedVsync) {",
+      "kind": "branch",
+      "text": "算出的拍比已提交的更晚。"
+    },
+    {
+      "at": 35,
+      "quote": "mLastCommittedVsync = *vsyncOpt;",
+      "kind": "state",
+      "text": "**记录已提交的拍**：后续调用会以它为下界。"
+    },
+    {
+      "at": 36,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"mLastCommittedVsync in %.2fms\",",
+      "kind": "trace",
+      "text": "打 trace 显示距离现在多久。"
+    },
+    {
+      "at": 37,
+      "quote": "float(mLastCommittedVsync.ns() - mClock->now()) / 1e6f);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "return vsyncOpt->ns();",
+      "kind": "note",
+      "text": "返回纳秒时间戳。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

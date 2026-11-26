@@ -1,0 +1,31 @@
+{
+  "step": "s02",
+  "title": "Scheduler::onFrameSignal：SF 相位的一拍",
+  "tldr": "sf 相位的 vsync 回调进 SF 主线程，beginFrame 定 expectedPresentTime，再依次 commit 与 composite。",
+  "why": "这一拍的所有时间基准都在这里定下来：expectedPresentTime 决定 HWC 何时允许上屏，sfWorkDuration 决定 SF 有多少时间可用，vsyncId 则串起整条 trace。如果不知道这个入口，就很难解释「为什么这一帧晚了」——是因为 commit 太慢错过了 present 时刻，还是 beginFrame 给出的 expectedPresentTime 本身就落后一格。此外 commit 返回 false 时 composite 根本不会被调用，这条分支是「省掉整帧」的关键。",
+  "concepts": [
+    { "term": "pacesetter", "text": "多显示器时定节拍的那块屏；其余显示跟随它的 expectedPresentTime。" },
+    { "term": "FrameTargeter::beginFrame", "text": "算出本拍 expectedPresentTime 与实际可用时长。" },
+    { "term": "ICompositor", "text": "Scheduler 与 SurfaceFlinger 之间的接口抽象，commit/composite 都由它定义。" }
+  ],
+  "walk": [
+    { "call": "void Scheduler::onFrameSignal(ICompositor& compositor, VsyncId vsyncId, TimePoint expectedVsyncTime)", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:411", "what": "sf 相位的入口，参数已由 vsync 分发阶段算好。" },
+    { "call": "pacesetterPtr->targeterPtr->beginFrame(beginFrameArgs, *pacesetterPtr->schedulePtr);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:425", "what": "定本拍 expectedPresentTime 与预算。" },
+    { "call": "if (!compositor.commit(pacesetterPtr->displayId, targets)) {", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:470", "what": "提交阶段；返回 false 直接 return，不合成。" },
+    { "call": "const auto resultsPerDisplay = compositor.composite(pacesetterPtr->displayId, targeters);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:501", "what": "合成阶段。" },
+    { "call": "targeter->endFrame(*resultOpt);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:508", "what": "收尾：把实际 present 结果写回 frame target。" }
+  ],
+  "state": [
+    { "field": "FrameTarget", "before": "上一拍的状态", "after": "本拍 expectedPresentTime / vsyncId / 预算", "note": "beginFrame 写入，endFrame 收尾。" }
+  ],
+  "threads": "全部在 surfaceflinger 主线程；vsync 唤醒来自 TimerDispatch 线程。",
+  "pitfalls": [
+    "以为 commit 一定会跟着 composite：commit 返回 false 时整帧不做合成。",
+    "把 expectedPresentTime 当成「现在」：它是计划上屏时刻，通常在未来几十毫秒。"
+  ],
+  "debug": [
+    "trace 里找 onFrameSignal 与 commit/composite 两个切片。",
+    "dumpsys SurfaceFlinger --vsync 能看到 SF 的 workDuration 与相位配置。"
+  ],
+  "next": "commit 里有哪几道闸门会让这一拍直接放弃？见第 3 步。"
+}

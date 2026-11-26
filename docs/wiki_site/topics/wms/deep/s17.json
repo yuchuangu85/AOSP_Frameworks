@@ -1,0 +1,55 @@
+{
+  "step": "s17",
+  "title": "Insets：谁占了屏幕边缘",
+  "tldr": "状态栏/导航栏/IME/刘海都是 Insets 来源；窗口的 fitInsetsTypes 决定受谁影响，每帧由 InsetsPolicy 重算。",
+  "why": "Insets 是「全屏应用边缘被谁挡住」的答案，也是很多布局错位的根源。它有两个层次：谁提供 insets（系统窗口按 type 声明），谁消费 insets（应用窗口按 fitInsetsTypes 声明）。两边任一配错，就会出现内容被状态栏盖住或留出多余空白。",
+  "concepts": [
+    {
+      "term": "InsetsState",
+      "text": "当前所有来源与取值，回传给客户端。"
+    },
+    {
+      "term": "fitInsetsTypes",
+      "text": "窗口希望被哪些 insets 约束。"
+    },
+    {
+      "term": "InsetsSourceControl",
+      "text": "可动画的 insets 控制句柄。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mInsetsStateController.onPostLayout();",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5627",
+      "what": "布局后重算 insets。"
+    },
+    {
+      "call": "win.setRequestedVisibleTypes(requestedVisibleTypes);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1849",
+      "what": "客户端请求的可见类型。"
+    },
+    {
+      "call": "void applySurfaceChangesTransaction() {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5594",
+      "what": "每帧参与计算。"
+    }
+  ],
+  "state": [
+    {
+      "field": "InsetsState",
+      "before": "上一帧",
+      "after": "本帧",
+      "note": "随窗口显隐变化。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "应用声明了不 fit 却期待不被遮挡。",
+    "IME insets 与动画控制混用。"
+  ],
+  "debug": [
+    "dumpsys window 的 InsetsState 段。",
+    "客户端 View 的 fitsSystemWindows 与生效值对照。"
+  ],
+  "next": "动画与转场在哪？见第 18 步。"
+}

@@ -1,0 +1,65 @@
+{
+  "step": "s07",
+  "title": "addWindowInner：创建 WindowState",
+  "tldr": "真正落库在 addWindowInner：挂进 token、注册 DisplayPolicy、处理 IME/壁纸特例、更新焦点与输入窗口、指派 layer。",
+  "why": "这个函数是「加窗口」与「布局」的分界线。它刻意**不做布局**（源码注释明确写了：窗口必须自己调 relayout 才会显示），只把结构建好。所以加完窗口后画面不会立刻出现——要等客户端第一次 relayout。理解这一点，就能解释「addWindow 返回了但屏幕没变化」其实是正常的。",
+  "concepts": [
+    {
+      "term": "mEnterAnimationPending",
+      "text": "标记待播放进场动画。"
+    },
+    {
+      "term": "assignChildLayers",
+      "text": "在这里就建立 z-order 的初值。"
+    },
+    {
+      "term": "updateInputWindowsLw",
+      "text": "重建 InputDispatcher 的命中表。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "private int addWindowInner(@NonNull WindowState win, @NonNull DisplayPolicy displayPolicy,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2044",
+      "what": "入口。"
+    },
+    {
+      "call": "displayPolicy.addWindowLw(win, attrs);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2055",
+      "what": "注册到策略。"
+    },
+    {
+      "call": "displayContent.getInputMonitor().setUpdateInputWindowsNeededLw();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2114",
+      "what": "标记输入窗口需更新。"
+    },
+    {
+      "call": "// Don't do layout here, the window must call",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2148",
+      "what": "**注释**：这里不做布局。"
+    },
+    {
+      "call": "win.getParent().assignChildLayers();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2155",
+      "what": "指派 layer。"
+    }
+  ],
+  "state": [
+    {
+      "field": "焦点窗口",
+      "before": "旧焦点",
+      "after": "可能切换到新窗口",
+      "note": "由 canReceiveKeys 与 updateFocusedWindowLocked 决定。"
+    }
+  ],
+  "threads": "binder 线程，持 mGlobalLock。",
+  "pitfalls": [
+    "以为加窗后立刻可见：要等 relayout。",
+    "忽略 IME 特例：非当前 IME 的窗口会被忽略。"
+  ],
+  "debug": [
+    "ProtoLog WM_DEBUG_IME 会打出被忽略的 IME 窗口。",
+    "dumpsys window 的 mCurrentFocus。"
+  ],
+  "next": "容器层次长什么样？见第 8 步。"
+}

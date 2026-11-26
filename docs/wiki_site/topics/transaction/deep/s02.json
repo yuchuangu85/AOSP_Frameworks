@@ -1,0 +1,56 @@
+{
+  "step": "s02",
+  "title": "setXxx：按位累积 what",
+  "tldr": "每个 setXxx 通过 getLayerState(sc) 找到或新建该层的 layer_state_t，再 OR 上对应的 what 位。",
+  "why": "这里有一个容易被忽略的语义：同一个 Transaction 对同一层的同名字段多次设置，是**覆盖**而不是叠加；但不同名字段会累积。原因在于 what 是位图，而字段本身只有一个槽位。所以「先 setPosition(a) 再 setPosition(b)」的结果是 b，而「setPosition + setAlpha」两个都会生效。理解这一点，才能解释为什么某些「连续两次设置」的代码看起来没有按预期生效。",
+  "concepts": [
+    {
+      "term": "getLayerState",
+      "text": "按 SurfaceControl 找到或创建该层的 layer_state_t。"
+    },
+    {
+      "term": "what 位",
+      "text": "例如 ePositionChanged、eAlphaChanged、eBufferChanged。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "layer_state_t* SurfaceComposerClient::Transaction::getLayerState(const sp<SurfaceControl>& sc) {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1328",
+      "what": "查找或新建层状态。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setPosition(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1340",
+      "what": "位置：写 x/y 并置位。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setAlpha(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1444",
+      "what": "透明度：越界会被 clamp 并打日志。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setBuffer(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1701",
+      "what": "buffer：写 BufferData 并置 eBufferChanged。"
+    }
+  ],
+  "state": [
+    {
+      "field": "layer_state_t.what",
+      "before": "0",
+      "after": "累积的位图",
+      "note": "每个 setter 只 OR 自己那一位。"
+    }
+  ],
+  "threads": "调用线程；同一 Transaction 不应跨线程并发修改。",
+  "pitfalls": [
+    "以为多次 setAlpha 会叠加：最后一次生效。",
+    "setAlpha 传越界值：会被 clamp，不是报错。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 layer 段能看到最终生效值。",
+    "Transaction tracing 会打出 what 位。"
+  ],
+  "next": "多笔变更怎么合并？见第 3 步。"
+}

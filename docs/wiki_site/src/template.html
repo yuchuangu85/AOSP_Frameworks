@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('st-theme');
+      var sys = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      var forced = null;
+      try { forced = new URLSearchParams(location.search).get('theme'); } catch (e) {}
+      document.documentElement.dataset.theme = (forced === 'light' || forced === 'dark') ? forced : (saved || sys);
+    } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+  })();
+</script>
+<title>{{TITLE}}</title>
+<style>/*{{CSS}}*/</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <div class="kicker">{{KICKER}}</div>
+    <h1>{{TITLE}}</h1>
+    <p class="sub">{{SUBTITLE}}</p>
+  </div>
+  <div class="hdr-right">
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" title="切换亮/暗色（快捷键 t）">
+      <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span class="tt-label">亮色</span>
+    </button>
+    <div class="hdr-stats" id="hdr-stats"></div>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="rail" id="rail" aria-label="转场步骤"></aside>
+
+  <section class="stage">
+    <nav class="tabs" id="tabs">
+      <button class="tab is-on" data-tab="overview">全景 · 架构</button>
+      <button class="tab" data-tab="seq">时序</button>
+      <button class="tab" data-tab="cls">类图</button>
+      <button class="tab" data-tab="flow">流程</button>
+      <button class="tab" data-tab="files">文件结构</button>
+      <button class="tab" data-tab="methods">方法清单</button>
+      <button class="tab" data-tab="deep">精读</button>
+      <button class="tab" data-tab="code">代码逐行</button>
+      <button class="tab" data-tab="risk">降级与坑</button>
+    </nav>
+
+    <div class="view is-on" id="view-overview">
+      <div class="step-card" id="step-card"></div>
+      <div class="panel">
+        <div class="panel-hd">
+          <h2>进程与模块边界</h2>
+          <span class="hint" id="hint-arch">实线=同步调用 · 虚线=oneway / Binder 单程</span>
+        </div>
+        <div class="diagram-wrap" id="diagram-arch" tabindex="0" aria-label="架构图（可缩放拖拽）"></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-hd"><h2>本次解剖的 P0 函数</h2><span class="hint">逐行注释 · 带源码 quote 校验</span></div>
+          <div id="p0-list" class="p0-list"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><h2>一句话记住这次转场</h2></div>
+          <ol class="facts" id="facts"></ol>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><h2>学习路径</h2><span class="hint">按时间挑一条走</span></div>
+          <div class="lp" id="learning-path"></div>
+        </div>
+      </div>
+    </div>
+
+    
+    
+    <div class="view" id="view-seq">
+      <div class="panel">
+        <div class="panel-hd"><h2>跨进程时序</h2><span class="hint" id="hint-seq">点击任意消息 → 跳到对应步骤</span></div>
+        <div class="diagram-wrap" id="diagram-seq" tabindex="0" aria-label="时序图（可缩放拖拽）"></div>
+      </div>
+    </div>
+
+    <div class="view" id="view-cls">
+      <div class="panel">
+        <div class="panel-hd"><h2>类图</h2><span class="hint">实线=创建/持有 · 虚线=使用</span></div>
+        <div class="diagram-wrap" id="diagram-cls" tabindex="0" aria-label="类图（可缩放拖拽）"></div>
+      </div>
+    </div>
+
+    <div class="view" id="view-flow">
+      <div class="panel">
+        <div class="panel-hd"><h2>判定流程</h2><span class="hint" id="hint-flow">含无 player / 异常两条降级路径</span></div>
+        <div class="diagram-wrap" id="diagram-flow" tabindex="0" aria-label="流程图（可缩放拖拽）"></div>
+      </div>
+    </div>
+
+    <div class="view" id="view-files">
+      <div class="panel">
+        <div class="panel-hd">
+          <h2>代码文件结构</h2>
+          <span class="hint" id="files-summary"></span>
+        </div>
+        <div class="files-bar">
+          <input id="files-search" type="search" placeholder="过滤文件 / 目录名…" autocomplete="off">
+          <label class="sw"><input type="checkbox" id="files-only-hit"> 只看被引用</label>
+          <button class="navbtn" id="files-expand">全部展开</button>
+          <button class="navbtn" id="files-collapse">全部折叠</button>
+        </div>
+        <div class="files-wrap">
+          <div class="tree" id="file-tree"></div>
+          <aside class="file-detail" id="file-detail"><div class="hint">← 点一个文件看它的方法、涉及的步骤与逐行函数</div></aside>
+        </div>
+      </div>
+    </div>
+
+    <div class="view" id="view-methods">
+      <div class="panel">
+        <div class="panel-hd">
+          <h2>全量方法清单</h2>
+          <span class="hint" id="inv-summary"></span>
+        </div>
+        <div class="inv-bar">
+          <select id="inv-file"></select>
+          <select id="inv-status">
+            <option value="all">全部状态</option>
+            <option value="covered">逐行已覆盖</option>
+            <option value="partial">部分覆盖</option>
+            <option value="uncovered">未逐行（卡片/仅清单）</option>
+          </select>
+          <input id="inv-search" type="search" placeholder="搜方法名 / 文件…" autocomplete="off">
+          <span class="hint" id="inv-count"></span>
+        </div>
+        <div class="inv-wrap"><table class="inv-table" id="inv-table"></table></div>
+      </div>
+    </div>
+
+    <div class="view" id="view-deep">
+      <div class="scenario" id="scenario"></div>
+      <div class="deep-bar">
+        <button class="navbtn" id="deep-prev">← 上一步</button>
+        <div class="deep-progress" id="deep-progress"></div>
+        <button class="navbtn" id="deep-next">下一步 →</button>
+        <span class="hint">按「j / k」或 ← → 切换步骤</span>
+      </div>
+      <div class="deep-wrap">
+        <article class="deep-body" id="deep-body"></article>
+        <aside class="deep-side">
+          <div class="side-hd">术语表 <span class="hint">悬停正文里的词</span></div>
+          <div id="glossary"></div>
+        </aside>
+      </div>
+    </div>
+
+    <div class="view" id="view-code">
+      <div class="code-bar">
+        <div class="chips" id="p0-chips"></div>
+        <div class="code-tools">
+          <input id="code-search" type="search" placeholder="搜索代码 / 注释…" autocomplete="off">
+          <label class="sw"><input type="checkbox" id="only-notes"> 只看有注释</label>
+        </div>
+      </div>
+      <div class="step-hint" id="code-step-hint"></div>
+      <div class="code-wrap" id="code-wrap"></div>
+    </div>
+
+    <div class="view" id="view-risk">
+      <div class="panel">
+        <div class="panel-hd"><h2>失败与降级对照</h2><span class="hint">按发生频率排序</span></div>
+        <table class="risk-table" id="risk-table"></table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <span id="ftr-meta"></span>
+  <span class="dot">·</span>
+  <span>源码引用以 <code>文件:行</code> 形式给出，构建期校验 quote 与行号</span>
+  <span class="dot">·</span>
+  <span>四张图：Ctrl/⌘ + 滚轮缩放，滚轮或拖拽平移，双击放大</span>
+</footer>
+
+<script id="payload" type="application/json">"{{PAYLOAD}}"</script>
+<script>//{{JS}}</script>
+</body>
+</html>

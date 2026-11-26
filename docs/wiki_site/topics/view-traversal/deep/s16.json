@@ -1,0 +1,35 @@
+{
+  "step": "s16",
+  "title": "postAndWait：把 run() 推进队列，然后 park",
+  "tldr": "两把锁、一次投递、一次无超时等待；UI 的停与走全由 RT 决定。",
+  "why": "这 6 行是整个链路上唯一的阻塞点，也是最容易误判的地方。首先它没有超时：RT 卡在纹理上传或 EGL 上下文创建时，UI 线程会一直停在这里，最终以 ANR 形式暴露而不是抛异常。其次它只等同步：RT 在 syncFrameState 结束、算出 damage 之后就 signal，UI 立刻返回去做下一帧，绘制与 swap 继续在 RT 上跑——这是 CPU/GPU 能流水线的前提。第三它是两把锁：队列锁保护任务队列，mLock 只保护条件变量，混为一谈会导致死锁。",
+  "concepts": [
+    { "term": "mSignal", "text": "Condition 对象；UI 在此 wait，RT 在 unblockUiThread 里 signal。" },
+    { "term": "queue().post", "text": "把 run() 投入 RenderThread 的任务队列；捕获的是 this。" },
+    { "term": "无超时等待", "text": "mSignal.wait(mLock) 没有 timeout 参数，这是 ANR 采样里 nSyncAndDrawFrame 长栈的来源。" }
+  ],
+  "walk": [
+    { "call": "int DrawFrameTask::drawFrame() {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:72", "what": "先清 mSyncResult、记 mSyncQueued，再进 postAndWait。" },
+    { "call": "mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:76", "what": "排队时刻；RT 侧据此算出「UI 等了多久」。" },
+    { "call": "void DrawFrameTask::postAndWait() {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:82", "what": "阻塞点本体。" },
+    { "call": "AutoMutex _lock(mLock);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:84", "what": "只护条件变量的锁。" },
+    { "call": "mRenderThread->queue().post([this]() { run(); });", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:85", "what": "投递任务；用另一把锁保护队列，与 mLock 无关。" },
+    { "call": "mSignal.wait(mLock);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:86", "what": "无超时等待：只有 RT 的 unblockUiThread 能唤醒。" }
+  ],
+  "state": [
+    { "field": "mSyncResult", "before": "上一次的值", "after": "OK（随后由 run 累积）", "note": "drawFrame 返回时把它交回 Java。" },
+    { "field": "UI 线程状态", "before": "Running", "after": "Blocked（Waiting）", "note": "ANR 采样里就是这个状态栈。" }
+  ],
+  "threads": "UI 线程 blocked → RT 执行 run → RT signal → UI running。两把锁分属两个方向，不要当成一把。",
+  "pitfalls": [
+    "以为它有超时：没有，RT 卡住就是无限等待，最终表现为 ANR。",
+    "以为 UI 要等绘制完：错，signal 发生在 syncFrameState 之后、真正的 draw 之前。",
+    "在 RT 侧持有 mLock 时调用 Java 回调：会与正在 wait 的 UI 线程互相等待。"
+  ],
+  "debug": [
+    "抓 ANR trace：UI 线程停在 nSyncAndDrawFrame，看它上面是不是还在 wait。",
+    "trace 里 postAndWait 切片的宽度 = UI 等待同步的时长。",
+    "配合 DrawFrameTask.cpp:76 的 mSyncQueued 与 CanvasContext.cpp:545 的 SyncQueued 计算实际延迟。"
+  ],
+  "next": "RT 拿到任务后第一件事做什么？见第 17 步。"
+}

@@ -1,0 +1,48 @@
+{
+  "id": "df-postwait",
+  "title": "DrawFrameTask::postAndWait",
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "sig": "void DrawFrameTask::postAndWait()",
+  "span": [
+    82,
+    87
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void DrawFrameTask::postAndWait() {",
+      "kind": "note",
+      "text": "整条链路的唯一阻塞点，只有 6 行。UI 线程在这里停下，等 RT 把本帧的同步阶段做完。"
+    },
+    {
+      "at": 2,
+      "quote": "ATRACE_CALL();",
+      "kind": "trace",
+      "text": "在 UI 线程上打一个 postAndWait 切片，宽度就是「UI 等 RT 同步」的时长。"
+    },
+    {
+      "at": 3,
+      "quote": "AutoMutex _lock(mLock);",
+      "kind": "lock",
+      "text": "先取 mLock。这把锁只保护 mSignal，不保护 FrameInfo 与回调；它和 RT 任务队列的锁是两把不同的锁。"
+    },
+    {
+      "at": 4,
+      "quote": "mRenderThread->queue().post([this]() { run(); });",
+      "kind": "ipc",
+      "text": "跨线程投递：把 run() 放进 RenderThread 的任务队列。捕获的是 this——从这里开始，RT 会访问本对象。"
+    },
+    {
+      "at": 5,
+      "quote": "mSignal.wait(mLock);",
+      "kind": "lock",
+      "text": "UI 线程 park。注意三点：没有超时；会在等待期间释放 mLock；只有 RT 的 unblockUiThread() 才能唤醒它。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。返回时 RT 的同步阶段已完成，但绘制与 swap 还没有——这就是「UI 只等同步，不等绘制」。"
+    }
+  ]
+}

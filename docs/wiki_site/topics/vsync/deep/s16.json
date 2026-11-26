@@ -1,0 +1,60 @@
+{
+  "step": "s16",
+  "title": "doFrame：修 jitter 并分发五类回调",
+  "tldr": "算 now − frameTime 偏差，超一帧就拉回网格并打 Skipped N frames；随后按 INPUT→ANIMATION→TRAVERSAL→COMMIT 分发。",
+  "why": "jitter 修正是这套机制的容错部分：如果应用在主线程上被阻塞（例如一次 GC 或大布局），回调可能比 frameTime 晚很多。直接用过期时间会让所有基于 frameTime 的计算（动画插值、超时判断）偏掉，所以 Choreographer 把它拉回最近的网格。注意顺序：TRAVERSAL 在 ANIMATION 之后——这保证动画改的值本帧就生效；COMMIT 在最后，用于绘制提交后做事。",
+  "concepts": [
+    {
+      "term": "jitter",
+      "text": "回调实际发生时间与 frameTime 的偏差。"
+    },
+    {
+      "term": "Skipped N frames",
+      "text": "偏差超过一帧时打印，帧率归因的线索。"
+    },
+    {
+      "term": "五类回调",
+      "text": "INPUT/ANIMATION/INSETS_ANIMATION/TRAVERSAL/COMMIT。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void doFrame(long frameTimeNanos, int frame,",
+      "ref": "base/core/java/android/view/Choreographer.java:1074",
+      "what": "入口。"
+    },
+    {
+      "call": "doCallbacks(Choreographer.CALLBACK_TRAVERSAL);",
+      "ref": "base/core/java/android/view/Choreographer.java:1209",
+      "what": "TRAVERSAL 在 ANIMATION 之后。"
+    },
+    {
+      "call": "Log.i(TAG, \"Skipped \" + skippedFrames + \" frames!  \"",
+      "ref": "base/core/java/android/view/Choreographer.java:1133",
+      "what": "jitter 修正日志。"
+    },
+    {
+      "call": "mLastVsyncEventData = getLatestVsyncEventData();",
+      "ref": "base/core/java/android/view/Choreographer.java:1517",
+      "what": "帧过晚时回查 SF。"
+    }
+  ],
+  "state": [
+    {
+      "field": "frameTimeNanos",
+      "before": "过期值",
+      "after": "拉回网格",
+      "note": "只影响本帧基准。"
+    }
+  ],
+  "threads": "app UI 线程。",
+  "pitfalls": [
+    "在 COMMIT 里改 View 状态：本帧已录完，要下一帧才生效。",
+    "把 Skipped N frames 当掉帧结论：它是偏差提示，不等于上屏掉帧。"
+  ],
+  "debug": [
+    "DEBUG_JANK 打开后看 Missed vsync by / Skipped N frames。",
+    "trace 里 Choreographer#doFrame <vsyncId> 是定位锚点。"
+  ],
+  "next": "SF 那边怎么消费同一拍？见第 17 步。"
+}

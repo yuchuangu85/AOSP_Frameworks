@@ -1,0 +1,28 @@
+{
+  "step": "s21",
+  "title": "分支：commit 没有可合成的内容",
+  "tldr": "没有新事务、没有新 latch 时 commit 返回 false，Scheduler 只 scheduleFrame，整帧不做合成。",
+  "why": "这是 Android 在静止界面下能保持低功耗的核心机制。很多工程师第一次读 trace 时会困惑：明明有 vsync，为什么 SF 没有 composite 切片？答案就是这条分支。理解它之后，也能解释另一类问题——如果某个变化没有被计入 mustComposite（例如新加的层属性没置位），就会出现「内容变了但屏幕不刷新」，而 trace 里正好表现为「只有 commit、没有 composite」。",
+  "concepts": [
+    { "term": "onCommitNotComposited", "text": "Scheduler 的回调，用于统计「commit 了但没合成」的拍数。" },
+    { "term": "scheduleFrame", "text": "只安排下一拍，不做合成。" }
+  ],
+  "walk": [
+    { "call": "if (!compositor.commit(pacesetterPtr->displayId, targets)) {", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:470", "what": "commit 返回 false。" },
+    { "call": "mSchedulerCallback.onCommitNotComposited();", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:472", "what": "通知「这一拍没合成」。" },
+    { "call": "return mustComposite && CC_LIKELY(mBootStage != BootStage::BOOTLOADER);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3201", "what": "返回值的产生处。" }
+  ],
+  "state": [
+    { "field": "mBootStage", "before": "BOOTLOADER", "after": "BOOTANIMATION（首次 latch 后）", "note": "bootloader 阶段即使有事也不合成。" }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "把「没有 composite」当成故障：静止界面下这是常态。",
+    "内容变了却不刷新：检查对应变化是否置了 mustComposite 位。"
+  ],
+  "debug": [
+    "trace 里只有 commit 没有 composite，就是这条分支。",
+    "dumpsys SurfaceFlinger 的 frame 统计能看到跳过比例。"
+  ],
+  "next": "另一种「没合成」的常见原因是 latch 没等到 fence。见第 22 步。"
+}

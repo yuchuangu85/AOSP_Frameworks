@@ -1,0 +1,216 @@
+{
+  "id": "hwc-present",
+  "title": "HWComposer::presentAndGetReleaseFences",
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "sig": "status_t HWComposer::presentAndGetReleaseFences(",
+  "span": [
+    658,
+    691
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t HWComposer::presentAndGetReleaseFences(",
+      "kind": "note",
+      "text": "整条链路上唯一真正「让画面出去」的调用。它之前的都是准备，它之后的是回填与回收。"
+    },
+    {
+      "at": 2,
+      "quote": "HalDisplayId displayId,",
+      "kind": "data",
+      "text": "目标显示器的 HAL id；物理屏与虚拟屏走同一条接口。"
+    },
+    {
+      "at": 3,
+      "quote": "std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) {",
+      "kind": "data",
+      "text": "最早允许上屏的时刻。存在时会在下面 sleep 到这个点，避免把帧提前推出。"
+    },
+    {
+      "at": 4,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片名 presentAndGetReleaseFences；它的宽度包含下面的 sleep，看时要区分「等待」与「HAL 处理」。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "display 已失效就直接返回，避免对空 hwcDisplay 发 present。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "auto& displayData = mDisplayData[displayId];",
+      "kind": "data",
+      "text": "该显示的私有数据：存放 present fence、release fences 与 validate 结果。"
+    },
+    {
+      "at": 9,
+      "quote": "auto& hwcDisplay = displayData.hwcDisplay;",
+      "kind": "data",
+      "text": "HWC display 代理，所有 HAL 调用都经过它。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 11,
+      "quote": "if (displayData.validateWasSkipped) {",
+      "kind": "branch",
+      "text": "关键分支：合成策略阶段已经走过 presentOrValidate 且成功时，这里不能再 present 一次。"
+    },
+    {
+      "at": 12,
+      "quote": "// explicitly flush all pending commands",
+      "kind": "note",
+      "text": "只能把 validating 阶段挂起的命令显式刷下去。"
+    },
+    {
+      "at": 13,
+      "quote": "auto error = static_cast<hal::Error>(mComposer->executeCommands(hwcDisplay->getId()));",
+      "kind": "call",
+      "text": "executeCommands 是 presentOrValidate 路径下的「补一个 present」；不调的话这一帧不会真正上屏。"
+    },
+    {
+      "at": 14,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"executeCommands\", error, displayId, UNKNOWN_ERROR);",
+      "kind": "branch",
+      "text": "刷命令失败即本帧失败。"
+    },
+    {
+      "at": 15,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"present\", displayData.presentError, displayId, UNKNOWN_ERROR);",
+      "kind": "branch",
+      "text": "把之前 presentOrValidate 记录下的错误一并上报——那一次可能「present 失败但 validate 成功」。"
+    },
+    {
+      "at": 16,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "跳过路径直接返回：present fence 与 release fences 已经在 getDeviceCompositionChanges 里取过了。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 validateWasSkipped 分支。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "if (earliestPresentTime) {",
+      "kind": "branch",
+      "text": "有最早上屏时刻约束。"
+    },
+    {
+      "at": 20,
+      "quote": "SFTRACE_NAME(\"wait for earliest present time\");",
+      "kind": "trace",
+      "text": "单独一个 trace 名，便于在 Perfetto 里把「等待」与「HAL present」分开看。"
+    },
+    {
+      "at": 21,
+      "quote": "std::this_thread::sleep_until(*earliestPresentTime);",
+      "kind": "lock",
+      "text": "这里**真的睡**在 SF 线程（或 HWC 异步 worker）上。它是 jank 归因里常见的「SF 内耗时」假象。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭等待分支。"
+    },
+    {
+      "at": 23,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 24,
+      "quote": "auto error = hwcDisplay->present(&displayData.lastPresentFence);",
+      "kind": "call",
+      "text": "核心：present 并带回 present fence。fence 未 signal 前，这一帧还不算真正上屏。"
+    },
+    {
+      "at": 25,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"present\", error, displayId, UNKNOWN_ERROR);",
+      "kind": "branch",
+      "text": "HAL present 失败——最常见原因是图层状态非法（例如漏了 setBuffer）。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;",
+      "kind": "data",
+      "text": "逐层 release fence 的临时容器。"
+    },
+    {
+      "at": 28,
+      "quote": "error = hwcDisplay->getReleaseFences(&releaseFences);",
+      "kind": "call",
+      "text": "一次取回所有层的 release fence：HWC 用它表达「这块 buffer 我已经用完」。"
+    },
+    {
+      "at": 29,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"getReleaseFences\", error, displayId, UNKNOWN_ERROR);",
+      "kind": "branch",
+      "text": "取 fence 失败会让 app 永远拿不到 buffer，必须当错误处理。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "displayData.releaseFences = std::move(releaseFences);",
+      "kind": "data",
+      "text": "存进 display 私有数据，供 Display::presentFrame 通过 getLayerReleaseFence 逐层取用。"
+    },
+    {
+      "at": 32,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 33,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "成功。注意此时画面可能还没被面板扫出去——present fence 只是「已交给显示控制器」。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

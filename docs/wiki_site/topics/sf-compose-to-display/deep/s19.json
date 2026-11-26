@@ -1,0 +1,30 @@
+{
+  "step": "s19",
+  "title": "release fence 回流到 app",
+  "tldr": "callReleaseBufferCallback 把 fence 写进 BufferReleaseChannel，app 的 dequeueBuffer 由此解除阻塞。",
+  "why": "这是闭环的最后一步，也是整条链路上最容易被忽略的一环：如果 SF 忘了归还某块 buffer，app 侧的表现是「卡在 dequeueBuffer」，而 SF 看起来一切正常。BufferReleaseChannel 是一个单向 fd 通道，SF 只写不读，因此它的错误处理也只能尽力而为（EPIPE 在 Layer 析构时是预期内的）。同时这里还要带上 currentMaxAcquiredBufferCount，因为三缓冲的容量会随刷新率与 present latency 变化，app 需要知道当前该用几个槽位。",
+  "concepts": [
+    { "term": "BufferReleaseChannel", "text": "SF 向 app 单向写 release fence 的 fd 通道。" },
+    { "term": "maxAcquiredBufferCount", "text": "当前允许 app 同时持有的 buffer 数；随刷新率与延迟变化。" },
+    { "term": "ReleaseCallbackId", "text": "(bufferId, frameNumber) 二元组，用于 app 侧对应到具体槽位。" }
+  ],
+  "walk": [
+    { "call": "void Layer::callReleaseBufferCallback(const sp<ITransactionCompletedListener>& listener,", "ref": "native/services/surfaceflinger/Layer.cpp:711", "what": "入口；既支持 Binder 监听器，也支持 release channel。" },
+    { "call": "const sp<Fence>& fence = releaseFence ? releaseFence : Fence::NO_FENCE;", "ref": "native/services/surfaceflinger/Layer.cpp:721", "what": "没有 fence 时用 NO_FENCE，表示立即释放。" },
+    { "call": "status_t status = mBufferReleaseChannel->writeReleaseFence(callbackId, fence,", "ref": "native/services/surfaceflinger/Layer.cpp:738", "what": "写入通道。" },
+    { "call": "void Layer::releasePendingBuffer(nsecs_t dequeueReadyTime) {", "ref": "native/services/surfaceflinger/Layer.cpp:814", "what": "真正触发释放回调的入口。" }
+  ],
+  "state": [
+    { "field": "mDrawingState.callbackHandles", "before": "本拍待处理句柄", "after": "移交给 TransactionCallbackInvoker", "note": "在 releasePendingBuffer 里搬走。" }
+  ],
+  "threads": "SF 主线程写通道；app 侧在自己的线程上读。两边无同步关系。",
+  "pitfalls": [
+    "以为写失败会重试：SF 只记日志，EPIPE 在 Layer 销毁时是正常的。",
+    "忽略 maxAcquiredBufferCount：槽位数不对会让 app 提前卡在 dequeue。"
+  ],
+  "debug": [
+    "trace 里 callReleaseBufferCallback 的瞬时事件带 frameNumber。",
+    "app 侧卡在 dequeueBuffer 时，先确认 SF 是否真的写了 release fence。"
+  ],
+  "next": "这一拍 SF 的收尾与下一拍怎么衔接？见第 20 步。"
+}

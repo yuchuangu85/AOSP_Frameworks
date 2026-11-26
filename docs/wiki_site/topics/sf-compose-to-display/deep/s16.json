@@ -1,0 +1,32 @@
+{
+  "step": "s16",
+  "title": "presentAndGetReleaseFences：真正上屏",
+  "tldr": "先按 earliestPresentTime 决定要不要睡，再 present 拿到 present fence，最后取回全部逐层 release fence。",
+  "why": "这是整条链路上唯一让像素出去的调用。它有三个容易误读的细节：一是 present 之前可能 sleep 到 earliestPresentTime，避免把帧提前推出（提前上屏会造成画面与音频/输入不同步）；二是 present 返回的 fence 未 signal 时这一帧还不算可见，所以 SF 记录的是 fence 而不是「现在」；三是 release fence 必须在这一步取回，否则 app 的 buffer 永远不释放。把这三件事分清，才能正确解读 SF 的耗时与掉帧归因。",
+  "concepts": [
+    { "term": "present fence", "text": "这一帧真正上屏的信号；由 panel vsync 触发。" },
+    { "term": "earliestPresentTime", "text": "最早允许上屏时刻；存在时 present 前会 sleep_until。" },
+    { "term": "getReleaseFences", "text": "HWC 用来表达「某层 buffer 已用完」的逐层 fence。" }
+  ],
+  "walk": [
+    { "call": "status_t HWComposer::presentAndGetReleaseFences(", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:658", "what": "入口。" },
+    { "call": "if (displayData.validateWasSkipped) {", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:668", "what": "快路径已经 present 过，这里只刷命令。" },
+    { "call": "std::this_thread::sleep_until(*earliestPresentTime);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:678", "what": "避免提前上屏。" },
+    { "call": "auto error = hwcDisplay->present(&displayData.lastPresentFence);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:681", "what": "核心 present 调用。" },
+    { "call": "error = hwcDisplay->getReleaseFences(&releaseFences);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:685", "what": "取回逐层 release fence。" }
+  ],
+  "state": [
+    { "field": "displayData.lastPresentFence", "before": "上一拍的 fence", "after": "本拍 fence", "note": "由 present 写入。" },
+    { "field": "displayData.releaseFences", "before": "上一拍的映射", "after": "本拍映射", "note": "供 Display::presentFrame 逐层取用。" }
+  ],
+  "threads": "SF 主线程或 HwcAsyncWorker；sleep 与 HAL 调用都在这条线程上。",
+  "pitfalls": [
+    "把 present 返回当成「已上屏」：要等 present fence signal。",
+    "忽略 sleep_until：trace 里那一段是「等待」而不是「HAL 慢」。"
+  ],
+  "debug": [
+    "trace 里 presentAndGetReleaseFences 内部有独立的 wait 子切片。",
+    "dumpsys SurfaceFlinger --latency 能看到 present fence 的信号时间。"
+  ],
+  "next": "SF 这一侧怎么把 fence 收齐？见第 17 步。"
+}

@@ -1,0 +1,51 @@
+{
+  "step": "s21",
+  "title": "分支：Choreographer 跳过帧",
+  "tldr": "回调晚于 frameTime 超过一个帧间隔时，frameTime 被拉回最近网格并打印 Skipped N frames。",
+  "why": "这是「应用侧感知到的掉帧」。注意它的判定基准是 frameTime 与 now 的差，而不是上屏时间——所以它回答的是「这一帧的 UI 工作是否按时开始」，不回答「是否按时上屏」。实践中这条日志常被误读：看到 Skipped N frames 就以为「掉了 N 帧画面」，其实只是这一帧的起点被修正了 N 拍。真正是否上屏要看 FrameTimeline。",
+  "concepts": [
+    {
+      "term": "frameInterval",
+      "text": "该应用的帧间隔（可能来自帧率覆盖）。"
+    },
+    {
+      "term": "resynced",
+      "text": "回查 SF 换一组 timeline 的路径。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "final long jitterNanos = now - frameTimeNanos;",
+      "ref": "base/core/java/android/view/Choreographer.java:1123",
+      "what": "算偏差。"
+    },
+    {
+      "call": "Log.i(TAG, \"Skipped \" + skippedFrames + \" frames!  \"",
+      "ref": "base/core/java/android/view/Choreographer.java:1133",
+      "what": "日志。"
+    },
+    {
+      "call": "mLastVsyncEventData = getLatestVsyncEventData();",
+      "ref": "base/core/java/android/view/Choreographer.java:1517",
+      "what": "回查 SF。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mFrameTimeNanos",
+      "before": "过期时间",
+      "after": "网格修正后",
+      "note": "影响本帧所有时间计算。"
+    }
+  ],
+  "threads": "app UI 线程。",
+  "pitfalls": [
+    "把 Skipped N frames 当成上屏掉帧。",
+    "忽略 frameInterval 可能被帧率覆盖。"
+  ],
+  "debug": [
+    "DEBUG_JANK 打开。",
+    "对比 FrameTimeline 的 jank 分类。"
+  ],
+  "next": "掉帧到底怎么判定？见第 22 步。"
+}

@@ -1,0 +1,1254 @@
+{
+  "id": "sf-commit",
+  "title": "SurfaceFlinger::commit",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "bool SurfaceFlinger::commit(",
+  "span": [
+    2996,
+    3202
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool SurfaceFlinger::commit(PhysicalDisplayId pacesetterId,",
+      "kind": "note",
+      "text": "SF 一拍的入口。返回 true 表示「有事要做，继续 composite」；返回 false 时 Scheduler 只 scheduleFrame 等下一拍。"
+    },
+    {
+      "at": 2,
+      "quote": "const scheduler::FrameTargets& frameTargets) EXCLUDES(mStateLock) {",
+      "kind": "note",
+      "text": "EXCLUDES(mStateLock) 是静态注解：本函数整体不持 mStateLock，只在需要的短临界区内取。"
+    },
+    {
+      "at": 3,
+      "quote": "const scheduler::FrameTarget* pacesetterFrameTargetPtr = frameTargets.get(pacesetterId)->get();",
+      "kind": "data",
+      "text": "pacesetter 是「定节拍」的那块屏，其它 display 的 expectedPresentTime 都以它为基准。"
+    },
+    {
+      "at": 4,
+      "quote": "const VsyncId vsyncId = pacesetterFrameTargetPtr->vsyncId();",
+      "kind": "data",
+      "text": "vsyncId 贯穿本拍的 trace、FrameTimeline 与 HWC 调用，是跨模块对账的唯一键。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "panopticon::Ids ids;",
+      "kind": "data",
+      "text": "panopticon 的显示 id 列表，用于标记本拍覆盖了哪些显示。"
+    },
+    {
+      "at": 7,
+      "quote": "{",
+      "kind": "note",
+      "text": "短临界区开始：只为读 mDisplays。"
+    },
+    {
+      "at": 8,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "取 mStateLock。注意只包住下面这个 for，不会跨到事务 flush 与合成阶段。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "for (const auto& [_, display] : mDisplays) {",
+      "kind": "note",
+      "text": "遍历所有显示。"
+    },
+    {
+      "at": 11,
+      "quote": "ids.emplace_back(std::to_string(display->getId().value));",
+      "kind": "data",
+      "text": "把显示 id 转成字符串存进 ids。"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "释放 mStateLock。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "panopticon::make(ids, panopticon::Source::CG_FrameSignal, ftl::to_underlying(vsyncId));",
+      "kind": "trace",
+      "text": "panopticon::make 建立本拍上下文，来源标记为 CG_FrameSignal（说明这一拍由帧信号驱动）。"
+    },
+    {
+      "at": 16,
+      "quote": "auto commitTokens = panopticon::slice(panopticon::SliceType::CG_Sf_Commit);",
+      "kind": "trace",
+      "text": "开 CG_Sf_Commit 切片，Perfetto 里可直接看到 commit 与 composite 的边界。"
+    },
+    {
+      "at": 17,
+      "quote": "SFTRACE_NAME(ftl::Concat(__func__, ' ', ftl::to_underlying(vsyncId)).c_str());",
+      "kind": "trace",
+      "text": "atrace 名 = commit <vsyncId>，与 Choreographer 的 vsyncId 对齐即可反查 app 侧那一帧。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "if (pacesetterFrameTargetPtr->didMissFrame()) {",
+      "kind": "branch",
+      "text": "上一拍是否已经 miss：FrameTargeter 在 beginFrame 时算好，这里只做统计。"
+    },
+    {
+      "at": 20,
+      "quote": "mTimeStats->incrementMissedFrames();",
+      "kind": "call",
+      "text": "累加 SF 侧的 missed frame 计数，dumpsys 与 TimeStats 里能看到。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭统计分支。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "// SF::processHotplugDisconnect() does not immediately propagate the display removal to the",
+      "kind": "note",
+      "text": "热插拔断开的传播不是即时的：Scheduler 与 CompositionEngine 要等下一次 commit 才拿到最终显示集合。"
+    },
+    {
+      "at": 24,
+      "quote": "// Scheduler and CompositionEngine, but instead requires a call to processDisplayChangesLocked()",
+      "kind": "note",
+      "text": "注释说明为什么需要下面这段重试逻辑。"
+    },
+    {
+      "at": 25,
+      "quote": "// to process the rest in the next commit. We should retry the commit with the new set of",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 26,
+      "quote": "// displays after display transactions have been propagated.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 27,
+      "quote": "{",
+      "kind": "note",
+      "text": "第一道早退闸门的代码块开始。"
+    },
+    {
+      "at": 28,
+      "quote": "for (const auto [displayId, _] : frameTargets) {",
+      "kind": "note",
+      "text": "逐个检查本拍要处理的显示。"
+    },
+    {
+      "at": 29,
+      "quote": "const bool hasDisplay =",
+      "kind": "data",
+      "text": "用 FTL_FAKE_GUARD 断言 mStateLock 已持（静态检查宏）。"
+    },
+    {
+      "at": 30,
+      "quote": "FTL_FAKE_GUARD(mStateLock, mPhysicalDisplays.contains(displayId));",
+      "kind": "call",
+      "text": "查这块显示是否还在物理显示表里。"
+    },
+    {
+      "at": 31,
+      "quote": "if (!hasDisplay) {",
+      "kind": "branch",
+      "text": "不在了：说明刚被拔掉/关闭。"
+    },
+    {
+      "at": 32,
+      "quote": "MODE_TRANSITION_LOCK();",
+      "kind": "lock",
+      "text": "取模式切换锁，处理显示集合的变化。"
+    },
+    {
+      "at": 33,
+      "quote": "processDisplayChangesLocked();",
+      "kind": "call",
+      "text": "真正把断开传播到 Scheduler 与 CompositionEngine。"
+    },
+    {
+      "at": 34,
+      "quote": "mScheduler->scheduleFrame();",
+      "kind": "call",
+      "text": "排下一拍：显示集合变了，本拍直接放弃。"
+    },
+    {
+      "at": 35,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false → Scheduler 不会调 composite。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭不存在的分支。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭闸门代码块。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "// If a mode set is pending and the fence hasn't fired yet, wait for the next commit.",
+      "kind": "note",
+      "text": "第二道闸门：模式切换（分辨率/刷新率）还没最终生效。"
+    },
+    {
+      "at": 41,
+      "quote": "if (std::any_of(frameTargets.begin(), frameTargets.end(),",
+      "kind": "branch",
+      "text": "任一显示同时满足「本拍有帧待处理」与「mode set 挂起」就跳过本拍。"
+    },
+    {
+      "at": 42,
+      "quote": "[this](const auto& pair) FTL_FAKE_GUARD(kMainThreadContext) {",
+      "kind": "note",
+      "text": "lambda 捕获 this，FTL_FAKE_GUARD 保证在主线程上下文执行。"
+    },
+    {
+      "at": 43,
+      "quote": "const auto [displayId, target] = pair;",
+      "kind": "note",
+      "text": "解构帧目标。"
+    },
+    {
+      "at": 44,
+      "quote": "return target->isFramePending() &&",
+      "kind": "call",
+      "text": "isFramePending 表示 HWC 还有未完成的帧。"
+    },
+    {
+      "at": 45,
+      "quote": "mDisplayModeController.isModeSetPending(displayId);",
+      "kind": "call",
+      "text": "isModeSetPending 表示模式切换未完成。"
+    },
+    {
+      "at": 46,
+      "quote": "})) {",
+      "kind": "note",
+      "text": "闭合 any_of 调用。"
+    },
+    {
+      "at": 47,
+      "quote": "mScheduler->scheduleFrame();",
+      "kind": "call",
+      "text": "只排下一拍，不做合成。"
+    },
+    {
+      "at": 48,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 49,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭第二道闸门。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 51,
+      "quote": "{",
+      "kind": "note",
+      "text": "第三段：真正尝试完成模式切换。"
+    },
+    {
+      "at": 52,
+      "quote": "MODE_TRANSITION_LOCK();",
+      "kind": "lock",
+      "text": "模式切换锁，保护 displayModeController 状态。"
+    },
+    {
+      "at": 53,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 54,
+      "quote": "for (const auto [displayId, _] : frameTargets) {",
+      "kind": "note",
+      "text": "逐个显示处理。"
+    },
+    {
+      "at": 55,
+      "quote": "if (mDisplayModeController.isModeSetPending(displayId)) {",
+      "kind": "branch",
+      "text": "有待完成的 mode set。"
+    },
+    {
+      "at": 56,
+      "quote": "if (!finalizeDisplayModeChange(displayId)) {",
+      "kind": "call",
+      "text": "fail 时同样放弃本拍（返回 false 的那条分支）。"
+    },
+    {
+      "at": 57,
+      "quote": "mScheduler->scheduleFrame();",
+      "kind": "call",
+      "text": "排下一拍。"
+    },
+    {
+      "at": 58,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "放弃本拍。"
+    },
+    {
+      "at": 59,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 60,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭外层 if。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 62,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭锁作用域。"
+    },
+    {
+      "at": 63,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 64,
+      "quote": "if (pacesetterFrameTargetPtr->wouldBackpressureHwc()) {",
+      "kind": "decision",
+      "text": "第四道闸门：HWC 反压。它是「不要给 HWC 排队更多帧」的保护。"
+    },
+    {
+      "at": 65,
+      "quote": "if (mBackpressureGpuComposition || pacesetterFrameTargetPtr->didMissHwcFrame()) {",
+      "kind": "branch",
+      "text": "只有开启了 GPU 合成反压，或上一拍 HWC 已经 miss，才真的跳。"
+    },
+    {
+      "at": 66,
+      "quote": "mScheduler->getVsyncSchedule()->getTracker().onFrameMissed(",
+      "kind": "call",
+      "text": "告知 VsycTracker 这一拍被跳过。"
+    },
+    {
+      "at": 67,
+      "quote": "pacesetterFrameTargetPtr->expectedPresentTime());",
+      "kind": "data",
+      "text": "使用本拍的 expectedPresentTime 作为「错过」的锚点。"
+    },
+    {
+      "at": 68,
+      "quote": "const Duration slack = TimePoint::now() - pacesetterFrameTargetPtr->frameBeginTime();",
+      "kind": "data",
+      "text": "slack = 现在距离开拍已过去多久，用于决定下一次调度推迟多少。"
+    },
+    {
+      "at": 69,
+      "quote": "scheduleCommit(FrameHint::kNone, slack);",
+      "kind": "call",
+      "text": "推迟到下一拍再 commit。"
+    },
+    {
+      "at": 70,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false：本拍不合成。"
+    },
+    {
+      "at": 71,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭内层 if。"
+    },
+    {
+      "at": 72,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭反压 if。"
+    },
+    {
+      "at": 73,
+      "quote": "SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Commit\");",
+      "kind": "trace",
+      "text": "在这之后才算进入「真正的 commit」工作区，trace 也切到 Commit 轨道。"
+    },
+    {
+      "at": 74,
+      "quote": "const Period vsyncPeriod = mScheduler->getVsyncSchedule()->period();",
+      "kind": "data",
+      "text": "本拍 vsync 周期，后面喂给 FrameTimeline 与 HWC。"
+    },
+    {
+      "at": 75,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 76,
+      "quote": "// Determine if any displays, either physical or virtual, are on so that",
+      "kind": "note",
+      "text": "ADPF（功耗提示会话）开关计算。"
+    },
+    {
+      "at": 77,
+      "quote": "// power hints may be reported for performance boosts.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 78,
+      "quote": "bool shouldEnablePowerHintSession = true;",
+      "kind": "data",
+      "text": "默认假设有显示亮着。"
+    },
+    {
+      "at": 79,
+      "quote": "if (!FlagManager::getInstance().align_adpf_with_sf_opt_policy()) {",
+      "kind": "branch",
+      "text": "新策略下由 flag 决定是否还要自己查一遍。"
+    },
+    {
+      "at": 80,
+      "quote": "shouldEnablePowerHintSession =",
+      "kind": "call",
+      "text": "遍历所有显示找 PowerMode::ON。"
+    },
+    {
+      "at": 81,
+      "quote": "FTL_FAKE_GUARD(mStateLock, hasDisplay([](const DisplayDevice& display) {",
+      "kind": "note",
+      "text": "FTL_FAKE_GUARD 保证读 mDisplays 时持锁。"
+    },
+    {
+      "at": 82,
+      "quote": "return display.getPowerMode() == hal::PowerMode::ON;",
+      "kind": "call",
+      "text": "任一显示亮着就算 on。"
+    },
+    {
+      "at": 83,
+      "quote": "}));",
+      "kind": "note",
+      "text": "闭合 lambda 与 hasDisplay。"
+    },
+    {
+      "at": 84,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 flag 分支。"
+    },
+    {
+      "at": 85,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 86,
+      "quote": "// Save this once per commit + composite to ensure consistency.",
+      "kind": "note",
+      "text": "每拍只算一次，commit 与 composite 共用同一个值，避免两段结论不一致。"
+    },
+    {
+      "at": 87,
+      "quote": "mPowerHintSessionEnabled = mPowerAdvisor->usePowerHintSession() && shouldEnablePowerHintSession;",
+      "kind": "state",
+      "text": "写入 mPowerHintSessionEnabled。"
+    },
+    {
+      "at": 88,
+      "quote": "if (mPowerHintSessionEnabled) {",
+      "kind": "branch",
+      "text": "ADPF 开着才上报各阶段耗时。"
+    },
+    {
+      "at": 89,
+      "quote": "mPowerAdvisor->setCommitStart(pacesetterFrameTargetPtr->frameBeginTime());",
+      "kind": "call",
+      "text": "记录 commit 开始时间（用 frameBeginTime，而非 now）。"
+    },
+    {
+      "at": 90,
+      "quote": "mPowerAdvisor->setExpectedPresentTime(pacesetterFrameTargetPtr->expectedPresentTime());",
+      "kind": "call",
+      "text": "上报 expectedPresentTime，供功耗模型算预算。"
+    },
+    {
+      "at": 91,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 92,
+      "quote": "// Frame delay is how long we should have minus how long we actually have.",
+      "kind": "note",
+      "text": "frameDelay = 应有预算 − 实际可用预算，正值表示「欠时间」。"
+    },
+    {
+      "at": 93,
+      "quote": "const Duration idealSfWorkDuration =",
+      "kind": "data",
+      "text": "理想 sfWorkDuration 来自 VsyncModulator 的当前配置。"
+    },
+    {
+      "at": 94,
+      "quote": "mScheduler->vsyncModulator().getVsyncConfig().sfWorkDuration;",
+      "kind": "data",
+      "text": "同上的续行。"
+    },
+    {
+      "at": 95,
+      "quote": "const Duration frameDelay =",
+      "kind": "data",
+      "text": "计算本拍实际拥有的时长与理想值之差。"
+    },
+    {
+      "at": 96,
+      "quote": "idealSfWorkDuration - pacesetterFrameTargetPtr->expectedFrameDuration();",
+      "kind": "data",
+      "text": "续行。"
+    },
+    {
+      "at": 97,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 98,
+      "quote": "mPowerAdvisor->setFrameDelay(frameDelay);",
+      "kind": "call",
+      "text": "上报 frameDelay 给功耗提示。"
+    },
+    {
+      "at": 99,
+      "quote": "mPowerAdvisor->setTotalFrameTargetWorkDuration(idealSfWorkDuration);",
+      "kind": "call",
+      "text": "上报总预算。"
+    },
+    {
+      "at": 100,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 101,
+      "quote": "const Period idealVsyncPeriod =",
+      "kind": "data",
+      "text": "pacesetter 的当前刷新率对应周期。"
+    },
+    {
+      "at": 102,
+      "quote": "mDisplayModeController.getActiveMode(pacesetterId).fps.getPeriod();",
+      "kind": "data",
+      "text": "取 active mode 的 fps 周期。"
+    },
+    {
+      "at": 103,
+      "quote": "mPowerAdvisor->updateTargetWorkDuration(idealVsyncPeriod);",
+      "kind": "call",
+      "text": "更新目标工作时长。"
+    },
+    {
+      "at": 104,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 ADPF 分支。"
+    },
+    {
+      "at": 105,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 106,
+      "quote": "if (mRefreshRateOverlaySpinner) {",
+      "kind": "branch",
+      "text": "开发者选项：刷新率叠加层动画。"
+    },
+    {
+      "at": 107,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "短临界区，只包住这次的遍历。"
+    },
+    {
+      "at": 108,
+      "quote": "for (const auto& [_, display] : mDisplays) {",
+      "kind": "note",
+      "text": "遍历显示。"
+    },
+    {
+      "at": 109,
+      "quote": "display->animateRefreshRateOverlay();",
+      "kind": "call",
+      "text": "推进叠加层动画。"
+    },
+    {
+      "at": 110,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 111,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭刷新率叠加层分支。"
+    },
+    {
+      "at": 112,
+      "quote": "if (mHdrSdrRatioOverlay) {",
+      "kind": "branch",
+      "text": "HDR/SDR 亮度比叠加层动画。"
+    },
+    {
+      "at": 113,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "同样短临界区。"
+    },
+    {
+      "at": 114,
+      "quote": "for (const auto& [_, display] : mDisplays) {",
+      "kind": "note",
+      "text": "遍历显示。"
+    },
+    {
+      "at": 115,
+      "quote": "display->animateHdrSdrRatioOverlay();",
+      "kind": "call",
+      "text": "推进 HDR 叠加层动画。"
+    },
+    {
+      "at": 116,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 117,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 HDR 叠加层分支。"
+    },
+    {
+      "at": 118,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 119,
+      "quote": "// Must update resource caches before snapshots will try to resolve",
+      "kind": "note",
+      "text": "资源缓存必须在快照创建之前更新，否则快照解析 render resource token 会失败。"
+    },
+    {
+      "at": 120,
+      "quote": "// render resource tokens.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 121,
+      "quote": "mIpcCache->processPendingOperations();",
+      "kind": "call",
+      "text": "处理所有待处理的资源操作。"
+    },
+    {
+      "at": 122,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 123,
+      "quote": "// Composite if transactions were committed, or if requested by HWC.",
+      "kind": "note",
+      "text": "mustComposite 的两个来源：被显式请求，或下面 updateLayerSnapshots 发现有事可做。"
+    },
+    {
+      "at": 124,
+      "quote": "bool mustComposite = mMustComposite.exchange(false);",
+      "kind": "state",
+      "text": "exchange(false) 取走并清除「本拍必须合成」的一次性标志。"
+    },
+    {
+      "at": 125,
+      "quote": "{",
+      "kind": "note",
+      "text": "开始一个较大的作用域，后面更新 FrameTimeline、快照与回调。"
+    },
+    {
+      "at": 126,
+      "quote": "const bool powerModeChangeInProgress = mPowerModeInProgressCount > 0 ||",
+      "kind": "data",
+      "text": "电源模式切换是否进行中（多来源合并）。"
+    },
+    {
+      "at": 127,
+      "quote": "(mustComposite ? mPowerModeChangeInProgress.exchange(false)",
+      "kind": "branch",
+      "text": "mustComposite 为真时也顺手清掉一次性标志。"
+    },
+    {
+      "at": 128,
+      "quote": ": mPowerModeChangeInProgress.load());",
+      "kind": "note",
+      "text": "否则只读取当前值。"
+    },
+    {
+      "at": 129,
+      "quote": "scheduler::FrameTimelineDisplayState displayState = {",
+      "kind": "data",
+      "text": "构造 FrameTimeline 需要的显示状态。"
+    },
+    {
+      "at": 130,
+      "quote": ".poweredOn = FTL_FAKE_GUARD(mStateLock, getDisplayDeviceLocked(pacesetterId))",
+      "kind": "call",
+      "text": "读取 pacesetter 的电源模式。"
+    },
+    {
+      "at": 131,
+      "quote": "->getPowerMode() == hal::PowerMode::ON,",
+      "kind": "note",
+      "text": "poweredOn 用于 FrameTimeline 判断这段帧是否有效。"
+    },
+    {
+      "at": 132,
+      "quote": ".modeChangeInProgress = mScheduler->getVsyncSchedule()->isModeChangeInProgress(),",
+      "kind": "data",
+      "text": "模式切换状态。"
+    },
+    {
+      "at": 133,
+      "quote": ".powerModeChangeInProgress = powerModeChangeInProgress,",
+      "kind": "data",
+      "text": "电源模式切换状态。"
+    },
+    {
+      "at": 134,
+      "quote": "};",
+      "kind": "note",
+      "text": "闭合 displayState 初始化。"
+    },
+    {
+      "at": 135,
+      "quote": "mFrameTimeline->setSfWakeUp(ftl::to_underlying(vsyncId),",
+      "kind": "call",
+      "text": "告诉 FrameTimeline「SF 在什么时候被唤醒」，是 SF 侧帧耗时的起点。"
+    },
+    {
+      "at": 136,
+      "quote": "pacesetterFrameTargetPtr->frameBeginTime().ns(),",
+      "kind": "data",
+      "text": "frameBeginTime 来自 FrameTargeter。"
+    },
+    {
+      "at": 137,
+      "quote": "Fps::fromPeriodNsecs(vsyncPeriod.ns()),",
+      "kind": "data",
+      "text": "刷新率决定 FrameTimeline 的帧间隔。"
+    },
+    {
+      "at": 138,
+      "quote": "mScheduler->getPacesetterRefreshRate(), displayState);",
+      "kind": "data",
+      "text": "一并写入 displayState。"
+    },
+    {
+      "at": 139,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 140,
+      "quote": "const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded);",
+      "kind": "data",
+      "text": "本拍是否需要立刻 flush 事务（由 eTransactionFlushNeeded 标志决定）。"
+    },
+    {
+      "at": 141,
+      "quote": "bool transactionsAreEmpty = false;",
+      "kind": "data",
+      "text": "输出参数：本拍有没有非空事务。"
+    },
+    {
+      "at": 142,
+      "quote": "mustComposite |=",
+      "kind": "call",
+      "text": "核心调用：更新快照并 latch buffer，返回是否有事要做。"
+    },
+    {
+      "at": 143,
+      "quote": "updateLayerSnapshots(vsyncId, pacesetterFrameTargetPtr->frameBeginTime().ns(),",
+      "kind": "data",
+      "text": "vsyncId 透传，供快照与 FrameTimeline 使用。"
+    },
+    {
+      "at": 144,
+      "quote": "pacesetterFrameTargetPtr->expectedPresentTime().ns(),",
+      "kind": "data",
+      "text": "expectedPresentTime 决定本拍的时序判定。"
+    },
+    {
+      "at": 145,
+      "quote": "flushTransactions, transactionsAreEmpty);",
+      "kind": "data",
+      "text": "flushTransactions 与 transactionsAreEmpty 一并输出。"
+    },
+    {
+      "at": 146,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 147,
+      "quote": "// A display transaction for hotplug reconnect may have just destroyed the original.",
+      "kind": "note",
+      "text": "热插拔可能导致 pacesetter 对象被替换，必须重新取一次。"
+    },
+    {
+      "at": 148,
+      "quote": "pacesetterFrameTargetPtr = mScheduler->pacesetterFrameTarget();",
+      "kind": "data",
+      "text": "重新获取 pacesetter frame target。"
+    },
+    {
+      "at": 149,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 150,
+      "quote": "// Tell VsyncTracker that we are going to present this frame before scheduling",
+      "kind": "note",
+      "text": "要在调度下一拍之前告诉 VsyncTracker「本拍会上屏」，否则它会用旧时间线做预测。"
+    },
+    {
+      "at": 151,
+      "quote": "// setTransactionFlags which will schedule another SF frame. This was if the tracker",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 152,
+      "quote": "// needs to adjust the vsync timeline, it will be done before the next frame.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 153,
+      "quote": "if (mustComposite) {",
+      "kind": "branch",
+      "text": "只有本拍真的会合成时才需要提前告知。"
+    },
+    {
+      "at": 154,
+      "quote": "mScheduler->getVsyncSchedule()",
+      "kind": "call",
+      "text": "取 vsync schedule。"
+    },
+    {
+      "at": 155,
+      "quote": "->getTracker()",
+      "kind": "call",
+      "text": "取 tracker。"
+    },
+    {
+      "at": 156,
+      "quote": ".onFrameBegin(pacesetterFrameTargetPtr->expectedPresentTime(),",
+      "kind": "call",
+      "text": "onFrameBegin：把 expectedPresentTime 与上一拍的 signal 时间一起喂进去。"
+    },
+    {
+      "at": 157,
+      "quote": "pacesetterFrameTargetPtr->lastSignaledFrameTime());",
+      "kind": "note",
+      "text": "lastSignaledFrameTime 用于校正预测误差。"
+    },
+    {
+      "at": 158,
+      "quote": "}",
+      "kind": "note",
+      "text": "闭合 if。"
+    },
+    {
+      "at": 159,
+      "quote": "if (transactionFlushNeeded()) {",
+      "kind": "branch",
+      "text": "如果事务队列里还有未处理的 flush 需求，重新置标志，下一拍继续 flush。"
+    },
+    {
+      "at": 160,
+      "quote": "setTransactionFlags(eTransactionFlushNeeded);",
+      "kind": "call",
+      "text": "重新置 eTransactionFlushNeeded。"
+    },
+    {
+      "at": 161,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 flush 判断。"
+    },
+    {
+      "at": 162,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 163,
+      "quote": "// This has to be called after latchBuffers because we want to include the layers that have",
+      "kind": "note",
+      "text": "回调必须在 latchBuffers 之后发：这样 commit 回调里能看到本拍刚 latch 的 layer。"
+    },
+    {
+      "at": 164,
+      "quote": "// been latched in the commit callback",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 165,
+      "quote": "if (transactionsAreEmpty) {",
+      "kind": "branch",
+      "text": "本拍没有非空事务。"
+    },
+    {
+      "at": 166,
+      "quote": "// Invoke empty transaction callbacks early.",
+      "kind": "note",
+      "text": "空事务可以更早回调，开销更小。"
+    },
+    {
+      "at": 167,
+      "quote": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);",
+      "kind": "call",
+      "text": "onCommitOnly=false：连提交阶段一起算完成。"
+    },
+    {
+      "at": 168,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 169,
+      "quote": "// Invoke OnCommit callbacks.",
+      "kind": "note",
+      "text": "有事务：只发 OnCommit 回调。"
+    },
+    {
+      "at": 170,
+      "quote": "mTransactionCallbackInvoker.sendCallbacks(true /* onCommitOnly */);",
+      "kind": "call",
+      "text": "onCommitOnly=true，真正的成片回调在 present 之后才发。"
+    },
+    {
+      "at": 171,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭事务为空的分支。"
+    },
+    {
+      "at": 172,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭这一整个作用域。"
+    },
+    {
+      "at": 173,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 174,
+      "quote": "// Layers need to get updated (in the previous line) before we can use them for",
+      "kind": "note",
+      "text": "刷新率选择必须在 layer 状态更新之后，否则会用上一拍的可见性投票。"
+    },
+    {
+      "at": 175,
+      "quote": "// choosing the refresh rate.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 176,
+      "quote": "// Hold mStateLock as chooseRefreshRateForContent promotes wp<Layer> to sp<Layer>",
+      "kind": "note",
+      "text": "这里必须持 mStateLock：chooseRefreshRateForContent 会把 wp<Layer> 提升为 sp<Layer>，可能触发 ~Layer()。"
+    },
+    {
+      "at": 177,
+      "quote": "// and may eventually call to ~Layer() if it holds the last reference",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 178,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 179,
+      "quote": "SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Refresh Rate Selection\");",
+      "kind": "trace",
+      "text": "独立 trace 轨道：Refresh Rate Selection。"
+    },
+    {
+      "at": 180,
+      "quote": "bool updateAttachedChoreographer = mUpdateAttachedChoreographer;",
+      "kind": "data",
+      "text": "是否需要更新 attached choreographer。"
+    },
+    {
+      "at": 181,
+      "quote": "mUpdateAttachedChoreographer = false;",
+      "kind": "state",
+      "text": "取走即清。"
+    },
+    {
+      "at": 182,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 183,
+      "quote": "MODE_TRANSITION_LOCK();",
+      "kind": "lock",
+      "text": "模式切换锁，覆盖整个投票与发起流程。"
+    },
+    {
+      "at": 184,
+      "quote": "mScheduler->chooseRefreshRateForContent(&mLayerHierarchyBuilder.getHierarchy(),",
+      "kind": "call",
+      "text": "按 layer 历史投票选刷新率。"
+    },
+    {
+      "at": 185,
+      "quote": "updateAttachedChoreographer);",
+      "kind": "data",
+      "text": "updateAttachedChoreographer 透传。"
+    },
+    {
+      "at": 186,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 187,
+      "quote": "initiateDisplayModeChanges();",
+      "kind": "call",
+      "text": "若选出的刷新率需要切模式，在这里发起。"
+    },
+    {
+      "at": 188,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 189,
+      "quote": "// A resolution change without refresh required may have just destroyed the original.",
+      "kind": "note",
+      "text": "分辨率切换可能换了 pacesetter 对象。"
+    },
+    {
+      "at": 190,
+      "quote": "if (!shouldSyncResolutionSwitch()) {",
+      "kind": "branch",
+      "text": "不需要同步切换时才重新取。"
+    },
+    {
+      "at": 191,
+      "quote": "pacesetterFrameTargetPtr = mScheduler->pacesetterFrameTarget();",
+      "kind": "data",
+      "text": "重新获取 pacesetter frame target。"
+    },
+    {
+      "at": 192,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 193,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭锁作用域。"
+    },
+    {
+      "at": 194,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 195,
+      "quote": "updateCursorAsync();",
+      "kind": "call",
+      "text": "更新光标层（光标走独立异步路径）。"
+    },
+    {
+      "at": 196,
+      "quote": "if (!mustComposite) {",
+      "kind": "branch",
+      "text": "本拍不合成时才需要主动更新 InputFlinger。"
+    },
+    {
+      "at": 197,
+      "quote": "updateInputFlinger(vsyncId, pacesetterFrameTargetPtr->frameBeginTime());",
+      "kind": "call",
+      "text": "把窗口信息同步给输入系统，保证点击坐标与显示一致。"
+    },
+    {
+      "at": 198,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 199,
+      "quote": "doActiveLayersTracingIfNeeded(false, mVisibleRegionsDirty,",
+      "kind": "call",
+      "text": "Perfetto 的 ActiveLayers 轨道打点。"
+    },
+    {
+      "at": 200,
+      "quote": "pacesetterFrameTargetPtr->frameBeginTime(), vsyncId);",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 201,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 202,
+      "quote": "mLastCommittedVsyncId = vsyncId;",
+      "kind": "state",
+      "text": "记录最近一次 commit 的 vsyncId，供诊断接口使用。"
+    },
+    {
+      "at": 203,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 204,
+      "quote": "persistDisplayBrightness(mustComposite);",
+      "kind": "call",
+      "text": "持久化显示亮度（需要在合成决策之后）。"
+    },
+    {
+      "at": 205,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 206,
+      "quote": "return mustComposite && CC_LIKELY(mBootStage != BootStage::BOOTLOADER);",
+      "kind": "decision",
+      "text": "最终返回值：有待合成内容，且不在 bootloader 阶段（开机动画前不走正常合成路径）。"
+    },
+    {
+      "at": 207,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。整条 commit 只负责「收下并整理」，不产生任何上屏动作。"
+    }
+  ]
+}

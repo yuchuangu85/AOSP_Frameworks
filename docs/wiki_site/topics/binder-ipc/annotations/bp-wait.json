@@ -1,0 +1,564 @@
+{
+  "id": "bp-wait",
+  "title": "IPCThreadState::waitForResponse",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::waitForResponse(",
+  "span": [
+    1153,
+    1244
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::waitForResponse(Parcel *reply, status_t *acquireResult)",
+      "kind": "note",
+      "text": "同步等待的核心循环：既等自己的回复，也顺手处理别人对我的调用。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "uint32_t cmd;",
+      "kind": "data",
+      "text": "命令字。"
+    },
+    {
+      "at": 4,
+      "quote": "int32_t err;",
+      "kind": "data",
+      "text": "错误码。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "while (1) {",
+      "kind": "note",
+      "text": "无限循环直到拿到结果或失败。"
+    },
+    {
+      "at": 7,
+      "quote": "if ((err=talkWithDriver()) < NO_ERROR) break;",
+      "kind": "call",
+      "text": "**一次 ioctl**，可能读到新数据。"
+    },
+    {
+      "at": 8,
+      "quote": "err = mIn.errorCheck();",
+      "kind": "branch",
+      "text": "驱动报错。"
+    },
+    {
+      "at": 9,
+      "quote": "if (err < NO_ERROR) break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 10,
+      "quote": "if (mIn.dataAvail() == 0) continue;",
+      "kind": "data",
+      "text": "数据合法性检查。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "branch",
+      "text": "损坏。"
+    },
+    {
+      "at": 12,
+      "quote": "cmd = (uint32_t)mIn.readInt32();",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "branch",
+      "text": "本轮无数据。"
+    },
+    {
+      "at": 14,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "note",
+      "text": "继续循环。"
+    },
+    {
+      "at": 15,
+      "quote": "std::ostringstream logStream;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 16,
+      "quote": "logStream << \"Processing waitForResponse Command: \" << getReturnString(cmd) << \"\\n\";",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "std::string message = logStream.str();",
+      "kind": "data",
+      "text": "读命令字。"
+    },
+    {
+      "at": 18,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "branch",
+      "text": "命令日志。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "打印命令名。"
+    },
+    {
+      "at": 21,
+      "quote": "switch (cmd) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 22,
+      "quote": "case BR_ONEWAY_SPAM_SUSPECT:",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 23,
+      "quote": "ALOGE(\"Process seems to be sending too many oneway calls.\");",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 24,
+      "quote": "CallStack::logStack(\"oneway spamming\", CallStack::getCurrent().get(),",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "ANDROID_LOG_ERROR);",
+      "kind": "decision",
+      "text": "按命令分派。"
+    },
+    {
+      "at": 26,
+      "quote": "[[fallthrough]];",
+      "kind": "branch",
+      "text": "**oneway 过载**。"
+    },
+    {
+      "at": 27,
+      "quote": "case BR_TRANSACTION_COMPLETE:",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 28,
+      "quote": "if (!reply && !acquireResult) goto finish;",
+      "kind": "note",
+      "text": "打印调用栈定位发送方。"
+    },
+    {
+      "at": 29,
+      "quote": "break;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "**故意 fallthrough** 到 COMPLETE。"
+    },
+    {
+      "at": 31,
+      "quote": "case BR_TRANSACTION_PENDING_FROZEN:",
+      "kind": "branch",
+      "text": "**BR_TRANSACTION_COMPLETE**：驱动已收下本次写。"
+    },
+    {
+      "at": 32,
+      "quote": "ALOGW(\"Sending oneway calls to frozen process.\");",
+      "kind": "branch",
+      "text": "oneway（无 reply 也无 acquireResult）。"
+    },
+    {
+      "at": 33,
+      "quote": "goto finish;",
+      "kind": "note",
+      "text": "**完成**：oneway 到此返回。"
+    },
+    {
+      "at": 34,
+      "quote": "",
+      "kind": "note",
+      "text": "同步调用则继续等。"
+    },
+    {
+      "at": 35,
+      "quote": "case BR_DEAD_REPLY:",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 36,
+      "quote": "err = DEAD_OBJECT;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "goto finish;",
+      "kind": "branch",
+      "text": "**BR_TRANSACTION_PENDING_FROZEN**：目标被冻结。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 39,
+      "quote": "case BR_FAILED_REPLY:",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 40,
+      "quote": "err = FAILED_TRANSACTION;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "goto finish;",
+      "kind": "branch",
+      "text": "**BR_DEAD_REPLY**：对端已死。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "转成 **DEAD_OBJECT**。"
+    },
+    {
+      "at": 43,
+      "quote": "case BR_FROZEN_REPLY:",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 44,
+      "quote": "err = enableFrozenObjectErrorCode() ? FROZEN_OBJECT : FAILED_TRANSACTION;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 45,
+      "quote": "goto finish;",
+      "kind": "branch",
+      "text": "**BR_FAILED_REPLY**：对端未处理。"
+    },
+    {
+      "at": 46,
+      "quote": "",
+      "kind": "note",
+      "text": "转成 FAILED_TRANSACTION。"
+    },
+    {
+      "at": 47,
+      "quote": "case BR_ACQUIRE_RESULT:",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 48,
+      "quote": "{",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 49,
+      "quote": "ALOG_ASSERT(acquireResult != NULL, \"Unexpected brACQUIRE_RESULT\");",
+      "kind": "branch",
+      "text": "**BR_FROZEN_REPLY**：对端被冻结。"
+    },
+    {
+      "at": 50,
+      "quote": "const int32_t result = mIn.readInt32();",
+      "kind": "note",
+      "text": "按开关返回 FROZEN_OBJECT 或退化为 FAILED_TRANSACTION。"
+    },
+    {
+      "at": 51,
+      "quote": "if (!acquireResult) continue;",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 52,
+      "quote": "*acquireResult = result ? NO_ERROR : INVALID_OPERATION;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 53,
+      "quote": "}",
+      "kind": "branch",
+      "text": "引用获取结果（老接口）。"
+    },
+    {
+      "at": 54,
+      "quote": "goto finish;",
+      "kind": "note",
+      "text": "作用域。"
+    },
+    {
+      "at": 55,
+      "quote": "",
+      "kind": "note",
+      "text": "断言必须传了 acquireResult。"
+    },
+    {
+      "at": 56,
+      "quote": "case BR_REPLY:",
+      "kind": "data",
+      "text": "读结果。"
+    },
+    {
+      "at": 57,
+      "quote": "LOG_ALWAYS_FATAL_IF(reply == NULL, \"Unexpected BR_REPLY\");",
+      "kind": "branch",
+      "text": "未传则跳过。"
+    },
+    {
+      "at": 58,
+      "quote": "binder_transaction_data tr;",
+      "kind": "state",
+      "text": "**布尔转 status**。"
+    },
+    {
+      "at": 59,
+      "quote": "err = mIn.read(&tr, sizeof(tr));",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 60,
+      "quote": "ALOG_ASSERT(err == NO_ERROR, \"Not enough command data for brREPLY\");",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 61,
+      "quote": "if (err != NO_ERROR) goto finish;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 62,
+      "quote": "if ((tr.flags & TF_STATUS_CODE) == 0) {",
+      "kind": "branch",
+      "text": "**BR_REPLY**：真正的回复。"
+    },
+    {
+      "at": 63,
+      "quote": "reply->ipcSetDataReference(reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),",
+      "kind": "note",
+      "text": "断言必须有 reply。"
+    },
+    {
+      "at": 64,
+      "quote": "tr.data_size,",
+      "kind": "data",
+      "text": "事务数据。"
+    },
+    {
+      "at": 65,
+      "quote": "reinterpret_cast<const binder_size_t*>(",
+      "kind": "call",
+      "text": "读出。"
+    },
+    {
+      "at": 66,
+      "quote": "tr.data.ptr.offsets),",
+      "kind": "note",
+      "text": "断言读够。"
+    },
+    {
+      "at": 67,
+      "quote": "tr.offsets_size / sizeof(binder_size_t), freeBuffer);",
+      "kind": "branch",
+      "text": "读失败。"
+    },
+    {
+      "at": 68,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 69,
+      "quote": "err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);",
+      "kind": "branch",
+      "text": "**正常数据回包**（无 TF_STATUS_CODE）。"
+    },
+    {
+      "at": 70,
+      "quote": "freeBuffer(reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer), tr.data_size,",
+      "kind": "call",
+      "text": "**把内核映射区挂到 reply Parcel**：零拷贝。"
+    },
+    {
+      "at": 71,
+      "quote": "reinterpret_cast<const binder_size_t*>(tr.data.ptr.offsets),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 72,
+      "quote": "tr.offsets_size / sizeof(binder_size_t));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 73,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 74,
+      "quote": "goto finish;",
+      "kind": "call",
+      "text": "析构时用 freeBuffer 归还。"
+    },
+    {
+      "at": 75,
+      "quote": "",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 76,
+      "quote": "default:",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 77,
+      "quote": "err = executeCommand(cmd);",
+      "kind": "note",
+      "text": "**status 回包**：数据本身就是 status。"
+    },
+    {
+      "at": 78,
+      "quote": "if (err != NO_ERROR) goto finish;",
+      "kind": "call",
+      "text": "立即释放缓冲。"
+    },
+    {
+      "at": 79,
+      "quote": "break;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 80,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 81,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 83,
+      "quote": "finish:",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 84,
+      "quote": "if (err != NO_ERROR) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 85,
+      "quote": "if (acquireResult) *acquireResult = err;",
+      "kind": "note",
+      "text": "**默认分支**：不是回复类命令。"
+    },
+    {
+      "at": 86,
+      "quote": "if (reply) reply->setError(err);",
+      "kind": "call",
+      "text": "**就地执行**（例如对端反向发来的 BR_TRANSACTION）。"
+    },
+    {
+      "at": 87,
+      "quote": "mLastError = err;",
+      "kind": "branch",
+      "text": "执行失败。"
+    },
+    {
+      "at": 88,
+      "quote": "logExtendedError();",
+      "kind": "note",
+      "text": "完成。"
+    },
+    {
+      "at": 89,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 90,
+      "quote": "",
+      "kind": "note",
+      "text": "继续循环等回复。"
+    },
+    {
+      "at": 91,
+      "quote": "return err;",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 92,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 while 循环。"
+    }
+  ]
+}

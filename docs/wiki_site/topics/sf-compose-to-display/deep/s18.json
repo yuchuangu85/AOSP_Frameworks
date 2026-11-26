@@ -1,0 +1,33 @@
+{
+  "step": "s18",
+  "title": "onCompositionPresented：回填 timeline 并释放",
+  "tldr": "读 present fence、写 FrameTimeline、算 presentLatency、逐层 releasePendingBuffer——上屏闭环在这里成环。",
+  "why": "这段代码承担了三件事，而且顺序不能换：先把 present 信息写进 FrameTimeline，再释放 buffer。原因是 jank 分类必须在 app 拿到 release 回调之前算好，否则 app 会在拿到 buffer 时才去查分类、发现还没算出来。此外它还要处理「被移除 buffer 的层」——这些层本拍没画，但必须用 present fence 兜底归还，否则 app 会永久阻塞。presentLatency 的计算则直接影响下一拍的 timing 预测。",
+  "concepts": [
+    { "term": "setSfPresent", "text": "把 SF 的 present 时间与 fence 写进 FrameTimeline。" },
+    { "term": "presentLatencyTracker", "text": "追踪 present fence 从 submit 到 signal 的延迟，用于预测下一拍。" },
+    { "term": "releasePendingBuffer", "text": "触发上一块 buffer 的释放回调。" },
+    { "term": "CompositorTiming", "text": "下发给每层的时间参数（vsync deadline、周期、相位、延迟）。" }
+  ],
+  "walk": [
+    { "call": "void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId,", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3775", "what": "入口，present 之后立刻调用。" },
+    { "call": "auto presentFence = getHwComposer().getPresentFence(id);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3784", "what": "取 present fence。" },
+    { "call": "mFrameTimeline->setSfPresent(presentTime.ns(), pacesetterPresentFenceTime,", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3822", "what": "写入 FrameTimeline（必须在 release 之前）。" },
+    { "call": "layer->onCompositionPresented(pacesetterDisplay.get(),", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3869", "what": "通知每层本次呈现信息。" },
+    { "call": "layer->releasePendingBuffer(presentTime.ns());", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3872", "what": "归还 buffer。" }
+  ],
+  "state": [
+    { "field": "mFrameTimeline", "before": "缺少本拍 present 信息", "after": "setSfPresent 已写入", "note": "app 拿到 release 回调时分类已可用。" },
+    { "field": "mLayersWithBuffersRemoved", "before": "本拍登记的被移除层", "after": "已释放并清空", "note": "用 present fence 兜底归还。" }
+  ],
+  "threads": "SF 主线程；内部有若干短临界区读 display 与监听器。",
+  "pitfalls": [
+    "把 setSfPresent 放到 release 之后：app 可能读到还没分类的帧。",
+    "忽略 mLayersWithBuffersRemoved：未被合成的层会让 app 永久阻塞。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --frametimeline 能看到每帧的 present 与分类。",
+    "trace 里 onCompositionPresented 与各层的 release 子切片。"
+  ],
+  "next": "release fence 怎么回到 app？见第 19 步。"
+}

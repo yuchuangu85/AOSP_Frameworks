@@ -1,0 +1,55 @@
+{
+  "step": "s15",
+  "title": "进 ViewRootImpl：排队与调度",
+  "tldr": "onInputEvent → processRawInputEvent → enqueueInputEvent 串成链表，再调度一条异步消息或就地处理。",
+  "why": "「为什么点了没反应」有一类原因就在这里：事件被排进 mPendingInputEvent 后并没有立刻处理，而是发一条异步消息。用异步消息（而非普通消息）是为了让输入能插到同步屏障前面——这与渲染链路里 traversal 用同步屏障保证顺序正好互补。如果主线程被长任务占住，这条异步消息也会等，于是表现为「输入延迟」而不是「输入丢失」。",
+  "concepts": [
+    {
+      "term": "mPendingInputEventHead",
+      "text": "待处理事件链表头。"
+    },
+    {
+      "term": "asynchronous 消息",
+      "text": "可越过同步屏障，保证输入优先于普通消息。"
+    },
+    {
+      "term": "processRawInputEvent",
+      "text": "兼容层入口，处理 pre-Q 的输入兼容逻辑。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public void onInputEvent(InputEvent event) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11465",
+      "what": "窗口 receiver 的回调。"
+    },
+    {
+      "call": "public void enqueueInputEvent(InputEvent event) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11210",
+      "what": "串进待处理链表。"
+    },
+    {
+      "call": "private void scheduleProcessInputEvents() {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11257",
+      "what": "调度异步消息。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingInputEventCount",
+      "before": "0",
+      "after": "逐条递减",
+      "note": "同时用于 trace 计数器的 aq:pending。"
+    }
+  ],
+  "threads": "UI 线程。",
+  "pitfalls": [
+    "以为事件一到达就立刻处理：可能被异步消息延迟。",
+    "在主线程做长任务时惊讶于输入延迟：异步消息也得等主线程空闲。"
+  ],
+  "debug": [
+    "atrace 里 aq:pending 与 aq:input 计数轨道。",
+    "Choreographer 的 doFrame 与 deliverInputEvent 的相对位置。"
+  ],
+  "next": "责任链从哪里开始？见第 16 步。"
+}

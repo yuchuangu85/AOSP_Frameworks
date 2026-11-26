@@ -1,0 +1,32 @@
+{
+  "step": "s14",
+  "title": "DEVICE 路径：把 buffer 写进 HWC",
+  "tldr": "按合成类型分派，DEVICE 层从 HWC buffer 缓存取 slot，把 buffer handle 与 acquire fence 交给 HAL。",
+  "why": "DEVICE 合成是 Android 省电的关键路径：一旦某层被判为 DEVICE，GPU 完全不碰它，DPU 直接从内存里扫描输出。代价是 SF 必须把 buffer 的**句柄与 fence**交出去，而不是「画」出去——所以这里看到的是 setBuffer（登记），HWC 会在自己的时序里等 acquire fence。理解这一点，才能解释为什么 DEVICE 层的「绘制」在 GPU trace 里看不到，却能出现在屏幕上。",
+  "concepts": [
+    { "term": "hwcBufferCache", "text": "HWC 的 buffer 槽位缓存；同一块 buffer 复用时 slot 不变，HAL 可省掉重新导入。" },
+    { "term": "Composition::DEVICE", "text": "硬件叠加；对应的还有 CLIENT / SIDEBAND / SOLID_COLOR / CURSOR。" },
+    { "term": "writeStateToHWC", "text": "按合成类型分派到不同的状态写入函数。" }
+  ],
+  "walk": [
+    { "call": "void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t z,", "ref": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp:662", "what": "入口，处理一层的全部 HWC 状态。" },
+    { "call": "writeCompositionTypeToHWC(hwcLayer.get(), requestedCompositionType, isPeekingThrough,", "ref": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp:704", "what": "先写合成类型，再按类型写具体状态。" },
+    { "call": "case Composition::DISPLAY_DECORATION:", "ref": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp:953", "what": "DEVICE 一族走 writeBufferStateToHWC。" },
+    { "call": "writeBufferStateToHWC(hwcLayer, outputIndependentState, skipLayer);", "ref": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp:955", "what": "buffer 路径。" },
+    { "call": "if (auto error = hwcLayer->setBuffer(hwcSlotAndBuffer.slot, hwcSlotAndBuffer.buffer, hwcFence);", "ref": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp:1072", "what": "把 slot、buffer、acquire fence 交给 HAL。" }
+  ],
+  "state": [
+    { "field": "state.hwc->activeBufferSlot", "before": "上一块的 slot", "after": "本块的 slot", "note": "用于后续批量清 slot 时保留当前槽位。" },
+    { "field": "lastHwcState", "before": "上一拍", "after": "本拍（含 wasSkipped / wasOverridden）", "note": "dumpsys 与 trace 依赖它。" }
+  ],
+  "threads": "SF 主线程；HAL 调用可能阻塞。",
+  "pitfalls": [
+    "以为 DEVICE 层也要 GPU 画：完全跳过 RenderEngine。",
+    "漏 setSurfaceDamage：HWC 会把整块 buffer 重扫，增加带宽与功耗。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 能看到每层的 composition type 与 HWC slot。",
+    "Perfetto 的 layer 轨道会标注 DEVICE / CLIENT。"
+  ],
+  "next": "那 CLIENT 合成又是怎么走的？见第 15 步。"
+}

@@ -1,0 +1,62 @@
+{
+  "step": "s03",
+  "title": "merge：同批变更合并",
+  "tldr": "merge 把另一个事务并进来，字段以后者为准；被覆盖的旧 buffer 立刻归还，避免槽位泄漏。",
+  "why": "merge 是 WindowManager 批量下发的核心：一次转场可能涉及几十个窗口，如果每个都单独 apply，会变成几十次 binder 往返且无法保证同帧生效。merge 把它们合成一笔。但合并有个正确性陷阱：如果 A 事务里有一块 buffer，B 事务把同一层的 buffer 换成另一块，那么 A 的那块永远不会被消费——所以 merge 必须显式把它还回去（releaseBufferIfOverwriting）。少了这一步，BufferQueue 槽位会被永久占用，最终 app 卡在 dequeueBuffer。",
+  "concepts": [
+    {
+      "term": "releaseBufferIfOverwriting",
+      "text": "合并时对被覆盖 buffer 触发释放回调。"
+    },
+    {
+      "term": "applyToken 继承",
+      "text": "合并后的顺序域取被合并方的 token。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::merge(Transaction&& other) {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:981",
+      "what": "入口。"
+    },
+    {
+      "call": "mState.merge(std::move(other.mState),",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1005",
+      "what": "状态合并。"
+    },
+    {
+      "call": "[this](const layer_state_t& state) { releaseBufferIfOverwriting(state); });",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1006",
+      "what": "**关键**：被覆盖的 buffer 立即释放。"
+    },
+    {
+      "call": "other.clear();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1017",
+      "what": "清空被合并方，防止重复提交。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mState",
+      "before": "本事务的层状态",
+      "after": "并入了 other 的层状态",
+      "note": "同层同字段以后者为准。"
+    },
+    {
+      "field": "mApplyToken",
+      "before": "本事务的",
+      "after": "other 的",
+      "note": "合并后顺序域跟着变。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为 merge 会保留两份 buffer：只会保留后者，前者被释放。",
+    "merge 后继续用 other：它已被 clear。"
+  ],
+  "debug": [
+    "日志 Transaction N merged with transaction M（开 mLogCallPoints 时）。",
+    "dumpsys SurfaceFlinger 的 pending 队列显示合并后的事务。"
+  ],
+  "next": "buffer 怎么跨进程传？见第 4 步。"
+}

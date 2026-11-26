@@ -1,0 +1,30 @@
+{
+  "step": "s20",
+  "title": "Scheduler::onFrameSignal 收尾与下一拍",
+  "tldr": "composite 之后对每个 display 调 endFrame，写入实际 present 结果并判定是否 missed。",
+  "why": "endFrame 是「这一拍的结算」：它把本拍实际 present 结果写回 FrameTargeter，由后者判定这一帧是不是 missed、是否需要调整 vsync 模型。很多 jank 归因的关键量（expectedPresentTime 与 actualPresent 的差）都在这之后才有值。此外 Scheduler 还会根据合成覆盖情况调整 App/SF 的 workDuration 与相位——也就是说这一帧的表现会影响下一帧的预算分配。",
+  "concepts": [
+    { "term": "FrameTargeter::endFrame", "text": "结算本拍结果，更新 missed 统计与 vsync 模型。" },
+    { "term": "CompositeResult", "text": "每个显示的合成覆盖结果（HWC / GPU / 复用）。" },
+    { "term": "VsyncModulator", "text": "根据本拍是否走 GPU 来调整后续拍的相位与工作时长。" }
+  ],
+  "walk": [
+    { "call": "const auto resultsPerDisplay = compositor.composite(pacesetterPtr->displayId, targeters);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:501", "what": "拿到每显示的合成结果。" },
+    { "call": "compositor.sendNotifyExpectedPresentHint(pacesetterPtr->displayId);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:502", "what": "把 expected present 提示发回 HAL。" },
+    { "call": "for (const auto& [id, targeter] : targeters) {", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:505", "what": "逐个显示结算。" },
+    { "call": "targeter->endFrame(*resultOpt);", "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:508", "what": "写入实际 present 结果。" }
+  ],
+  "state": [
+    { "field": "FrameTarget", "before": "本拍待结算", "after": "已结算（含 missed 判定）", "note": "影响下一拍的预测。" }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为 endFrame 会做合成：它只结算，不做任何绘制。",
+    "忽略 missed 判定的依据：它是 expectedPresentTime 与实际 present 的差。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --frametimeline 能看到每帧的 predicted 与 actual。",
+    "trace 里 endFrame 通常很短，说明它只是结算。"
+  ],
+  "next": "哪些情况下这一拍根本不会合成？见第 21、22 步。"
+}

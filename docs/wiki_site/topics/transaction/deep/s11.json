@@ -1,0 +1,51 @@
+{
+  "step": "s11",
+  "title": "commit 时触发 flush",
+  "tldr": "SF 每拍 commit 里若事务标志置位，就 collectTransactions + flushTransactions 取出一批可应用事务。",
+  "why": "这个位置很关键：事务不在 binder 线程应用、也不在独立线程应用，而是并入 SF 的帧调度循环。好处是事务和合成共用同一个 vsync 节拍，天然对齐；坏处是如果 SF 这一拍特别忙，事务也会跟着晚。看到「提交了但两帧后才生效」时，先确认 SF 这一拍是否压根没跑（commit 被早退）或跑得很慢。",
+  "concepts": [
+    {
+      "term": "flushTransactions",
+      "text": "从各 token 队列挑出 Ready 的事务。"
+    },
+    {
+      "term": "updateLayerSnapshots",
+      "text": "commit 里真正消费事务快照的函数。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mTransactionHandler.collectTransactions();",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2789",
+      "what": "先归并。"
+    },
+    {
+      "call": "update.transactions = mTransactionHandler.flushTransactions();",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2807",
+      "what": "再挑出可应用的。"
+    },
+    {
+      "call": "mustComposite |=",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3137",
+      "what": "应用结果会决定这一拍是否要合成。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingTransactionCount",
+      "before": "N",
+      "after": "减去已应用数量",
+      "note": "flush 内部原子扣减。"
+    }
+  ],
+  "threads": "SF 主线程（commit 阶段）。",
+  "pitfalls": [
+    "以为 flush 一定发生：只有事务标志置位时才 collect/flush。",
+    "把「晚两帧」全归因到队列：先看 SF 是否在正常跑帧。"
+  ],
+  "debug": [
+    "atrace 的 TransactionHandler:flushTransactions 子切片。",
+    "dumpsys SurfaceFlinger 的 pending 计数。"
+  ],
+  "next": "挑选规则是什么？见第 12 步。"
+}

@@ -1,0 +1,796 @@
+{
+  "p0": [
+    {
+      "id": "wms-addwindow",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "sig": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+      "symbol": "WMS.addWindow",
+      "start": 1672,
+      "end": 2042,
+      "hint": 1672,
+      "why": "所有窗口进入系统的唯一入口：权限校验、父窗口解析、InputChannel 配对都在这里定型。"
+    },
+    {
+      "id": "wms-addinner",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "sig": "private int addWindowInner(@NonNull WindowState win, @NonNull DisplayPolicy displayPolicy,",
+      "symbol": "WMS.addWindowInner",
+      "start": 2044,
+      "end": 2160,
+      "hint": 2044,
+      "why": "WindowState 落库与策略注册的实际位置。"
+    },
+    {
+      "id": "wms-relayout",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "sig": "public int relayoutWindow(Session session, IWindow client, LayoutParams attrs,",
+      "symbol": "WMS.relayoutWindow",
+      "start": 2548,
+      "end": 2720,
+      "hint": 2548,
+      "why": "每帧客户端请求尺寸/可见性变更的入口，输出 frames/Insets/配置三件套。"
+    },
+    {
+      "id": "ws-relayoutvisible",
+      "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+      "sig": "int relayoutVisibleWindow(int result) {",
+      "symbol": "WindowState.relayoutVisibleWindow",
+      "start": 5103,
+      "end": 5138,
+      "hint": 5103,
+      "why": "可见窗口的 relayout 路径：满足什么条件才真正参与布局。"
+    },
+    {
+      "id": "dc-surface",
+      "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+      "sig": "void applySurfaceChangesTransaction() {",
+      "symbol": "DisplayContent.applySurfaceChangesTransaction",
+      "start": 5594,
+      "end": 5668,
+      "hint": 5594,
+      "why": "把布局结果写进 SurfaceControl 的地方，是 WMS 与合成系统唯一的数据出口。"
+    },
+    {
+      "id": "dc-layers",
+      "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+      "sig": "void assignWindowLayers(boolean setLayoutNeeded) {",
+      "symbol": "DisplayContent.assignWindowLayers",
+      "start": 4549,
+      "end": 4562,
+      "hint": 4549,
+      "why": "z-order 的最终赋值点，决定谁盖住谁以及输入命中顺序。"
+    },
+    {
+      "id": "session-add",
+      "file": "base/services/core/java/com/android/server/wm/Session.java",
+      "sig": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+      "symbol": "Session.addToDisplayAsUser",
+      "start": 272,
+      "end": 277,
+      "hint": 272,
+      "why": "客户端会话到 WMS 的那一层壳，身份与权限的携带点。"
+    },
+    {
+      "id": "task-resume",
+      "file": "base/services/core/java/com/android/server/wm/Task.java",
+      "sig": "boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,",
+      "symbol": "Task.resumeTopActivityUncheckedLocked",
+      "start": 5369,
+      "end": 5436,
+      "hint": 5369,
+      "why": "栈顶 Activity 的恢复决策，决定接下来谁获得窗口与焦点。"
+    },
+    {
+      "id": "rwc-resume",
+      "file": "base/services/core/java/com/android/server/wm/RootWindowContainer.java",
+      "sig": "boolean resumeFocusedTasksTopActivities(",
+      "symbol": "RootWindowContainer.resumeFocusedTasksTopActivities",
+      "start": 2546,
+      "end": 2570,
+      "hint": 2546,
+      "why": "跨 display 的顶层恢复入口。"
+    },
+    {
+      "id": "ar-visible",
+      "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+      "sig": "void makeVisibleIfNeeded(ActivityRecord starting, boolean reportToClient) {",
+      "symbol": "ActivityRecord.makeVisibleIfNeeded",
+      "start": 6015,
+      "end": 6044,
+      "hint": 6015,
+      "why": "Activity 真正变为 visible 的条件与时序。"
+    },
+    {
+      "id": "clm-schedule",
+      "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+      "sig": "boolean scheduleTransaction(@NonNull ClientTransaction transaction) {",
+      "symbol": "ClientLifecycleManager.scheduleTransaction",
+      "start": 73,
+      "end": 84,
+      "hint": 73,
+      "why": "system_server 驱动客户端生命周期变化的唯一出口。"
+    },
+    {
+      "id": "atms-start",
+      "file": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java",
+      "sig": "public int startActivityAsUser(IApplicationThread caller, String callingPackage,",
+      "symbol": "ATMS.startActivityAsUser",
+      "start": 1289,
+      "end": 1300,
+      "hint": 1289,
+      "why": "启动 Activity 的 ATMS 入口，是 WMS 窗口生命周期的上游触发。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "WindowManagerService",
+      "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "tier": 0,
+      "side": "RT",
+      "role": "窗口系统总控：全局锁 mGlobalLock、traversal、策略协调",
+      "members": [
+        "addWindow",
+        "relayoutWindow",
+        "removeWindow"
+      ],
+      "fields": [
+        "mGlobalLock",
+        "mWindowPlacerLocked"
+      ]
+    },
+    {
+      "name": "Session",
+      "file": "base/services/core/java/com/android/server/wm/Session.java",
+      "tier": 1,
+      "side": "RT",
+      "role": "客户端会话：携带身份、代理 WMS 接口",
+      "members": [
+        "addToDisplayAsUser",
+        "relayout",
+        "remove"
+      ],
+      "fields": [
+        "mUid",
+        "mPid",
+        "mService"
+      ]
+    },
+    {
+      "name": "RootWindowContainer",
+      "file": "base/services/core/java/com/android/server/wm/RootWindowContainer.java",
+      "tier": 1,
+      "side": "RT",
+      "role": "容器树根：管理所有 DisplayContent",
+      "members": [
+        "resumeFocusedTasksTopActivities",
+        "applySurfaceChangesTransaction"
+      ],
+      "fields": [
+        "mChildren"
+      ]
+    },
+    {
+      "name": "DisplayContent",
+      "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+      "tier": 2,
+      "side": "RT",
+      "role": "一块屏幕的全部窗口与布局",
+      "members": [
+        "applySurfaceChangesTransaction",
+        "assignWindowLayers",
+        "setLayoutNeeded"
+      ],
+      "fields": [
+        "mDisplayArea",
+        "mInsetsPolicy"
+      ]
+    },
+    {
+      "name": "DisplayArea",
+      "file": "base/services/core/java/com/android/server/wm/DisplayArea.java",
+      "tier": 2,
+      "side": "RT",
+      "role": "窗口分层容器：TaskDisplayArea、feature 区域等",
+      "members": [
+        "asTaskDisplayArea",
+        "setLayer"
+      ],
+      "fields": [
+        "mFeatureId"
+      ]
+    },
+    {
+      "name": "Task",
+      "file": "base/services/core/java/com/android/server/wm/Task.java",
+      "tier": 3,
+      "side": "RT",
+      "role": "任务栈：一组 ActivityRecord 的容器",
+      "members": [
+        "resumeTopActivityUncheckedLocked",
+        "getTopMostActivity"
+      ],
+      "fields": [
+        "mChildren"
+      ]
+    },
+    {
+      "name": "ActivityRecord",
+      "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+      "tier": 3,
+      "side": "RT",
+      "role": "一个 Activity 实例：持有主窗口与生命周期状态",
+      "members": [
+        "makeVisibleIfNeeded",
+        "setVisibility"
+      ],
+      "fields": [
+        "mWindowToken",
+        "mState"
+      ]
+    },
+    {
+      "name": "WindowToken",
+      "file": "base/services/core/java/com/android/server/wm/WindowToken.java",
+      "tier": 4,
+      "side": "RT",
+      "role": "窗口归属契约：应用窗口挂 ActivityRecord，系统窗口挂 DisplayArea",
+      "members": [
+        "addWindow",
+        "removeWindow"
+      ],
+      "fields": [
+        "mChildren",
+        "windowType"
+      ]
+    },
+    {
+      "name": "WindowState",
+      "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+      "tier": 5,
+      "side": "RT",
+      "role": "单个窗口：attrs、frame、SurfaceControl、可见性",
+      "members": [
+        "relayoutVisibleWindow",
+        "getFrame",
+        "isVisible"
+      ],
+      "fields": [
+        "mAttrs",
+        "mWindowFrames",
+        "mWinAnimator"
+      ]
+    },
+    {
+      "name": "WindowStateAnimator",
+      "file": "base/services/core/java/com/android/server/wm/WindowStateAnimator.java",
+      "tier": 5,
+      "side": "RT",
+      "role": "窗口的 surface 与动画：alpha/matrix/transform",
+      "members": [
+        "setSurfaceBoundaries",
+        "applyAnimationLocked"
+      ],
+      "fields": [
+        "mSurfaceController",
+        "mDrawState"
+      ]
+    },
+    {
+      "name": "ClientLifecycleManager",
+      "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+      "tier": 1,
+      "side": "RT",
+      "role": "向客户端下发生命周期事务",
+      "members": [
+        "scheduleTransaction",
+        "scheduleTransactionItem"
+      ],
+      "fields": []
+    },
+    {
+      "name": "ActivityTaskManagerService",
+      "file": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java",
+      "tier": 0,
+      "side": "RT",
+      "role": "Activity 生命周期与任务管理（与 WMS 同进程）",
+      "members": [
+        "startActivityAsUser",
+        "activityResumed"
+      ],
+      "fields": [
+        "mGlobalLock",
+        "mRootWindowContainer"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "Session",
+      "to": "WindowManagerService",
+      "label": "addToDisplayAsUser",
+      "kind": "uses"
+    },
+    {
+      "from": "WindowManagerService",
+      "to": "RootWindowContainer",
+      "label": "持有",
+      "kind": "owns"
+    },
+    {
+      "from": "RootWindowContainer",
+      "to": "DisplayContent",
+      "label": "子节点",
+      "kind": "owns"
+    },
+    {
+      "from": "DisplayContent",
+      "to": "DisplayArea",
+      "label": "根区域",
+      "kind": "owns"
+    },
+    {
+      "from": "DisplayArea",
+      "to": "Task",
+      "label": "TaskDisplayArea 下",
+      "kind": "owns"
+    },
+    {
+      "from": "Task",
+      "to": "ActivityRecord",
+      "label": "任务项",
+      "kind": "owns"
+    },
+    {
+      "from": "ActivityRecord",
+      "to": "WindowToken",
+      "label": "主窗口 token",
+      "kind": "owns"
+    },
+    {
+      "from": "WindowToken",
+      "to": "WindowState",
+      "label": "窗口列表",
+      "kind": "owns"
+    },
+    {
+      "from": "WindowState",
+      "to": "WindowStateAnimator",
+      "label": "mWinAnimator",
+      "kind": "owns"
+    },
+    {
+      "from": "ActivityTaskManagerService",
+      "to": "ClientLifecycleManager",
+      "label": "scheduleTransaction",
+      "kind": "uses"
+    },
+    {
+      "from": "ClientLifecycleManager",
+      "to": "ActivityRecord",
+      "label": "驱动客户端",
+      "kind": "oneway"
+    }
+  ],
+  "architecture": {
+    "width": 1320,
+    "height": 560,
+    "groups": [
+      {
+        "id": "app",
+        "label": "app 进程",
+        "x": 24,
+        "y": 24,
+        "w": 300,
+        "h": 500,
+        "color": "#7bd88f"
+      },
+      {
+        "id": "sys",
+        "label": "system_server",
+        "x": 350,
+        "y": 24,
+        "w": 620,
+        "h": 500,
+        "color": "#c792ea"
+      },
+      {
+        "id": "sf",
+        "label": "合成",
+        "x": 996,
+        "y": 24,
+        "w": 300,
+        "h": 500,
+        "color": "#4c8dff"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "vri",
+        "group": "app",
+        "label": "ViewRootImpl",
+        "sub": "IWindowSession",
+        "x": 48,
+        "y": 120,
+        "w": 252,
+        "h": 64
+      },
+      {
+        "id": "w",
+        "group": "app",
+        "label": "IWindow (binder)",
+        "sub": "回调 WMS",
+        "x": 48,
+        "y": 230,
+        "w": 252,
+        "h": 64
+      },
+      {
+        "id": "session",
+        "group": "sys",
+        "label": "Session",
+        "sub": "身份 + 代理",
+        "x": 374,
+        "y": 90,
+        "w": 270,
+        "h": 64
+      },
+      {
+        "id": "wms",
+        "group": "sys",
+        "label": "WindowManagerService",
+        "sub": "mGlobalLock / traversal",
+        "x": 374,
+        "y": 190,
+        "w": 270,
+        "h": 64
+      },
+      {
+        "id": "rwc",
+        "group": "sys",
+        "label": "RootWindowContainer",
+        "sub": "→ DisplayContent",
+        "x": 374,
+        "y": 290,
+        "w": 270,
+        "h": 64
+      },
+      {
+        "id": "area",
+        "group": "sys",
+        "label": "DisplayArea → Task → ActivityRecord",
+        "sub": "容器层次",
+        "x": 680,
+        "y": 190,
+        "w": 266,
+        "h": 64
+      },
+      {
+        "id": "ws",
+        "group": "sys",
+        "label": "WindowState",
+        "sub": "frame + SurfaceControl",
+        "x": 680,
+        "y": 290,
+        "w": 266,
+        "h": 64
+      },
+      {
+        "id": "anim",
+        "group": "sys",
+        "label": "WindowStateAnimator",
+        "sub": "alpha / matrix",
+        "x": 680,
+        "y": 390,
+        "w": 266,
+        "h": 64
+      },
+      {
+        "id": "sc",
+        "group": "sf",
+        "label": "SurfaceControl.Transaction",
+        "sub": "setPosition/setCrop",
+        "x": 1020,
+        "y": 240,
+        "w": 252,
+        "h": 64
+      },
+      {
+        "id": "sfc",
+        "group": "sf",
+        "label": "SurfaceFlinger",
+        "sub": "setTransactionState",
+        "x": 1020,
+        "y": 340,
+        "w": 252,
+        "h": 64
+      }
+    ],
+    "edges": [
+      {
+        "from": "vri",
+        "to": "session",
+        "label": "addWindow / relayout",
+        "kind": "call"
+      },
+      {
+        "from": "session",
+        "to": "wms",
+        "label": "转发",
+        "kind": "call"
+      },
+      {
+        "from": "wms",
+        "to": "rwc",
+        "label": "取 DisplayContent",
+        "kind": "call"
+      },
+      {
+        "from": "rwc",
+        "to": "area",
+        "label": "逐层布局",
+        "kind": "call"
+      },
+      {
+        "from": "area",
+        "to": "ws",
+        "label": "子窗口",
+        "kind": "owns"
+      },
+      {
+        "from": "ws",
+        "to": "anim",
+        "label": "mWinAnimator",
+        "kind": "owns"
+      },
+      {
+        "from": "anim",
+        "to": "sc",
+        "label": "写 surface 属性",
+        "kind": "call"
+      },
+      {
+        "from": "sc",
+        "to": "sfc",
+        "label": "apply transaction",
+        "kind": "oneway"
+      },
+      {
+        "from": "wms",
+        "to": "w",
+        "label": "回调客户端",
+        "kind": "callback"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "f0",
+        "kind": "start",
+        "label": "ViewRootImpl.setView → addWindow",
+        "x": 530,
+        "y": 60
+      },
+      {
+        "id": "f1",
+        "kind": "decision",
+        "label": "checkAddPermission 通过？",
+        "x": 530,
+        "y": 160
+      },
+      {
+        "id": "f2",
+        "kind": "end",
+        "label": "返回 ADD_* 错误",
+        "x": 880,
+        "y": 160
+      },
+      {
+        "id": "f3",
+        "kind": "process",
+        "label": "解析 token / 父窗口 / DisplayContent",
+        "x": 530,
+        "y": 270
+      },
+      {
+        "id": "f4",
+        "kind": "process",
+        "label": "创建 WindowState + 配对 InputChannel",
+        "x": 530,
+        "y": 370
+      },
+      {
+        "id": "f5",
+        "kind": "process",
+        "label": "setLayoutNeeded → 请求 traversal",
+        "x": 530,
+        "y": 470
+      },
+      {
+        "id": "f6",
+        "kind": "process",
+        "label": "performLayout：measure + 层级排序",
+        "x": 530,
+        "y": 570
+      },
+      {
+        "id": "f7",
+        "kind": "decision",
+        "label": "布局改动还需重复？",
+        "x": 530,
+        "y": 670
+      },
+      {
+        "id": "f8",
+        "kind": "process",
+        "label": "applySurfaceChangesTransaction",
+        "x": 530,
+        "y": 780
+      },
+      {
+        "id": "f9",
+        "kind": "process",
+        "label": "SurfaceControl.Transaction.apply",
+        "x": 530,
+        "y": 880
+      },
+      {
+        "id": "f10",
+        "kind": "end",
+        "label": "SF 在下一拍应用并上屏",
+        "x": 530,
+        "y": 980
+      }
+    ],
+    "edges": [
+      {
+        "from": "f0",
+        "to": "f1"
+      },
+      {
+        "from": "f1",
+        "to": "f2",
+        "label": "否"
+      },
+      {
+        "from": "f1",
+        "to": "f3",
+        "label": "是"
+      },
+      {
+        "from": "f3",
+        "to": "f4"
+      },
+      {
+        "from": "f4",
+        "to": "f5"
+      },
+      {
+        "from": "f5",
+        "to": "f6"
+      },
+      {
+        "from": "f6",
+        "to": "f7"
+      },
+      {
+        "from": "f7",
+        "to": "f6",
+        "label": "是：重复布局"
+      },
+      {
+        "from": "f7",
+        "to": "f8",
+        "label": "否"
+      },
+      {
+        "from": "f8",
+        "to": "f9"
+      },
+      {
+        "from": "f9",
+        "to": "f10"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s01",
+      "from": "APP",
+      "to": "WMS",
+      "label": "IWindowSession.addToDisplayAsUser",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "Session 转发 addWindow",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "checkAddPermission",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "WMS",
+      "to": "LAY",
+      "label": "取 DisplayContent / 父窗口",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "LAY",
+      "to": "LAY",
+      "label": "WindowToken.attachWindow",
+      "kind": "call"
+    },
+    {
+      "step": "s06",
+      "from": "WMS",
+      "to": "INP",
+      "label": "InputChannel 配对",
+      "kind": "call"
+    },
+    {
+      "step": "s07",
+      "from": "WMS",
+      "to": "LAY",
+      "label": "创建 WindowState",
+      "kind": "call"
+    },
+    {
+      "step": "s10",
+      "from": "WMS",
+      "to": "LAY",
+      "label": "performLayout",
+      "kind": "call"
+    },
+    {
+      "step": "s11",
+      "from": "APP",
+      "to": "WMS",
+      "label": "relayoutWindow（回传 frames）",
+      "kind": "call"
+    },
+    {
+      "step": "s12",
+      "from": "LAY",
+      "to": "LAY",
+      "label": "assignWindowLayers",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "WMS",
+      "to": "LAY",
+      "label": "applySurfaceChangesTransaction",
+      "kind": "call"
+    },
+    {
+      "step": "s15",
+      "from": "LAY",
+      "to": "SF",
+      "label": "SurfaceControl 写入",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "SF",
+      "to": "SF",
+      "label": "setTransactionState → 上屏",
+      "kind": "oneway"
+    },
+    {
+      "step": "s19",
+      "from": "WMS",
+      "to": "APP",
+      "label": "ClientTransaction（生命周期）",
+      "kind": "callback"
+    }
+  ]
+}

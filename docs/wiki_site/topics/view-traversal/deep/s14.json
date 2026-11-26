@@ -1,0 +1,35 @@
+{
+  "step": "s14",
+  "title": "根节点也是一张 display list",
+  "tldr": "根 RenderNode 把窗口 inset、onPreDraw/onPostDraw 和内容树合成一张，跨帧复用。",
+  "why": "这是两层 display list 结构的关键：单个 View 的显示内容各自成一张，而窗口根节点再录一张把它们「装」起来。好处是 RT 回放时只需要回放一张根 display list，内部子节点的 op 可以整体复用；代价是根节点上烘进去的东西（inset 平移、onPreDraw 的副作用）只有在根节点重建时才会重新执行。这条性质解释了为什么某些「每帧都应该重新计算」的绘制逻辑放在 onPreDraw 里会表现异常，也解释了为什么滚动时需要通过 invalidateRoot 让根节点失效。",
+  "concepts": [
+    { "term": "mRootNode", "text": "窗口的根 RenderNode；它的 display list 里装的是一条 drawRenderNode 指向内容树。" },
+    { "term": "mRootNodeNeedsUpdate", "text": "根节点是否需要重录；来源是 ViewRootImpl 的 invalidateRoot 调用。" },
+    { "term": "DrawCallbacks", "text": "onPreDraw / onPostDraw，ViewRootImpl 用它往根节点里塞额外内容。" }
+  ],
+  "walk": [
+    { "call": "private void updateRootDisplayList(View view, DrawCallbacks callbacks)", "ref": "base/core/java/android/view/ThreadedRenderer.java:730", "what": "入口，先更新内容树再决定根节点。" },
+    { "call": "updateViewTreeDisplayList(view);", "ref": "base/core/java/android/view/ThreadedRenderer.java:732", "what": "内容树先录：脏的节点重建各自的 display list。" },
+    { "call": "if (mRootNodeNeedsUpdate || !mRootNode.hasDisplayList()) {", "ref": "base/core/java/android/view/ThreadedRenderer.java:769", "what": "根节点的唯一重录闸门。" },
+    { "call": "canvas.translate(mInsetLeft, mInsetTop);", "ref": "base/core/java/android/view/ThreadedRenderer.java:773", "what": "窗口 inset 被烘进根节点。" },
+    { "call": "canvas.drawRenderNode(view.updateDisplayListIfDirty());", "ref": "base/core/java/android/view/ThreadedRenderer.java:777", "what": "内容树在这里变成根节点里的一条 op。" },
+    { "call": "mRootNode.endRecording();", "ref": "base/core/java/android/view/ThreadedRenderer.java:784", "what": "封存到 staging，等 RT 同步。" }
+  ],
+  "state": [
+    { "field": "mRootNodeNeedsUpdate", "before": "true（被 invalidateRoot 置位）", "after": "false", "note": "只在 try 内清；异常路径下会重录一次。" },
+    { "field": "mRootNode 的 display list", "before": "上一帧版本", "after": "本次版本或原样复用", "note": "不复用时 RT 回放的仍是旧内容——而子节点的更新照样生效。" }
+  ],
+  "threads": "UI 线程录制。注意 onPreDraw/onPostDraw 也在这条线程、这个时机执行。",
+  "pitfalls": [
+    "把每帧都要算的逻辑放在 onPreDraw：根节点没重建就不会重跑。",
+    "以为根节点每帧都重录：只在 invalidateRoot 或首帧时才录。",
+    "在 onPostDraw 里改 View 状态：本帧的录制已经结束，改动要下一帧才生效。"
+  ],
+  "debug": [
+    "trace 里 Record View#draw() 若明显偏短，通常意味着根节点命中了缓存。",
+    "在 769 行的 if 上下断点，可确认本帧根节点是否重录。",
+    "debug.hwui.show_dirty_regions 能看到根节点层面的重绘范围。"
+  ],
+  "next": "录制完成后，FrameInfo 怎样跨 JNI 进入 RenderThread？见第 15 步。"
+}

@@ -1,0 +1,114 @@
+{
+  "id": "mq-vsynccallback",
+  "title": "MessageQueue::vsyncCallback",
+  "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+  "sig": "void MessageQueue::vsyncCallback",
+  "span": [
+    59,
+    75
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void MessageQueue::vsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {",
+      "kind": "note",
+      "text": "sf 相位的回调，**运行在 timer 线程**上（不是 SF 主线程）。"
+    },
+    {
+      "at": 2,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 3,
+      "quote": "// Trace VSYNC-sf",
+      "kind": "note",
+      "text": "注释：这条 trace 就是 Perfetto 里的 VSYNC-sf。"
+    },
+    {
+      "at": 4,
+      "quote": "mVsync.value = (mVsync.value + 1) % 2;",
+      "kind": "state",
+      "text": "翻转一个布尔用于 trace 轨道交替。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "const auto expectedVsyncTime = TimePoint::fromNs(vsyncTime);",
+      "kind": "data",
+      "text": "把纳秒时间转成 TimePoint。"
+    },
+    {
+      "at": 7,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始：更新 vsync 状态。"
+    },
+    {
+      "at": 8,
+      "quote": "std::lock_guard lock(mVsync.mutex);",
+      "kind": "lock",
+      "text": "保护 mVsync 结构。"
+    },
+    {
+      "at": 9,
+      "quote": "mVsync.lastCallbackTime = expectedVsyncTime;",
+      "kind": "state",
+      "text": "记录上次回调时间。"
+    },
+    {
+      "at": 10,
+      "quote": "mVsync.scheduledFrameTimeOpt.reset();",
+      "kind": "state",
+      "text": "清掉计划帧时间（下一拍重新算）。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "const auto vsyncId = VsyncId{mVsync.tokenManager->generateTokenForPredictions(",
+      "kind": "data",
+      "text": "**生成 vsyncId**：与 app 侧同一个 TokenManager。"
+    },
+    {
+      "at": 14,
+      "quote": "{targetWakeupTime, readyTime, vsyncTime})};",
+      "kind": "call",
+      "text": "用 (wakeup, ready, vsync) 三元组生成 token。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "闭合调用。"
+    },
+    {
+      "at": 16,
+      "quote": "mHandler->dispatchFrame(vsyncId, expectedVsyncTime);",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "call",
+      "text": "**交给 SF 主线程**：dispatchFrame 之后才真正进 onFrameSignal。"
+    }
+  ]
+}

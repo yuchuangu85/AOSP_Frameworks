@@ -1,0 +1,55 @@
+{
+  "step": "s02",
+  "title": "EventHub::getEvents 摊平成 RawEvent",
+  "tldr": "epoll 唤醒后批量 read，把 input_event 连同 deviceId、when、readTime 摊成 RawEvent。",
+  "why": "RawEvent 是整条链路的第一种数据结构，它决定了后续一切判定能拿到什么信息。特别是 when 与 readTime 两个时间戳：前者是设备上报时刻，后者是用户态读到的时刻，二者之差（readDeltaNs）超过阈值时 EventHub 会直接打 W 级日志——这是判断「设备卡了还是系统忙」最直接的证据。此外这里还承担了设备热插拔、wake pipe、inotify 三类非数据事件的处理。",
+  "concepts": [
+    {
+      "term": "RawEvent",
+      "text": "when / readTime / deviceId / type / code / value 六元组。"
+    },
+    {
+      "term": "EVENT_BUFFER_SIZE",
+      "text": "单次 getEvents 的输出上限；满了会回退 pending 索引，下次继续读。"
+    },
+    {
+      "term": "EPOLLWAKEUP",
+      "text": "让 epoll 在有待处理事件时持有 wakelock，保证系统不在上报途中睡眠。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "read(device->fd, readBuffer.data(),",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2204",
+      "what": "一次 read 取一批 input_event。"
+    },
+    {
+      "call": "RawEvent& ev = events.emplace_back(RawEvent{",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2226",
+      "what": "RawEvent 在此诞生，附带 when 与 readTime。"
+    },
+    {
+      "call": "const nsecs_t readDeltaNs = events.back().readTime - events.back().when;",
+      "ref": "native/services/inputflinger/reader/EventHub.cpp:2237",
+      "what": "读延迟，超过阈值就告警。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingEventIndex / mPendingEventCount",
+      "before": "上一批 epoll 结果",
+      "after": "本轮消费后重置",
+      "note": "缓冲满时索引回退，避免丢事件。"
+    }
+  ],
+  "threads": "InputReader 线程；内部在 epoll_wait 前会放锁。",
+  "pitfalls": [
+    "以为 getEvents 一定返回事件：超时、被 wake、设备变化都可能返回空。",
+    "忽略 readDelta 告警：它是设备侧问题的第一现场。"
+  ],
+  "debug": [
+    "`adb shell dumpsys input` 的设备段有 lastEventTime。",
+    "atrace 中 EventHub 的 read 与 epoll_wait 可分辨。"
+  ],
+  "next": "InputReader 主循环怎样调度读与解析？见第 3 步。"
+}

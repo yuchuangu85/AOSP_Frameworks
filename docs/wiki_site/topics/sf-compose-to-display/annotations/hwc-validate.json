@@ -1,0 +1,608 @@
+{
+  "id": "hwc-validate",
+  "title": "HWComposer::getDeviceCompositionChanges",
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "sig": "status_t HWComposer::getDeviceCompositionChanges(",
+  "span": [
+    537,
+    635
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t HWComposer::getDeviceCompositionChanges(",
+      "kind": "note",
+      "text": "整条链路上唯一与 composer HAL 双向往返的地方。DEVICE / CLIENT 的最终归属由它决定。"
+    },
+    {
+      "at": 2,
+      "quote": "HalDisplayId displayId, bool frameUsesClientComposition,",
+      "kind": "data",
+      "text": "frameUsesClientComposition 来自 SF 侧先验判断（有没有层必须 GPU 画）。",
+      "text2": ""
+    },
+    {
+      "at": 3,
+      "quote": "std::optional<std::chrono::steady_clock::time_point> earliestPresentTime,",
+      "kind": "data",
+      "text": "HWC 支持 earliestPresentTime 时，它自己保证不提前上屏。"
+    },
+    {
+      "at": 4,
+      "quote": "nsecs_t expectedPresentTime, Fps frameInterval,",
+      "kind": "data",
+      "text": "expectedPresentTime 与 frameInterval 一起下发，HWC 用它做时序规划。"
+    },
+    {
+      "at": 5,
+      "quote": "std::optional<android::HWComposer::DeviceRequestedChanges>* outChanges) {",
+      "kind": "note",
+      "text": "输出参数：HWC 要求的变更集合，由上层 apply 到各层。"
+    },
+    {
+      "at": 6,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片；它下面的 validate 是 HAL 往返的真实耗时。",
+      "text2": ""
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "display 失效直接返回。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "auto& displayData = mDisplayData[displayId];",
+      "kind": "data",
+      "text": "本显示的私有数据，会记录 validateWasSkipped / presentError 供 present 阶段复用。"
+    },
+    {
+      "at": 11,
+      "quote": "auto& hwcDisplay = displayData.hwcDisplay;",
+      "kind": "data",
+      "text": "HAL display 代理。"
+    },
+    {
+      "at": 12,
+      "quote": "if (!hwcDisplay->isConnected()) {",
+      "kind": "branch",
+      "text": "显示断开（拔线/休眠）。"
+    },
+    {
+      "at": 13,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "不返回错误：断开是正常状态，上层按「无变更」处理。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭连接判断。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "uint32_t numTypes = 0;",
+      "kind": "data",
+      "text": "HWC 会改合成方式的层数。"
+    },
+    {
+      "at": 17,
+      "quote": "uint32_t numRequests = 0;",
+      "kind": "data",
+      "text": "HWC 提出的层级请求数（例如需要 clears / 需要客户端合成）。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "hal::Error error = hal::Error::NONE;",
+      "kind": "data",
+      "text": "HAL 错误码。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "// First try to skip validate altogether. We can do that when",
+      "kind": "note",
+      "text": "注释给出跳过 validate 的两个前提。"
+    },
+    {
+      "at": 22,
+      "quote": "// 1. The previous frame has not been presented yet or already passed the",
+      "kind": "note",
+      "text": "条件一：时序上不会提前上屏。"
+    },
+    {
+      "at": 23,
+      "quote": "// earliest time to present. Otherwise, we may present a frame too early.",
+      "kind": "note",
+      "text": "否则可能出现「上一帧还没扫完就推下一帧」。"
+    },
+    {
+      "at": 24,
+      "quote": "// 2. There is no client composition. Otherwise, we first need to render the",
+      "kind": "note",
+      "text": "条件二：本帧不需要 GPU 先画 client target。"
+    },
+    {
+      "at": 25,
+      "quote": "// client target buffer.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 26,
+      "quote": "const bool canSkipValidate = [&] {",
+      "kind": "call",
+      "text": "就地求值的三条件判断。"
+    },
+    {
+      "at": 27,
+      "quote": "// We must call validate if we have client composition",
+      "kind": "note",
+      "text": "有 CLIENT 就必须 validate。"
+    },
+    {
+      "at": 28,
+      "quote": "if (frameUsesClientComposition) {",
+      "kind": "branch",
+      "text": "先看 SF 侧的先验判断。"
+    },
+    {
+      "at": 29,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "有 client 合成：必须走完整 validate。"
+    },
+    {
+      "at": 30,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭第一步判断。"
+    },
+    {
+      "at": 31,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 32,
+      "quote": "// If composer supports getting the expected present time, we can skip",
+      "kind": "note",
+      "text": "条件二：HWC 自己会保证不提前上屏。"
+    },
+    {
+      "at": 33,
+      "quote": "// as composer will make sure to prevent early presentation",
+      "kind": "note",
+      "text": "注释补充。"
+    },
+    {
+      "at": 34,
+      "quote": "if (!earliestPresentTime) {",
+      "kind": "branch",
+      "text": "没有 earliestPresentTime 说明 HAL 不需要我们代为卡时间。"
+    },
+    {
+      "at": 35,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "可以跳过 validate。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭条件二。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "// composer doesn't support getting the expected present time. We can only",
+      "kind": "note",
+      "text": "HAL 不支持：必须由我们判断时序。"
+    },
+    {
+      "at": 39,
+      "quote": "// skip validate if we know that we are not going to present early.",
+      "kind": "note",
+      "text": "只有确认不会提前上屏才跳过。"
+    },
+    {
+      "at": 40,
+      "quote": "return std::chrono::steady_clock::now() >= *earliestPresentTime;",
+      "kind": "call",
+      "text": "现在已经过了最早上屏时刻 → 不会提前 → 可跳过。"
+    },
+    {
+      "at": 41,
+      "quote": "}();",
+      "kind": "note",
+      "text": "lambda 立即执行。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "displayData.validateWasSkipped = false;",
+      "kind": "state",
+      "text": "先复位，只有在 presentOrValidate 成功时才置真。"
+    },
+    {
+      "at": 44,
+      "quote": "SFTRACE_FORMAT(\"NextFrameInterval %d_Hz\", frameInterval.getIntValue());",
+      "kind": "trace",
+      "text": "把帧间隔打进 trace，便于核对刷新率与 SF 的帧规划是否一致。"
+    },
+    {
+      "at": 45,
+      "quote": "if (canSkipValidate) {",
+      "kind": "branch",
+      "text": "快路径。"
+    },
+    {
+      "at": 46,
+      "quote": "sp<Fence> outPresentFence = Fence::NO_FENCE;",
+      "kind": "data",
+      "text": "presentOrValidate 可能直接带回 present fence。"
+    },
+    {
+      "at": 47,
+      "quote": "uint32_t state = UINT32_MAX;",
+      "kind": "data",
+      "text": "state==1 表示 present 已成功，state==0 表示只做了 validate。"
+    },
+    {
+      "at": 48,
+      "quote": "error = hwcDisplay->presentOrValidate(expectedPresentTime, frameInterval.getPeriodNsecs(),",
+      "kind": "call",
+      "text": "composer3 的合并调用：一次往返完成 validate + present。"
+    },
+    {
+      "at": 49,
+      "quote": "&numTypes, &numRequests, &outPresentFence, &state);",
+      "kind": "data",
+      "text": "若只 validate，回来的就是待应用的变更计数。"
+    },
+    {
+      "at": 50,
+      "quote": "if (!hasChangesError(error)) {",
+      "kind": "branch",
+      "text": "hasChangesError 表示「有变更要应用」，并不算错误。"
+    },
+    {
+      "at": 51,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"presentOrValidate\", error, displayId, UNKNOWN_ERROR);",
+      "kind": "branch",
+      "text": "真正的 HAL 错误才上抛。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭错误判断。"
+    },
+    {
+      "at": 53,
+      "quote": "if (state == 1) { // Present Succeeded.",
+      "kind": "decision",
+      "text": "关键分支：present 已经在这次调用里完成。"
+    },
+    {
+      "at": 54,
+      "quote": "std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;",
+      "kind": "data",
+      "text": "既然已经 present，release fence 也要立刻取回。"
+    },
+    {
+      "at": 55,
+      "quote": "error = hwcDisplay->getReleaseFences(&releaseFences);",
+      "kind": "call",
+      "text": "取逐层 release fence。"
+    },
+    {
+      "at": 56,
+      "quote": "displayData.releaseFences = std::move(releaseFences);",
+      "kind": "data",
+      "text": "存进 display 数据。"
+    },
+    {
+      "at": 57,
+      "quote": "displayData.lastPresentFence = outPresentFence;",
+      "kind": "data",
+      "text": "存 present fence。"
+    },
+    {
+      "at": 58,
+      "quote": "displayData.validateWasSkipped = true;",
+      "kind": "state",
+      "text": "标记「present 已在此完成」，后续 presentAndGetReleaseFences 不会再 present 一次。"
+    },
+    {
+      "at": 59,
+      "quote": "displayData.presentError = error;",
+      "kind": "data",
+      "text": "把可能的错误留到 present 阶段上报，保证调用方只在一处处理错误。"
+    },
+    {
+      "at": 60,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "快路径结束，本帧已上屏。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 state==1 分支。"
+    },
+    {
+      "at": 62,
+      "quote": "// Present failed but Validate ran.",
+      "kind": "note",
+      "text": "另一种情况：这次只做了 validate，需要走完整流程。"
+    },
+    {
+      "at": 63,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "慢路径：直接 validate。"
+    },
+    {
+      "at": 64,
+      "quote": "error = hwcDisplay->validate(expectedPresentTime, frameInterval.getPeriodNsecs(), &numTypes,",
+      "kind": "call",
+      "text": "纯 validate：只问「你能怎么合成」，不 present。"
+    },
+    {
+      "at": 65,
+      "quote": "&numRequests);",
+      "kind": "data",
+      "text": "带回计数。"
+    },
+    {
+      "at": 66,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 validate 分支。"
+    },
+    {
+      "at": 67,
+      "quote": "ALOGV(\"SkipValidate failed, Falling back to SLOW validate/present\");",
+      "kind": "note",
+      "text": "从快路径掉回慢路径时会打这行，是排查「这帧为什么多了一次 HAL 往返」的线索。"
+    },
+    {
+      "at": 68,
+      "quote": "if (!hasChangesError(error)) {",
+      "kind": "branch",
+      "text": "同样区分「有变更」与「真错误」。"
+    },
+    {
+      "at": 69,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"validate\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "真错误上抛，上层会退化成全 CLIENT。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭错误判断。"
+    },
+    {
+      "at": 71,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 72,
+      "quote": "android::HWComposer::DeviceRequestedChanges::ChangedTypes changedTypes;",
+      "kind": "data",
+      "text": "哪些层要改合成方式。"
+    },
+    {
+      "at": 73,
+      "quote": "changedTypes.reserve(numTypes);",
+      "kind": "data",
+      "text": "预留容量，避免反复扩容。"
+    },
+    {
+      "at": 74,
+      "quote": "error = hwcDisplay->getChangedCompositionTypes(&changedTypes);",
+      "kind": "call",
+      "text": "取回 changedTypes：DEVICE→CLIENT 或 CLIENT→DEVICE 的具体层。"
+    },
+    {
+      "at": 75,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"getChangedCompositionTypes\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "取不到就无法确定合成方式，必须报错。"
+    },
+    {
+      "at": 76,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 77,
+      "quote": "auto displayRequests = static_cast<hal::DisplayRequest>(0);",
+      "kind": "data",
+      "text": "显示级请求（例如是否需要清屏、是否需要 client target）。"
+    },
+    {
+      "at": 78,
+      "quote": "android::HWComposer::DeviceRequestedChanges::LayerRequests layerRequests;",
+      "kind": "data",
+      "text": "层级请求。"
+    },
+    {
+      "at": 79,
+      "quote": "layerRequests.reserve(numRequests);",
+      "kind": "data",
+      "text": "预留容量。"
+    },
+    {
+      "at": 80,
+      "quote": "error = hwcDisplay->getRequests(&displayRequests, &layerRequests);",
+      "kind": "call",
+      "text": "取回请求集合。"
+    },
+    {
+      "at": 81,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"getRequests\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "失败同样上抛。"
+    },
+    {
+      "at": 82,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 83,
+      "quote": "DeviceRequestedChanges::ClientTargetProperty clientTargetProperty;",
+      "kind": "data",
+      "text": "client target 的 dataspace 与像素格式要求。"
+    },
+    {
+      "at": 84,
+      "quote": "error = hwcDisplay->getClientTargetProperty(&clientTargetProperty);",
+      "kind": "call",
+      "text": "HWC 告诉 GPU 该用哪种格式画 client target；不遵守会出现偏色或带宽浪费。"
+    },
+    {
+      "at": 85,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"getClientTargetProperty\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "失败上抛。"
+    },
+    {
+      "at": 86,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 87,
+      "quote": "DeviceRequestedChanges::LayerLuts layerLuts;",
+      "kind": "data",
+      "text": "HWC 请求的 LUT（色彩查找表），只有支持的设备才会有内容。"
+    },
+    {
+      "at": 88,
+      "quote": "error = hwcDisplay->getRequestedLuts(&layerLuts, mLutFileDescriptorMapper);",
+      "kind": "call",
+      "text": "取回 LUT 请求。"
+    },
+    {
+      "at": 89,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"getRequestedLuts\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "失败上抛。"
+    },
+    {
+      "at": 90,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 91,
+      "quote": "outChanges->emplace(DeviceRequestedChanges{std::move(changedTypes), std::move(displayRequests),",
+      "kind": "data",
+      "text": "把这一轮所有结果打包成一份变更集合。"
+    },
+    {
+      "at": 92,
+      "quote": "std::move(layerRequests),",
+      "kind": "note",
+      "text": "层级请求。"
+    },
+    {
+      "at": 93,
+      "quote": "std::move(clientTargetProperty),",
+      "kind": "note",
+      "text": "client target 属性。"
+    },
+    {
+      "at": 94,
+      "quote": "std::move(layerLuts)});",
+      "kind": "note",
+      "text": "LUT。"
+    },
+    {
+      "at": 95,
+      "quote": "error = hwcDisplay->acceptChanges();",
+      "kind": "call",
+      "text": "告诉 HWC：这些变更我接受并已应用，请以此为下一轮基线。"
+    },
+    {
+      "at": 96,
+      "quote": "RETURN_IF_HWC_ERROR_FOR(\"acceptChanges\", error, displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "不 accept，下一轮 validate 会重复返回同一批变更。"
+    },
+    {
+      "at": 97,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 98,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "成功返回。此时 displayData.validateWasSkipped 仍为 false，present 会在后面单独做。"
+    },
+    {
+      "at": 99,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。这一段是整个 SF 里最依赖 vendor 行为的部分——HAL 实现不在本仓库。"
+    }
+  ]
+}

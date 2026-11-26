@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "slug": "sf-compose-to-display",
+    "title": "RenderThread 交棒 → SurfaceFlinger 合成 → 上屏",
+    "subtitle": "从 RT 把 buffer 交给 SF 之后开始：Scheduler 帧信号驱动 commit/latch 收下 buffer、CompositionEngine 决定叠加还是 GPU 合成、HWComposer 交给 HWC present，直到 present fence 与 release fence 回流",
+    "version": "android17-release",
+    "built": "2026-11-25",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲 SF 这一侧：Scheduler::onFrameSignal 在 sf 相位驱动 ICompositor::commit → composite；commit 里 flush 事务、建 Layer 快照、latchBufferImpl 轮询 acquire fence 收下 buffer；composite 里 Output::prepare 算可见层、chooseCompositionStrategy 问 HWC 用 DEVICE 还是 CLIENT，CLIENT 时 RenderEngine 画进 client target 并 queueBuffer，DEVICE 时 OutputLayer::writeBufferStateToHWC 把 buffer+acquire fence 交给 HWC；最后 Display::presentFrame 调 presentAndGetReleaseFences 拿 present fence 与逐层 release fence，onCompositionPresented 回填 FrameTimeline、逐层释放 buffer 并经 BufferReleaseChannel 唤醒 app 的下一帧。HWC 之下（vendor HAL、gralloc、kernel sync_file、面板时序）在仓库外，只有接口假设。",
+    "kicker": "AOSP · android17-release · SurfaceFlinger commit → composite → present"
+  }
+}

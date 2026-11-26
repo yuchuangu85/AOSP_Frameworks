@@ -1,0 +1,60 @@
+{
+  "step": "s14",
+  "title": "applySurfaceChangesTransaction",
+  "tldr": "布局后的应用阶段：先跑后布局策略（可见性/焦点/配色），再逐窗口把 frame/crop/alpha 写进 SurfaceControl。",
+  "why": "这是 WMS 里真正「接触图形」的地方，也是「布局对但画面不对」的排查起点。它分成两半：前半是策略（DisplayPolicy 决定谁可见、状态栏什么颜色），后半是应用（把数值写进 SurfaceControl）。如果画面异常但 dumpsys 里的 frame 正确，问题多半在应用阶段或后续的 Transaction 提交。",
+  "concepts": [
+    {
+      "term": "mApplySurfaceChangesTransaction",
+      "text": "逐窗口应用的回调。"
+    },
+    {
+      "term": "setDisplayProperties",
+      "text": "把内容/刷新率等同步给 DisplayManager。"
+    },
+    {
+      "term": "updateAllDrawn",
+      "text": "所有窗口画完才允许移除启动窗口。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void applySurfaceChangesTransaction() {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5594",
+      "what": "入口。"
+    },
+    {
+      "call": "performLayout(true /* initial */, false /* updateInputWindows */);",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5617",
+      "what": "先布局。"
+    },
+    {
+      "call": "forAllWindows(mApplySurfaceChangesTransaction, true /* traverseTopToBottom */);",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5634",
+      "what": "逐窗口应用。"
+    },
+    {
+      "call": "activity.updateAllDrawn();",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5664",
+      "what": "更新绘制完成状态。"
+    }
+  ],
+  "state": [
+    {
+      "field": "displayHasContent",
+      "before": "上一帧",
+      "after": "本帧",
+      "note": "影响熄灭与录制。"
+    }
+  ],
+  "threads": "WMS 主线程，持 mGlobalLock。",
+  "pitfalls": [
+    "以为 frame 对了画面就对：还要看 Transaction 是否提交。",
+    "忽略 updateAllDrawn：启动窗口据此移除。"
+  ],
+  "debug": [
+    "atrace 里 applyWindowSurfaceChanges 切片。",
+    "dumpsys window 的 mDrawState。"
+  ],
+  "next": "SurfaceControl 怎么被写？见第 15 步。"
+}

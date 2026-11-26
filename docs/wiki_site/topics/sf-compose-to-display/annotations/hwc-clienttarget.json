@@ -1,0 +1,78 @@
+{
+  "id": "hwc-clienttarget",
+  "title": "HWComposer::setClientTarget",
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "sig": "status_t HWComposer::setClientTarget(",
+  "span": [
+    525,
+    535
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t HWComposer::setClientTarget(HalDisplayId displayId, uint32_t slot,",
+      "kind": "note",
+      "text": "把 GPU 合成结果（client target）告诉 HWC 的薄封装；CLIENT 路径的必要一环。"
+    },
+    {
+      "at": 2,
+      "quote": "const sp<Fence>& acquireFence, const sp<GraphicBuffer>& target,",
+      "kind": "note",
+      "text": "三个关键入参：slot（HWC buffer 缓存槽位）、buffer、以及 GPU 写完它的 acquire fence。"
+    },
+    {
+      "at": 3,
+      "quote": "ui::Dataspace dataspace, float hdrSdrRatio) {",
+      "kind": "note",
+      "text": "dataspace 与 HDR/SDR 亮度比要一起下发，否则 CLIENT 层在高亮内容上会偏色。"
+    },
+    {
+      "at": 4,
+      "quote": "RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);",
+      "kind": "branch",
+      "text": "display 不存在（已热插拔掉）直接返回错误码，避免往下解引用空指针。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "ALOGV(\"%s for display %s\", __FUNCTION__, to_string(displayId).c_str());",
+      "kind": "note",
+      "text": "VERBOSE 日志；排查「GPU 画了但屏上没变」时可临时打开确认这行被调用。"
+    },
+    {
+      "at": 7,
+      "quote": "auto& hwcDisplay = mDisplayData[displayId].hwcDisplay;",
+      "kind": "data",
+      "text": "取该显示的 HWC 代理对象。"
+    },
+    {
+      "at": 8,
+      "quote": "auto error = hwcDisplay->setClientTarget(slot, target, acquireFence, dataspace, hdrSdrRatio);",
+      "kind": "call",
+      "text": "真正的 HAL 调用。注意这里只是「登记」：HWC 会等 acquire fence signal 后才去读这块 buffer。"
+    },
+    {
+      "at": 9,
+      "quote": "RETURN_IF_HWC_ERROR(error, displayId, BAD_VALUE);",
+      "kind": "branch",
+      "text": "HAL 报错就转成 BAD_VALUE 返回；上层据此可能退化为全 DEVICE 或整帧放弃。"
+    },
+    {
+      "at": 10,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "成功返回。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。这个函数在仓库内**找不到调用者**（grep 只命中定义、mock 与测试），从上游布局看应由 Display/Output 的 CLIENT 路径调用，本分支可能改走 RenderSurface 的 client target 槽位——属于未验证点。"
+    }
+  ]
+}

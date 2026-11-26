@@ -1,0 +1,552 @@
+{
+  "id": "view-udlid",
+  "title": "View::updateDisplayListIfDirty",
+  "file": "base/core/java/android/view/View.java",
+  "sig": "public RenderNode updateDisplayListIfDirty()",
+  "span": [
+    24306,
+    24395
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public RenderNode updateDisplayListIfDirty() {",
+      "kind": "note",
+      "text": "每个 View 的「要不要重录」入口。整条链路的性能好坏，八成取决于这段判定是否准确。"
+    },
+    {
+      "at": 2,
+      "quote": "final RenderNode renderNode = mRenderNode;",
+      "kind": "data",
+      "text": "View 与 RenderNode 是一对一关系，记录在 View 自己身上。"
+    },
+    {
+      "at": 3,
+      "quote": "if (!canHaveDisplayList()) {",
+      "kind": "branch",
+      "text": "还没有 bounds、或不在窗口上等情况下无法录制。"
+    },
+    {
+      "at": 4,
+      "quote": "// can't populate RenderNode, don't try",
+      "kind": "note",
+      "text": "注释直白：条件不满足就别尝试。"
+    },
+    {
+      "at": 5,
+      "quote": "return renderNode;",
+      "kind": "note",
+      "text": "直接返回空壳 RenderNode，调用方画它不会有任何效果。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭前置判断。"
+    },
+    {
+      "at": 5,
+      "quote": "return renderNode;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "if ((mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == 0",
+      "kind": "decision",
+      "text": "重建条件之一：绘制缓存无效。"
+    },
+    {
+      "at": 9,
+      "quote": "|| !renderNode.hasDisplayList()",
+      "kind": "decision",
+      "text": "条件之二：RenderNode 上压根没有 display list（首次绘制）。"
+    },
+    {
+      "at": 10,
+      "quote": "|| (mRecreateDisplayList)) {",
+      "kind": "decision",
+      "text": "条件之三：父级要求本节点重录（例如整棵树被 invalidateRoot）。"
+    },
+    {
+      "at": 11,
+      "quote": "// Don't need to recreate the display list, just need to tell our",
+      "kind": "note",
+      "text": "进入这个分支但可能只是「子节点需要刷新」。"
+    },
+    {
+      "at": 12,
+      "quote": "// children to restore/recreate theirs",
+      "kind": "note",
+      "text": "自己不用重录，只需传递下去。"
+    },
+    {
+      "at": 13,
+      "quote": "if (renderNode.hasDisplayList()",
+      "kind": "branch",
+      "text": "有 display list，且不是因为 recreate 进来。"
+    },
+    {
+      "at": 14,
+      "quote": "&& !mRecreateDisplayList) {",
+      "kind": "note",
+      "text": "两个条件同时成立才是「只刷新子节点」的快路径。"
+    },
+    {
+      "at": 15,
+      "quote": "mPrivateFlags |= PFLAG_DRAWN | PFLAG_DRAWING_CACHE_VALID;",
+      "kind": "state",
+      "text": "把自己标成已绘制且缓存有效。"
+    },
+    {
+      "at": 16,
+      "quote": "mPrivateFlags &= ~PFLAG_DIRTY_MASK;",
+      "kind": "state",
+      "text": "清脏位——这一步如果提前了，会导致「该重录没重录」。"
+    },
+    {
+      "at": 17,
+      "quote": "dispatchGetDisplayList();",
+      "kind": "call",
+      "text": "只让子 View 更新各自的 display list；自己不碰 RecordingCanvas。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "return renderNode; // no work needed",
+      "kind": "note",
+      "text": "最快的出口：很多帧在上层容器这一层就结束了，子节点各自处理。"
+    },
+    {
+      "at": 20,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭快路径。"
+    },
+    {
+      "at": 20,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 22,
+      "quote": "// If we got here, we're recreating it. Mark it as such to ensure that",
+      "kind": "note",
+      "text": "到这里就是真的要重录了。"
+    },
+    {
+      "at": 23,
+      "quote": "// we copy in child display lists into ours in drawChild()",
+      "kind": "note",
+      "text": "mRecreateDisplayList 会影响 drawChild 的行为，让子 display list 被真正拷进本节点。"
+    },
+    {
+      "at": 24,
+      "quote": "mRecreateDisplayList = true;",
+      "kind": "state",
+      "text": "置位后递归下去的子节点也会走重录路径。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "int width = mRight - mLeft;",
+      "kind": "data",
+      "text": "录制画布尺寸取 View 自身宽高，而不是父容器。"
+    },
+    {
+      "at": 27,
+      "quote": "int height = mBottom - mTop;",
+      "kind": "data",
+      "text": "同上。"
+    },
+    {
+      "at": 28,
+      "quote": "int layerType = getLayerType();",
+      "kind": "data",
+      "text": "软件层类型需要特殊处理（见下面的 LAYER_TYPE_SOFTWARE 分支）。"
+    },
+    {
+      "at": 29,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "// Hacky hack: Reset any stretch effects as those are applied during the draw pass",
+      "kind": "note",
+      "text": "AOSP 自称 hacky：拉伸效果是「绘制期间才有意义」的临时状态。"
+    },
+    {
+      "at": 31,
+      "quote": "// instead of being \"stateful\" like other RenderNode properties",
+      "kind": "note",
+      "text": "因为它不像其它属性那样有状态语义，所以每次录制前必须显式清掉。"
+    },
+    {
+      "at": 32,
+      "quote": "renderNode.clearStretch();",
+      "kind": "call",
+      "text": "清掉上一次录制遗留的拉伸，避免内容被意外缩放。"
+    },
+    {
+      "at": 33,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 34,
+      "quote": "final RecordingCanvas canvas = renderNode.beginRecording(width, height);",
+      "kind": "call",
+      "text": "拿到录制画布。若上一个 canvas 没 endRecording，这里会抛 IllegalStateException。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "try {",
+      "kind": "note",
+      "text": "保证 endRecording 与属性回写一定发生。"
+    },
+    {
+      "at": 37,
+      "quote": "if (layerType == LAYER_TYPE_SOFTWARE) {",
+      "kind": "branch",
+      "text": "软件层：先用 Bitmap 缓存画好，再把位图贴进 display list。"
+    },
+    {
+      "at": 38,
+      "quote": "buildDrawingCache(true);",
+      "kind": "call",
+      "text": "构建软件位图缓存；这条路会分配 Bitmap，成本高。"
+    },
+    {
+      "at": 39,
+      "quote": "Bitmap cache = getDrawingCache(true);",
+      "kind": "call",
+      "text": "取缓存位图。"
+    },
+    {
+      "at": 40,
+      "quote": "if (cache != null) {",
+      "kind": "branch",
+      "text": "缓存可能因内存压力构建失败。"
+    },
+    {
+      "at": 41,
+      "quote": "canvas.drawBitmap(cache, 0, 0, mLayerPaint);",
+      "kind": "call",
+      "text": "整张位图作为一条 draw op；RT 回放时就是一次纹理绘制。"
+    },
+    {
+      "at": 42,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭空判断。"
+    },
+    {
+      "at": 43,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "常规硬件路径。"
+    },
+    {
+      "at": 44,
+      "quote": "computeScroll();",
+      "kind": "call",
+      "text": "先推进滚动动画，使本帧录到的 scrollX/scrollY 是最新的。"
+    },
+    {
+      "at": 45,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 46,
+      "quote": "canvas.translate(-mScrollX, -mScrollY);",
+      "kind": "data",
+      "text": "把滚动偏移烘进 display list：内容按自身坐标录，回放时靠这条 translate 定位。"
+    },
+    {
+      "at": 47,
+      "quote": "mPrivateFlags |= PFLAG_DRAWN | PFLAG_DRAWING_CACHE_VALID;",
+      "kind": "state",
+      "text": "在真正调用 draw 之前就置位，避免 onDraw 里再 invalidate 造成递归重录。"
+    },
+    {
+      "at": 48,
+      "quote": "mPrivateFlags &= ~PFLAG_DIRTY_MASK;",
+      "kind": "state",
+      "text": "清脏位；配合上面的置位，本帧只录一次。"
+    },
+    {
+      "at": 47,
+      "quote": "mPrivateFlags |= PFLAG_DRAWN | PFLAG_DRAWING_CACHE_VALID;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 50,
+      "quote": "mPrivateFlags4 |= PFLAG4_HAS_DRAWN;",
+      "kind": "state",
+      "text": "另一个标志位组，记录「这个 View 至少画过一次」，供后续优化与调试使用。"
+    },
+    {
+      "at": 51,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 52,
+      "quote": "// Fast path for layouts with no backgrounds",
+      "kind": "note",
+      "text": "无背景容器的快路径：省掉 draw()，直接 dispatchDraw 画子节点。"
+    },
+    {
+      "at": 53,
+      "quote": "if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {",
+      "kind": "decision",
+      "text": "PFLAG_SKIP_DRAW 由 ViewGroup 在「自身不需要绘制」时设置。"
+    },
+    {
+      "at": 54,
+      "quote": "dispatchDraw(canvas);",
+      "kind": "call",
+      "text": "直接派发给子节点，跳过 onDraw 的调用开销。"
+    },
+    {
+      "at": 55,
+      "quote": "drawAutofilledHighlight(canvas);",
+      "kind": "call",
+      "text": "自动填充高亮需要单独画，因为跳过了 draw()。"
+    },
+    {
+      "at": 56,
+      "quote": "if (mOverlay != null && !mOverlay.isEmpty()) {",
+      "kind": "branch",
+      "text": "ViewOverlay 里的内容也要画。"
+    },
+    {
+      "at": 57,
+      "quote": "mOverlay.getOverlayView().draw(canvas);",
+      "kind": "call",
+      "text": "把 overlay 的视图画进同一张 display list。"
+    },
+    {
+      "at": 58,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 overlay 判断。"
+    },
+    {
+      "at": 59,
+      "quote": "if (isShowingLayoutBounds()) {",
+      "kind": "branch",
+      "text": "布局边界调试显示（开发者选项）。"
+    },
+    {
+      "at": 60,
+      "quote": "debugDrawFocus(canvas);",
+      "kind": "call",
+      "text": "把边界框录进去；关掉开关后下一帧就会消失。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试显示。"
+    },
+    {
+      "at": 62,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "常规路径：走 draw()，它会调 background + onDraw + dispatchDraw。"
+    },
+    {
+      "at": 63,
+      "quote": "draw(canvas);",
+      "kind": "call",
+      "text": "这里是应用代码 onDraw 真正执行的唯一入口（硬件路径）。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭快路径判断。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 66,
+      "quote": "// For VRR to vote the preferred frame rate",
+      "kind": "note",
+      "text": "可变刷新率：View 有机会在这一刻投票选择帧率。"
+    },
+    {
+      "at": 67,
+      "quote": "if (sToolkitSetFrameRateReadOnlyFlagValue) {",
+      "kind": "branch",
+      "text": "受 flag 控制；关闭时整段是空操作。"
+    },
+    {
+      "at": 68,
+      "quote": "votePreferredFrameRate();",
+      "kind": "call",
+      "text": "投票结果会影响 SF 的刷新率选择，进而改变 vsync 周期。"
+    },
+    {
+      "at": 69,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭投票分支。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭软件层/常规分支。"
+    },
+    {
+      "at": 71,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "收尾一定执行。"
+    },
+    {
+      "at": 72,
+      "quote": "renderNode.endRecording();",
+      "kind": "call",
+      "text": "结束录制，draw op 序列落进 staging 槽——注意是 staging，RT 还没看到。"
+    },
+    {
+      "at": 73,
+      "quote": "setDisplayListProperties(renderNode);",
+      "kind": "call",
+      "text": "把 alpha/translation/elevation 等属性写进 RenderNode，供 RT 回放时做变换。"
+    },
+    {
+      "at": 74,
+      "quote": "}",
+      "kind": "note",
+      "text": "try/finally 结束。"
+    },
+    {
+      "at": 75,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "不满足三个重建条件：命中缓存。"
+    },
+    {
+      "at": 76,
+      "quote": "if ((mPrivateFlags4 & PFLAG4_HAS_VIEW_PROPERTY_INVALIDATION)",
+      "kind": "branch",
+      "text": "缓存命中也可能是「只是属性变了」（例如 alpha），需要额外处理。"
+    },
+    {
+      "at": 77,
+      "quote": "== PFLAG4_HAS_VIEW_PROPERTY_INVALIDATION) {",
+      "kind": "note",
+      "text": "标志比较收尾。"
+    },
+    {
+      "at": 78,
+      "quote": "// For VRR to vote the preferred frame rate",
+      "kind": "note",
+      "text": "属性变化的帧也要参与帧率投票。"
+    },
+    {
+      "at": 79,
+      "quote": "if (sToolkitSetFrameRateReadOnlyFlagValue) {",
+      "kind": "branch",
+      "text": "同样的 flag 门控。"
+    },
+    {
+      "at": 80,
+      "quote": "votePreferredFrameRate();",
+      "kind": "call",
+      "text": "投票。"
+    },
+    {
+      "at": 81,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭投票分支。"
+    },
+    {
+      "at": 82,
+      "quote": "mPrivateFlags4 &= ~PFLAG4_HAS_VIEW_PROPERTY_INVALIDATION;",
+      "kind": "state",
+      "text": "清属性失效标志。"
+    },
+    {
+      "at": 83,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭属性失效分支。"
+    },
+    {
+      "at": 84,
+      "quote": "mPrivateFlags |= PFLAG_DRAWN | PFLAG_DRAWING_CACHE_VALID;",
+      "kind": "state",
+      "text": "缓存命中同样要刷新状态位。"
+    },
+    {
+      "at": 85,
+      "quote": "mPrivateFlags &= ~PFLAG_DIRTY_MASK;",
+      "kind": "state",
+      "text": "清脏位。"
+    },
+    {
+      "at": 86,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭缓存命中分支。"
+    },
+    {
+      "at": 87,
+      "quote": "mPrivateFlags4 &= ~PFLAG4_HAS_MOVED;",
+      "kind": "state",
+      "text": "位置移动标志只对「移动的那一帧」有效，这里统一清掉。"
+    },
+    {
+      "at": 88,
+      "quote": "mFrameContentVelocity = -1;",
+      "kind": "data",
+      "text": "内容速度复位为未知，供后续帧重新计算。"
+    },
+    {
+      "at": 89,
+      "quote": "return renderNode;",
+      "kind": "note",
+      "text": "返回本 View 的 RenderNode：此时它要么刚录好（staging），要么是上一次的（已提交）。"
+    },
+    {
+      "at": 90,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

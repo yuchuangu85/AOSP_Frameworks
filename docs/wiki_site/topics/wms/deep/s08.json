@@ -1,0 +1,51 @@
+{
+  "step": "s08",
+  "title": "层级：RootWindowContainer 往下",
+  "tldr": "Root→DisplayContent→DisplayArea→Task→ActivityRecord→WindowState，每层只管自己子节点。",
+  "why": "这棵树的形状决定了很多「奇怪」的行为：为什么焦点是自上而下问出来的、为什么布局是从 DisplayContent 开始递归、为什么某些操作要遍历所有 display。理解容器树，就能在读到某个 WMS 方法时立刻知道它「管的是哪一级」，而不是被几千行代码淹没。",
+  "concepts": [
+    {
+      "term": "WindowContainer",
+      "text": "所有容器的基类，提供遍历与布局抽象。"
+    },
+    {
+      "term": "DisplayArea",
+      "text": "窗口分层容器，TaskDisplayArea 是其子类。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "boolean resumeFocusedTasksTopActivities(",
+      "ref": "base/services/core/java/com/android/server/wm/RootWindowContainer.java:2546",
+      "what": "根的入口。"
+    },
+    {
+      "call": "for (int displayNdx = getChildCount() - 1; displayNdx >= 0; --displayNdx) {",
+      "ref": "base/services/core/java/com/android/server/wm/RootWindowContainer.java:2566",
+      "what": "逐 display 处理。"
+    },
+    {
+      "call": "final DisplayContent display = getChildAt(displayNdx);",
+      "ref": "base/services/core/java/com/android/server/wm/RootWindowContainer.java:2567",
+      "what": "每个 display 一个 DisplayContent。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mChildren",
+      "before": "N 个 display",
+      "after": "不变",
+      "note": "容器树只在增删屏/任务时变化。"
+    }
+  ],
+  "threads": "WMS 主线程 / binder（持 mGlobalLock）。",
+  "pitfalls": [
+    "以为只有一个 display：多屏时很多逻辑是逐屏的。",
+    "直接从 Root 操作窗口：应该下钻到具体层。"
+  ],
+  "debug": [
+    "dumpsys window displays 打印整棵树。",
+    "dumpsys window tokens 按 token 看归属。"
+  ],
+  "next": "Task 与 ActivityRecord 什么关系？见第 9 步。"
+}

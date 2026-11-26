@@ -1,0 +1,270 @@
+{
+  "id": "bp-pool",
+  "title": "IPCThreadState::joinThreadPool",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "void IPCThreadState::joinThreadPool(",
+  "span": [
+    841,
+    883
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void IPCThreadState::joinThreadPool(bool isMain)",
+      "kind": "note",
+      "text": "服务线程进入 binder 线程池后的常驻循环。一个进程能处理多少并发调用，取决于有多少线程跑在这个循环里。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "LOG_THREADPOOL(\"**** THREAD %p (PID %d) IS JOINING THE THREAD POOL\\n\", (void*)pthread_self(),",
+      "kind": "note",
+      "text": "线程池日志：进程号与线程号，排查挂起时非常有用。"
+    },
+    {
+      "at": 4,
+      "quote": "getpid());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 5,
+      "quote": "mProcess->checkExpectingThreadPoolStart();",
+      "kind": "call",
+      "text": "校验「进程是否期望线程池」：配置错误在这里暴露。"
+    },
+    {
+      "at": 6,
+      "quote": "mProcess->mCurrentThreads++;",
+      "kind": "state",
+      "text": "线程计数 +1。"
+    },
+    {
+      "at": 7,
+      "quote": "mOut.writeInt32(isMain ? BC_ENTER_LOOPER : BC_REGISTER_LOOPER);",
+      "kind": "call",
+      "text": "**告诉驱动我要参与**：主线程用 BC_ENTER_LOOPER，其它线程用 BC_REGISTER_LOOPER。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "mIsLooper = true;",
+      "kind": "state",
+      "text": "标记本线程是 looper（后续可被线程池管理）。"
+    },
+    {
+      "at": 10,
+      "quote": "status_t result;",
+      "kind": "data",
+      "text": "循环结果。"
+    },
+    {
+      "at": 11,
+      "quote": "do {",
+      "kind": "note",
+      "text": "do-while：直到驱动连接断开才退出。"
+    },
+    {
+      "at": 12,
+      "quote": "processPendingDerefs();",
+      "kind": "call",
+      "text": "处理上一轮积压的引用释放。"
+    },
+    {
+      "at": 13,
+      "quote": "// now get the next command to be processed, waiting if necessary",
+      "kind": "note",
+      "text": "注释：取下一个命令来处理，必要时阻塞等待。"
+    },
+    {
+      "at": 14,
+      "quote": "result = getAndExecuteCommand();",
+      "kind": "call",
+      "text": "**核心**：talkWithDriver + executeCommand 的组合。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "if (result < NO_ERROR && result != TIMED_OUT && result != -ECONNREFUSED && result != -EBADF) {",
+      "kind": "decision",
+      "text": "非预期错误：不是超时、不是拒绝连接、不是坏 fd。"
+    },
+    {
+      "at": 17,
+      "quote": "LOG_ALWAYS_FATAL(\"getAndExecuteCommand(fd=%d) returned unexpected error %d, aborting\",",
+      "kind": "note",
+      "text": "**FATAL**：驱动契约被破坏，宁可崩也不要带着坏状态继续。"
+    },
+    {
+      "at": 18,
+      "quote": "mProcess->mDriverFD, result);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "// Let this thread exit the thread pool if it is no longer",
+      "kind": "note",
+      "text": "注释：非主线程在空闲超时后可以退出线程池。"
+    },
+    {
+      "at": 22,
+      "quote": "// needed and it is not the main process thread.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 23,
+      "quote": "if(result == TIMED_OUT && !isMain) {",
+      "kind": "branch",
+      "text": "**超时且不是主线程** → 允许退出。"
+    },
+    {
+      "at": 24,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出循环（线程池缩容）。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 26,
+      "quote": "} while (result != -ECONNREFUSED && result != -EBADF);",
+      "kind": "note",
+      "text": "条件：连接被拒绝或 fd 失效才结束整个循环。"
+    },
+    {
+      "at": 27,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 28,
+      "quote": "LOG_THREADPOOL(\"**** THREAD %p (PID %d) IS LEAVING THE THREAD POOL err=%d\\n\",",
+      "kind": "note",
+      "text": "线程离开日志。"
+    },
+    {
+      "at": 29,
+      "quote": "(void*)pthread_self(), getpid(), result);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "mOut.writeInt32(BC_EXIT_LOOPER);",
+      "kind": "call",
+      "text": "通知驱动我退出线程池。"
+    },
+    {
+      "at": 32,
+      "quote": "mIsLooper = false;",
+      "kind": "state",
+      "text": "取消 looper 标记。"
+    },
+    {
+      "at": 33,
+      "quote": "if (status_t res = talkWithDriver(false); res != OK) {",
+      "kind": "branch",
+      "text": "把退出命令真正发出去。"
+    },
+    {
+      "at": 34,
+      "quote": "// TODO: we may want to abort for some of these cases",
+      "kind": "note",
+      "text": "TODO：某些错误或许应当 abort。"
+    },
+    {
+      "at": 35,
+      "quote": "ALOGW(\"call to talkWithDriver in joinThreadPool returned error: %s, FD: %d\",",
+      "kind": "note",
+      "text": "W 级日志：退出时的驱动调用失败。"
+    },
+    {
+      "at": 36,
+      "quote": "statusToString(res).c_str(), mProcess->mDriverFD);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 38,
+      "quote": "size_t oldCount = mProcess->mCurrentThreads.fetch_sub(1);",
+      "kind": "call",
+      "text": "线程计数 -1。"
+    },
+    {
+      "at": 39,
+      "quote": "LOG_ALWAYS_FATAL_IF(oldCount == 0,",
+      "kind": "note",
+      "text": "**断言**：计数不能下溢——下溢说明线程池配置错误。"
+    },
+    {
+      "at": 40,
+      "quote": "\"Threadpool thread count underflowed. Thread cannot exist and exit in \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "\"empty threadpool\\n\"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 42,
+      "quote": "\"Misconfiguration. Increase threadpool max threads configuration\\n\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

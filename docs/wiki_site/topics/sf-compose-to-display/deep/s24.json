@@ -1,0 +1,60 @@
+{
+  "step": "s24",
+  "title": "仓库外：HAL、gralloc 与面板",
+  "tldr": "present 之后发生的一切都不在仓库内：vendor HAL 合成、DPU 扫出、面板 vsync 才 signal present fence。",
+  "why": "明确边界能避免两类错误结论：一是把 present 当成「已经显示」，据此算出的延迟会偏小半个到一个 vsync；二是把 vendor 侧的时序问题归因到 SF 代码。本仓库里能看到的是 fence fd 的传递与时间戳，看不到 composer 实现、gralloc buffer 的物理布局、DPU 的合成调度与面板的刷新时序。因此凡是涉及「实际何时发光」的问题，都必须借助 present fence 的信号时间，而不能靠代码推断。",
+  "concepts": [
+    {
+      "term": "composer3 HAL",
+      "text": "vendor 实现的合成接口；validate/present/getReleaseFences 都到这里。"
+    },
+    {
+      "term": "sync_file",
+      "text": "kernel 的 fence 表示；present/release fence 都是它。"
+    },
+    {
+      "term": "presentLatency",
+      "text": "从提交到 present fence signal 的时长，SF 用它预测下一拍。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "auto error = hwcDisplay->present(&displayData.lastPresentFence);",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:681",
+      "what": "进入 vendor HAL 的唯一入口。"
+    },
+    {
+      "call": "const Duration presentLatency = mHasReliablePresentFences",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3830",
+      "what": "SF 用 fence 信号时间反推真实延迟。"
+    },
+    {
+      "call": "fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:438",
+      "what": "SF 侧能拿到的只是 fence，真实上屏时刻由它 signal 决定。"
+    },
+    {
+      "call": "layer->onCompositionPresented(pacesetterDisplay.get(),",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3869",
+      "what": "层级的 present 统计也依赖这个 fence，而非本仓库内的时间戳。"
+    }
+  ],
+  "state": [
+    {
+      "field": "present fence",
+      "before": "未 signal",
+      "after": "面板 vsync 时 signal",
+      "note": "这之后像素才真正可见。"
+    }
+  ],
+  "threads": "HAL 实现决定自己的线程；fence 由 kernel 驱动 signal。",
+  "pitfalls": [
+    "把 present 时间当上屏时间：真实上屏要等 present fence。",
+    "试图在本仓库里追 vendor 合成细节：那是 HAL 的实现。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --latency 的 present 时间是 fence 信号时间。",
+    "Perfetto 里 present fence 的信号点会单独标注。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 render-thread-to-sf 主题看 app 侧如何生产这块 buffer。"
+}

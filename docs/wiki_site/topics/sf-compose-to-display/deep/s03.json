@@ -1,0 +1,31 @@
+{
+  "step": "s03",
+  "title": "commit 的四道早退闸门",
+  "tldr": "display 消失、mode set 挂起、HWC 反压——三种情况都只 scheduleFrame 等下一拍，不合成。",
+  "why": "这三道闸门决定了 SF 在异常状态下「不乱画」。display 已经从物理表里消失时继续合成会访问悬空对象；mode set 还没最终生效时合成会用旧时序输出，可能出现一次闪烁或分辨率错乱；HWC 已经反压时继续往队列里塞帧只会让延迟越滚越大。它们的共同动作是 scheduleFrame 而不是报错——这是一种有意的软降级：晚一拍，而不是坏一帧。排查「这一帧为什么什么都没发生」时，先确认是不是落在这三道闸门里。",
+  "concepts": [
+    { "term": "MODE_TRANSITION_LOCK", "text": "模式切换期间使用的锁，保护 display 模式状态机。" },
+    { "term": "wouldBackpressureHwc", "text": "FrameTargeter 根据 HWC 未完成的 present 推断是否应该主动跳拍。" },
+    { "term": "scheduleFrame", "text": "只安排下一次帧信号，不做任何合成工作。" }
+  ],
+  "walk": [
+    { "call": "if (!hasDisplay) {", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3031", "what": "第一道：该 display 已不在物理显示表。" },
+    { "call": "processDisplayChangesLocked();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3033", "what": "把热插拔变化真正传播出去。" },
+    { "call": "return target->isFramePending() &&", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3044", "what": "第二道：mode set 挂起且 HWC 还有未完成帧。" },
+    { "call": "if (pacesetterFrameTargetPtr->wouldBackpressureHwc()) {", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3059", "what": "第三道：HWC 反压。" },
+    { "call": "scheduleCommit(FrameHint::kNone, slack);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3064", "what": "推迟到下一拍再试。" }
+  ],
+  "state": [
+    { "field": "mBootStage", "before": "BOOTLOADER", "after": "仍为 BOOTLOADER 时 commit 永远返回 false", "note": "见最终返回值。" }
+  ],
+  "threads": "SF 主线程；这些判定都涉及 mStateLock 或模式切换锁的短临界区。",
+  "pitfalls": [
+    "以为没有 commit 日志就是出错：这三条路径是正常的软降级。",
+    "在反压路径上排查「掉帧」：反压本身就是为了避免更严重的延迟累积。"
+  ],
+  "debug": [
+    "trace 里 commit 切片很短且没有 updateLayerSnapshots 子切片，基本就是早退。",
+    "dumpsys SurfaceFlinger 能看 mode set 状态与 missed frame 计数。"
+  ],
+  "next": "通过闸门之后，SF 如何把事务变成可用的层状态？见第 4 步。"
+}

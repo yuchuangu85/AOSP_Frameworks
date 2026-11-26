@@ -1,0 +1,65 @@
+{
+  "step": "s13",
+  "title": "startDispatchCycleLocked：发布并登记超时",
+  "tldr": "设置 deliveryTime/timeoutTime，按类型 publish，成功后移入 waitQueue 并把超时插进 AnrTracker。",
+  "why": "ANR 的计时起点在这一行：timeoutTime = currentTime + dispatchingTimeout。理解这一点，就能回答「为什么 ANR 从事件发出算起，而不是从手指抬起算起」。另一个反直觉之处是发送失败的处理：WOULD_BLOCK（socket 满）**不是错误**，条目会留在 outboundQueue 等下轮；只有 DEAD_OBJECT/EPIPE 才作废通道。这条区分解释了为什么应用忙时事件会排队而不是丢失。",
+  "concepts": [
+    {
+      "term": "deliveryTime / timeoutTime",
+      "text": "投递时刻与必须 finish 的截止时刻。"
+    },
+    {
+      "term": "outboundQueue / waitQueue",
+      "text": "未发出 / 已发出待确认。"
+    },
+    {
+      "term": "AnrTracker",
+      "text": "按超时时间排序的待确认投递表。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void InputDispatcher::startDispatchCycleLocked(nsecs_t currentTime,",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3893",
+      "what": "发送一整个周期。"
+    },
+    {
+      "call": "dispatchEntry->timeoutTime = currentTime + timeout.count();",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3905",
+      "what": "超时时刻在此确立。"
+    },
+    {
+      "call": "status = publishMotionEvent(*connection, *dispatchEntry);",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3939",
+      "what": "Motion 走这条 publish。"
+    },
+    {
+      "call": "if (status == WOULD_BLOCK) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3998",
+      "what": "管道满不是致命错误。"
+    },
+    {
+      "call": "mAnrTracker.insert(timeoutTime, connection->getToken());",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4031",
+      "what": "登记超时。"
+    }
+  ],
+  "state": [
+    {
+      "field": "connection->outboundQueue / waitQueue",
+      "before": "都有条目",
+      "after": "成功则从 outbound 移入 wait",
+      "note": "失败则保留在 outbound。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "把 WOULD_BLOCK 当错误：它只是反压。",
+    "以为超时从投递周期的创建开始算：是 currentTime（即本次调用的时间）。"
+  ],
+  "debug": [
+    "atrace 里 startDispatchCycleLocked 切片带 inputChannel 名。",
+    "dumpsys input 显示每个连接的 outbound/wait 队列长度。"
+  ],
+  "next": "应用侧如何收包？见第 14 步。"
+}

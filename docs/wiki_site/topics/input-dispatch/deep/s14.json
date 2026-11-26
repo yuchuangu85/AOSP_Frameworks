@@ -1,0 +1,60 @@
+{
+  "step": "s14",
+  "title": "NativeInputEventReceiver::consumeEvents",
+  "tldr": "UI 线程从 socketpair 读消息、还原成 Java 事件、JNI 回调 dispatchInputEvent；焦点等事件直接就地回执。",
+  "why": "这里有一个容易被忽略的设计：只有 KEY/MOTION 会走 Java 的 dispatchInputEvent（也就是进 View 分发），而 FOCUS、CAPTURE、DRAG、TOUCH_MODE 事件在 native 侧处理完就**立即 finishInputEvent**。这意味着这些事件不经过 View 树，也不受应用业务代码影响——所以它们几乎不会造成 ANR，排查 ANR 时不该怀疑它们。另外循环靠 WOULD_BLOCK 退出，而不是计数。",
+  "concepts": [
+    {
+      "term": "InputConsumer::consume",
+      "text": "从 socket 读一条消息并反序列化。"
+    },
+    {
+      "term": "unfinishedInputMessages",
+      "text": "上一轮收到但未回执的消息，这里补发 handled=false。"
+    },
+    {
+      "term": "dispatchInputEvent",
+      "text": "JNI 回调 Java 的唯一入口（KEY/MOTION）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t NativeInputEventReceiver::consumeEvents(JNIEnv* env,",
+      "ref": "base/core/jni/android_view_InputEventReceiver.cpp:455",
+      "what": "收包主循环。"
+    },
+    {
+      "call": "mInputConsumer->consume(&mInputEventFactory, consumeBatches, frameTime, &seq,",
+      "ref": "base/core/jni/android_view_InputEventReceiver.cpp:482",
+      "what": "真正读 socket。"
+    },
+    {
+      "call": "env->CallVoidMethod(receiverObj.get(),",
+      "ref": "base/core/jni/android_view_InputEventReceiver.cpp:634",
+      "what": "JNI 调 Java dispatchInputEvent。"
+    },
+    {
+      "call": "finishInputEvent(seq, /*handled=*/true);",
+      "ref": "base/core/jni/android_view_InputEventReceiver.cpp:581",
+      "what": "焦点/捕获/拖拽/触摸模式事件就地回执。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mBatchedInputEventPending",
+      "before": "false",
+      "after": "有批量时 true",
+      "note": "用于通知 Java 侧稍后处理批量。"
+    }
+  ],
+  "threads": "应用 UI 线程（Looper 回调）。",
+  "pitfalls": [
+    "以为所有事件都进 View 分发：FOCUS/CAPTURE/DRAG/TOUCH_MODE 不进。",
+    "忽略 skipCallbacks：Java 抛异常后仍会消费但不再回调。"
+  ],
+  "debug": [
+    "atrace 的 input 分类里可见 dispatchInputEvent 切片。",
+    "dumpsys input 的 recentQueue 段可对照。"
+  ],
+  "next": "事件如何进入 ViewRootImpl 的排队？见第 15 步。"
+}

@@ -1,0 +1,56 @@
+{
+  "step": "s07",
+  "title": "写缓冲被消费与提交后释放",
+  "tldr": "检查 write_consumed：全部消费才清空 mOut 并执行 processPostWriteDerefs；否则 FATAL。",
+  "why": "「写时提升、写后释放」是 binder 引用计数的关键时序：把 binder 对象写进 Parcel 时会临时加一个强引用，防止对象在驱动读取之前被销毁；等驱动确认消费完（ioctl 返回），才在 processPostWriteDerefs 里减回去。这段时间对象寿命由调用线程保证。如果漏了这一步，对象会泄漏；如果提前减，驱动可能读到悬空指针。",
+  "concepts": [
+    {
+      "term": "processPostWriteDerefs",
+      "text": "执行写期间累积的释放。"
+    },
+    {
+      "term": "write_consumed",
+      "text": "驱动实际消费的写字节数。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (bwr.write_consumed < mOut.dataSize()) {",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1333",
+      "what": "没全消费就是契约破坏。"
+    },
+    {
+      "call": "mOut.setDataSize(0);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1342",
+      "what": "清空发送缓冲。"
+    },
+    {
+      "call": "processPostWriteDerefs();",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1343",
+      "what": "释放写期间临时加的引用。"
+    },
+    {
+      "call": "mIn.setDataPosition(0);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1348",
+      "what": "读位置归零，供上层解析。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mOut",
+      "before": "含待发数据",
+      "after": "大小 0",
+      "note": "可继续写下一批。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为 ioctl 返回就代表对端已执行：只代表驱动已收下。",
+    "忽略 postWriteDerefs：对象寿命会算错。"
+  ],
+  "debug": [
+    "FATAL 信息里有 consumed 与 total，可直接看出驱动问题。",
+    "引用计数日志 IF_LOG_REMOTEREFS 可跟踪。"
+  ],
+  "next": "内核做了什么？见第 8 步。"
+}

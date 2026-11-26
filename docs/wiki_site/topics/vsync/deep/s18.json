@@ -1,0 +1,51 @@
+{
+  "step": "s18",
+  "title": "onFrameSignal：sf 相位消费",
+  "tldr": "SF 主线程调 FrameTargeter::beginFrame 定 expectedPresentTime，再驱动 commit/composite。",
+  "why": "把这条接到整张图上：Scheduler::onFrameSignal 是「SF 开始干活」的入口，它做的第一件事是决定这一拍的 expectedPresentTime。这个时间会一路传到 HWC 的 present，也会进 FrameTimeline 作为预测基准。所以 vsync 链路的精度最终体现在这里：如果预测偏了，expectedPresentTime 就偏，jank 判定也会偏。",
+  "concepts": [
+    {
+      "term": "beginFrame",
+      "text": "按 expectedVsyncTime 与 sfWorkDuration 规划本拍。"
+    },
+    {
+      "term": "expectedPresentTime",
+      "text": "本拍计划上屏时刻。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void Scheduler::onFrameSignal(ICompositor& compositor, VsyncId vsyncId,",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:411",
+      "what": "入口。"
+    },
+    {
+      "call": "pacesetterPtr->targeterPtr->beginFrame(beginFrameArgs, *pacesetterPtr->schedulePtr);",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:425",
+      "what": "定本拍时序。"
+    },
+    {
+      "call": "if (!compositor.commit(pacesetterPtr->displayId, targets)) {",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:470",
+      "what": "驱动合成。"
+    }
+  ],
+  "state": [
+    {
+      "field": "FrameTarget",
+      "before": "上一拍",
+      "after": "本拍期望时间",
+      "note": "endFrame 收尾。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为 sf 与 app 各有一个 EventThread：只有一个 app EventThread。",
+    "忽略这里才是 SF 工作的起点。"
+  ],
+  "debug": [
+    "trace 里 onFrameSignal 与 commit 切片。",
+    "dumpsys --vsync 的 sf 回调状态。"
+  ],
+  "next": "样本被拒时会发生什么？见第 19 步。"
+}

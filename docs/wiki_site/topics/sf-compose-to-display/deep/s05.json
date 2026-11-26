@@ -1,0 +1,32 @@
+{
+  "step": "s05",
+  "title": "Layer::setBuffer：buffer 进 drawing state",
+  "tldr": "把 buffer 与 acquire fence 记进 drawing state，同时记录帧号、释放回调与时间线信息；这里不等 fence。",
+  "why": "setBuffer 是「事务真正落到层上」的那一步，但它只是**登记**：把新 buffer 前移、记录 acquire fence 与 frameNumber、顺手把旧 buffer 交给 release 通道。很多人看到 setBuffer 就以为 buffer 已经被 SF 使用，其实要等 latch 之后才算。这个区别对排查「晚一帧」至关重要：如果 setBuffer 发生了但 latch 没发生，屏幕上就不会有更新，而 queueBuffer 侧看起来一切正常。",
+  "concepts": [
+    { "term": "mDrawingState", "text": "层的绘制状态；buffer、fence、几何都在这里等 latch 提升。" },
+    { "term": "releaseBufferListener", "text": "app 注册的释放回调，buffer 用完时被调用。" },
+    { "term": "FrameTimelineInfo", "text": "app 带来的时间线信息，SF 用它登记这一帧的预测。" }
+  ],
+  "walk": [
+    { "call": "bool Layer::setBuffer(std::shared_ptr<renderengine::ExternalTexture>& buffer,", "ref": "native/services/surfaceflinger/Layer.cpp:921", "what": "入口；第一个参数是 buffer 的所有权转移。" },
+    { "call": "releasePreviousBuffer();", "ref": "native/services/surfaceflinger/Layer.cpp:928", "what": "旧 buffer 先交还，避免占用 app 的槽位。" },
+    { "call": "mDrawingState.previousBuffer = std::move(mDrawingState.buffer);", "ref": "native/services/surfaceflinger/Layer.cpp:958", "what": "前移：新 buffer 成为 drawing state 的当前 buffer。" },
+    { "call": "mDrawingState.acquireFence = bufferData.flags.test(BufferData::BufferDataChange::fenceChanged)", "ref": "native/services/surfaceflinger/Layer.cpp:960", "what": "记录 acquire fence——它决定这一帧能不能被 latch。" },
+    { "call": "setTransactionFlags(eTransactionNeeded);", "ref": "native/services/surfaceflinger/Layer.cpp:972", "what": "置事务标志，保证 commit 会处理这一层。" }
+  ],
+  "state": [
+    { "field": "mDrawingState.buffer", "before": "上一块 buffer", "after": "新 buffer", "note": "旧 buffer 移到 previousBuffer。" },
+    { "field": "mDrawingState.acquireFence", "before": "旧 fence", "after": "新 fence", "note": "latch 阶段拿它做 signal 判定。" }
+  ],
+  "threads": "SF 主线程，且调用方已持 mStateLock（签名里有 REQUIRES(mFlinger->mStateLock)）。",
+  "pitfalls": [
+    "以为 setBuffer 就代表这帧会上屏：还要过 latch 与合成。",
+    "忽略 acquire fence 未 signal 的情况：latch 会等到下一拍。"
+  ],
+  "debug": [
+    "trace 里的 setBuffer 瞬时事件会带 frameNumber。",
+    "dumpsys SurfaceFlinger 的层信息能看到 drawing state 与 latch state 的差异。"
+  ],
+  "next": "buffer 真正被 SF 收下是在哪一步？见第 6 步。"
+}

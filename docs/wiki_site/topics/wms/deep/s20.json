@@ -1,0 +1,55 @@
+{
+  "step": "s20",
+  "title": "resume 与 makeVisible",
+  "tldr": "Task 选出要恢复的 Activity，RootWindowContainer 跨屏协调，ActivityRecord 在窗口可见时才真正变 visible。",
+  "why": "「resume 顺序」决定了谁拿到焦点与窗口。Task 的恢复有防重入保护（mInResumeTopActivity），并且对子任务要自下而上恢复以保持 z 序。而 makeVisible 是延迟的：它先判断「是否已经可见」，再决定要不要下发可见性变更——这就是为什么「Activity 状态是 resumed 但用户看不到」的现象存在。",
+  "concepts": [
+    {
+      "term": "mInResumeTopActivity",
+      "text": "防重入标志。"
+    },
+    {
+      "term": "makeVisibleIfNeeded",
+      "text": "按需下发可见性。"
+    },
+    {
+      "term": "shouldSleepActivities",
+      "text": "是否该进入睡眠（触发 pause）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,",
+      "ref": "base/services/core/java/com/android/server/wm/Task.java:5369",
+      "what": "防重入外壳。"
+    },
+    {
+      "call": "someActivityResumed = resumeTopActivityInnerLocked(prev, options, deferPause);",
+      "ref": "base/services/core/java/com/android/server/wm/Task.java:5383",
+      "what": "真正恢复。"
+    },
+    {
+      "call": "void makeVisibleIfNeeded(ActivityRecord starting, boolean reportToClient) {",
+      "ref": "base/services/core/java/com/android/server/wm/ActivityRecord.java:6015",
+      "what": "可见性下发。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mInResumeTopActivity",
+      "before": "false",
+      "after": "true → false",
+      "note": "finally 里复位。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "忽略防重入：递归调用会直接返回 false。",
+    "子任务自上而下恢复会打乱 z 序。"
+  ],
+  "debug": [
+    "dumpsys activity 的 resumed 列表。",
+    "trace 里 resumeTopActivity 切片。"
+  ],
+  "next": "加窗口失败怎么看？见第 21 步。"
+}

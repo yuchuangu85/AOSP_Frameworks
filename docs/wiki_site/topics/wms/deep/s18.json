@@ -1,0 +1,55 @@
+{
+  "step": "s18",
+  "title": "动画与转场：WindowStateAnimator",
+  "tldr": "进出场动画由 WindowStateAnimator 改 alpha/matrix 实现；跨窗口转场由 AppTransition 与 Shell 协调。",
+  "why": "动画不改变 frame，只改 surface 的变换与透明度——所以它不会触发重新布局，代价低。这一点很关键：如果你的「动画」是在改 View 的 layout 参数，那是逐帧真实布局，性能差一个量级。跨窗口转场则要协调多个窗口的时间轴，这也是为什么它被移到了独立的 Shell 模块。",
+  "concepts": [
+    {
+      "term": "mEnterAnimationPending",
+      "text": "待播放进场动画。"
+    },
+    {
+      "term": "mAnimatingExit",
+      "text": "正在播放退场动画，此期间窗口不能直接销毁。"
+    },
+    {
+      "term": "AppTransition",
+      "text": "跨窗口转场的时间轴协调者。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "class WindowStateAnimator {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowStateAnimator.java:74",
+      "what": "动画状态载体。"
+    },
+    {
+      "call": "mWinAnimator.mEnterAnimationPending = true;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowState.java:5125",
+      "what": "首次可见时标记进场。"
+    },
+    {
+      "call": "int relayoutVisibleWindow(int result) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowState.java:5103",
+      "what": "退场转进场的处理点。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mAnimatingExit",
+      "before": "true",
+      "after": "false（重新可见）",
+      "note": "会取消已有退场动画。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "用改 layout 参数实现动画：性能差。",
+    "退场动画期间强行移除窗口会导致跳变。"
+  ],
+  "debug": [
+    "dumpsys window 的 mAnimatingExit / mDrawState。",
+    "trace 里 WindowAnimation 切片。"
+  ],
+  "next": "生命周期谁负责？见第 19 步。"
+}

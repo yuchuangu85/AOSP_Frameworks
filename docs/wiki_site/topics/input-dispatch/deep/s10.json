@@ -1,0 +1,55 @@
+{
+  "step": "s10",
+  "title": "取事件与 stale 判定",
+  "tldr": "mDispatchFrozen 直接返回；否则取队首，MOTION 的过期判定只在没有正在触摸的指针时才允许丢。",
+  "why": "「过期事件要不要丢」是个语义问题而不是性能问题：如果手指正在按着，丢掉 MOVE 会让应用看到一次坐标跳变，比晚一点到达更糟。所以判定条件被写得很谨慎——只有当没有任何指针处于按下/悬停状态时，过期事件才允许被丢弃。这条规则解释了为什么「卡一下之后手指还在屏上」时应用仍能收到完整的 MOVE 序列。",
+  "concepts": [
+    {
+      "term": "mDispatchFrozen",
+      "text": "分发被冻结（如窗口切换、转场）时不分发。"
+    },
+    {
+      "term": "isStaleEvent",
+      "text": "判断事件是否已过期。"
+    },
+    {
+      "term": "DropReason",
+      "text": "丢弃原因：冻结、被禁用、过期等。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void InputDispatcher::dispatchOnceInnerLocked(nsecs_t* nextWakeupTime) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1207",
+      "what": "单条事件的处理入口。"
+    },
+    {
+      "call": "if (mDispatchFrozen) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1215",
+      "what": "冻结时直接返回。"
+    },
+    {
+      "call": "bool isStaleEvent(const MotionEntry& motionEntry) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1372",
+      "what": "过期判定。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingEvent",
+      "before": "上一条",
+      "after": "当前队首",
+      "note": "PENDING 时事件停在这里不重新入队。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "以为过期事件一定被丢：有指针按下时不丢。",
+    "把冻结当成丢事件：冻结期间事件留在队列里。"
+  ],
+  "debug": [
+    "dumpsys input 的 pendingEvent 段显示当前正处理的事件。",
+    "atrace 里 dispatchingStaleEvent 标记可辨。"
+  ],
+  "next": "触摸事件如何找到目标窗口？见第 11 步。"
+}

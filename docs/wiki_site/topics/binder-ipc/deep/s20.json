@@ -1,0 +1,51 @@
+{
+  "step": "s20",
+  "title": "分支：限流与 oneway 洪泛",
+  "tldr": "CallRestriction 可让进程只允许发 oneway；oneway 过量时驱动/框架报 BR_ONEWAY_SPAM_SUSPECT。",
+  "why": "两个机制都是为了让 binder 不至于被单个进程拖垮。CallRestriction 是进程级开关（例如有些系统进程被要求只能 oneway，避免它反向阻塞别人）；oneway 洪泛检测则在发送方过量时打错误栈，提醒「你在刷」——因为 oneway 不阻塞发送方，很容易被当成免费调用滥用。",
+  "concepts": [
+    {
+      "term": "CallRestriction",
+      "text": "NONE / ERROR_IF_NOT_ONEWAY / FATAL_IF_NOT_ONEWAY。"
+    },
+    {
+      "term": "BR_ONEWAY_SPAM_SUSPECT",
+      "text": "oneway 过量告警。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (mCallRestriction != ProcessState::CallRestriction::NONE) [[unlikely]] {",
+      "ref": "native/libs/binder/IPCThreadState.cpp:949",
+      "what": "限制检查。"
+    },
+    {
+      "call": "case BR_ONEWAY_SPAM_SUSPECT:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1174",
+      "what": "洪泛告警。"
+    },
+    {
+      "call": "ipc->setCallRestriction(CallRestriction::NONE);",
+      "ref": "native/libs/binder/ProcessState.cpp:379",
+      "what": "handle 0 ping 时临时解除。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mCallRestriction",
+      "before": "NONE",
+      "after": "受限",
+      "note": "需要在 ping 等场景临时解除。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "把 oneway 当免费：会被限流与告警。",
+    "忽略限制导致 FATAL。"
+  ],
+  "debug": [
+    "日志 Process making non-oneway call but is restricted。",
+    "oneway spamming 栈可定位调用方。"
+  ],
+  "next": "RPC 分支是什么？见第 21 步。"
+}

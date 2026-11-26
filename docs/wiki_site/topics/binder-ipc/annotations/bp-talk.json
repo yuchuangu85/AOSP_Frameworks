@@ -1,0 +1,720 @@
+{
+  "id": "bp-talk",
+  "title": "IPCThreadState::talkWithDriver",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::talkWithDriver(",
+  "span": [
+    1246,
+    1363
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::talkWithDriver(bool doReceive)",
+      "kind": "note",
+      "text": "**唯一与驱动交互的函数**。所有 binder 通信最终都收敛到这个 ioctl。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "if (mProcess->mDriverFD < 0) {",
+      "kind": "branch",
+      "text": "驱动 fd 无效。"
+    },
+    {
+      "at": 4,
+      "quote": "return -EBADF;",
+      "kind": "note",
+      "text": "返回 EBADF。"
+    },
+    {
+      "at": 5,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "binder_write_read bwr;",
+      "kind": "data",
+      "text": "驱动的收发描述结构。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "// Is the read buffer empty?",
+      "kind": "note",
+      "text": "注释：读缓冲是否已空。"
+    },
+    {
+      "at": 10,
+      "quote": "const bool needRead = mIn.dataPosition() >= mIn.dataSize();",
+      "kind": "data",
+      "text": "**needRead**：只有把 mIn 读完才允许再读，保证一个线程同时只有一个未完成事务。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "// We don't want to write anything if we are still reading",
+      "kind": "note",
+      "text": "注释：还有未处理数据时不要写。"
+    },
+    {
+      "at": 13,
+      "quote": "// from data left in the input buffer and the caller",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 14,
+      "quote": "// has requested to read the next data.",
+      "kind": "data",
+      "text": "**还能写多少**：需要接收且需要读时写全部，否则写 0。"
+    },
+    {
+      "at": 15,
+      "quote": "const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "data",
+      "text": "写长度。"
+    },
+    {
+      "at": 17,
+      "quote": "bwr.write_size = outAvail;",
+      "kind": "data",
+      "text": "写缓冲指针。"
+    },
+    {
+      "at": 18,
+      "quote": "bwr.write_buffer = (uintptr_t)mOut.data();",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "",
+      "kind": "note",
+      "text": "注释：这是要读的内容。"
+    },
+    {
+      "at": 20,
+      "quote": "// This is what we'll read.",
+      "kind": "branch",
+      "text": "要读且需要读。"
+    },
+    {
+      "at": 21,
+      "quote": "if (doReceive && needRead) {",
+      "kind": "data",
+      "text": "读容量。"
+    },
+    {
+      "at": 22,
+      "quote": "bwr.read_size = mIn.dataCapacity();",
+      "kind": "data",
+      "text": "读缓冲指针。"
+    },
+    {
+      "at": 23,
+      "quote": "bwr.read_buffer = (uintptr_t)mIn.data();",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 24,
+      "quote": "} else {",
+      "kind": "data",
+      "text": "不读。"
+    },
+    {
+      "at": 25,
+      "quote": "bwr.read_size = 0;",
+      "kind": "data",
+      "text": "空。"
+    },
+    {
+      "at": 26,
+      "quote": "bwr.read_buffer = 0;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 27,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "branch",
+      "text": "命令日志开关。"
+    },
+    {
+      "at": 29,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 30,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "有数据要发。"
+    },
+    {
+      "at": 31,
+      "quote": "if (outAvail != 0) {",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 32,
+      "quote": "logStream << \"Sending commands to driver: \";",
+      "kind": "data",
+      "text": "缓冲起点。"
+    },
+    {
+      "at": 33,
+      "quote": "const void* cmds = (const void*)bwr.write_buffer;",
+      "kind": "data",
+      "text": "缓冲终点。"
+    },
+    {
+      "at": 34,
+      "quote": "const void* end = ((const uint8_t*)cmds) + bwr.write_size;",
+      "kind": "note",
+      "text": "hex dump。"
+    },
+    {
+      "at": 35,
+      "quote": "logStream << \"\\t\" << HexDump(cmds, bwr.write_size) << \"\\n\";",
+      "kind": "note",
+      "text": "逐条打印命令。"
+    },
+    {
+      "at": 36,
+      "quote": "while (cmds < end) cmds = printCommand(logStream, cmds);",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印读缓冲信息。"
+    },
+    {
+      "at": 38,
+      "quote": "logStream << \"Size of receive buffer: \" << bwr.read_size << \", needRead: \" << needRead",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 39,
+      "quote": "<< \", doReceive: \" << doReceive << \"\\n\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 40,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "std::string message = logStream.str();",
+      "kind": "data",
+      "text": "取日志字符串。"
+    },
+    {
+      "at": 42,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 44,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 45,
+      "quote": "// Return immediately if there is nothing to do.",
+      "kind": "note",
+      "text": "注释：无读无写就没必要进内核。"
+    },
+    {
+      "at": 46,
+      "quote": "if ((bwr.write_size == 0) && (bwr.read_size == 0)) return NO_ERROR;",
+      "kind": "branch",
+      "text": "两者都为 0。"
+    },
+    {
+      "at": 47,
+      "quote": "",
+      "kind": "note",
+      "text": "直接返回。"
+    },
+    {
+      "at": 48,
+      "quote": "bwr.write_consumed = 0;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 49,
+      "quote": "bwr.read_consumed = 0;",
+      "kind": "state",
+      "text": "清计数。"
+    },
+    {
+      "at": 50,
+      "quote": "status_t err;",
+      "kind": "state",
+      "text": "清计数。"
+    },
+    {
+      "at": 51,
+      "quote": "do {",
+      "kind": "data",
+      "text": "错误码。"
+    },
+    {
+      "at": 52,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "note",
+      "text": "循环重试 EINTR。"
+    },
+    {
+      "at": 53,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "日志。"
+    },
+    {
+      "at": 54,
+      "quote": "logStream << \"About to read/write, write size = \" << mOut.dataSize() << \"\\n\";",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 55,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "打印待发大小。"
+    },
+    {
+      "at": 56,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "data",
+      "text": "取字符串。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 58,
+      "quote": "#if defined(BINDER_WITH_KERNEL_IPC)",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 59,
+      "quote": "if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)",
+      "kind": "note",
+      "text": "编译开关：有内核 IPC。"
+    },
+    {
+      "at": 60,
+      "quote": "err = NO_ERROR;",
+      "kind": "branch",
+      "text": "ioctl 成功。"
+    },
+    {
+      "at": 61,
+      "quote": "else",
+      "kind": "note",
+      "text": "无错。"
+    },
+    {
+      "at": 62,
+      "quote": "err = -errno;",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 63,
+      "quote": "#else",
+      "kind": "note",
+      "text": "取 errno。"
+    },
+    {
+      "at": 64,
+      "quote": "err = INVALID_OPERATION;",
+      "kind": "note",
+      "text": "否则（无内核 IPC 构建）。"
+    },
+    {
+      "at": 65,
+      "quote": "#endif",
+      "kind": "note",
+      "text": "返回无效操作。"
+    },
+    {
+      "at": 66,
+      "quote": "if (mProcess->mDriverFD < 0) {",
+      "kind": "note",
+      "text": "关闭编译开关。"
+    },
+    {
+      "at": 67,
+      "quote": "err = -EBADF;",
+      "kind": "branch",
+      "text": "**等待期间 fd 被关闭**。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "返回 EBADF——这是「进程退出/连接断开」的典型路径。"
+    },
+    {
+      "at": 69,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 70,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "日志。"
+    },
+    {
+      "at": 71,
+      "quote": "logStream << \"Finished read/write, write size = \" << mOut.dataSize() << \"\\n\";",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 72,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "记录写大小。"
+    },
+    {
+      "at": 73,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "data",
+      "text": "取字符串。"
+    },
+    {
+      "at": 74,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 75,
+      "quote": "} while (err == -EINTR);",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 76,
+      "quote": "",
+      "kind": "note",
+      "text": "条件：EINTR 时重试。"
+    },
+    {
+      "at": 77,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 78,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "日志。"
+    },
+    {
+      "at": 79,
+      "quote": "logStream << \"Our err: \" << (void*)(intptr_t)err",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 80,
+      "quote": "<< \", write consumed: \" << bwr.write_consumed << \" (of \" << mOut.dataSize()",
+      "kind": "note",
+      "text": "打印错误、已消费写长度、已消费读长度。"
+    },
+    {
+      "at": 81,
+      "quote": "<< \"), read consumed: \" << bwr.read_consumed << \"\\n\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 83,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "取字符串。"
+    },
+    {
+      "at": 84,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 85,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 86,
+      "quote": "if (err >= NO_ERROR) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 87,
+      "quote": "if (bwr.write_consumed > 0) {",
+      "kind": "branch",
+      "text": "成功。"
+    },
+    {
+      "at": 88,
+      "quote": "if (bwr.write_consumed < mOut.dataSize()) {",
+      "kind": "branch",
+      "text": "内核消费了写缓冲。"
+    },
+    {
+      "at": 89,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "**没有全部消费**。"
+    },
+    {
+      "at": 90,
+      "quote": "printReturnCommandParcel(logStream, mIn);",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 91,
+      "quote": "LOG_ALWAYS_FATAL(\"Driver did not consume write buffer. \"",
+      "kind": "call",
+      "text": "打印回包命令辅助排障。"
+    },
+    {
+      "at": 92,
+      "quote": "\"err: %s consumed: %zu of %zu.\\n\"",
+      "kind": "note",
+      "text": "**FATAL**：libbinder 与驱动契约被破坏。"
+    },
+    {
+      "at": 93,
+      "quote": "\"Return command: %s\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 94,
+      "quote": "statusToString(err).c_str(), (size_t)bwr.write_consumed,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 95,
+      "quote": "mOut.dataSize(), logStream.str().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 96,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 97,
+      "quote": "mOut.setDataSize(0);",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 98,
+      "quote": "processPostWriteDerefs();",
+      "kind": "state",
+      "text": "**清空发送缓冲**。"
+    },
+    {
+      "at": 99,
+      "quote": "}",
+      "kind": "call",
+      "text": "**执行写后释放**：写时临时加的强引用到这里才减。"
+    },
+    {
+      "at": 100,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 101,
+      "quote": "if (bwr.read_consumed > 0) {",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 102,
+      "quote": "mIn.setDataSize(bwr.read_consumed);",
+      "kind": "branch",
+      "text": "内核读到了数据。"
+    },
+    {
+      "at": 103,
+      "quote": "mIn.setDataPosition(0);",
+      "kind": "state",
+      "text": "设置数据大小。"
+    },
+    {
+      "at": 104,
+      "quote": "}",
+      "kind": "state",
+      "text": "**读位置归零**，供上层从头解析。"
+    },
+    {
+      "at": 105,
+      "quote": "IF_LOG_COMMANDS() {",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 106,
+      "quote": "std::ostringstream logStream;",
+      "kind": "branch",
+      "text": "日志。"
+    },
+    {
+      "at": 107,
+      "quote": "printReturnCommandParcel(logStream, mIn);",
+      "kind": "data",
+      "text": "日志流。"
+    },
+    {
+      "at": 108,
+      "quote": "ALOGI(\"%s\", logStream.str().c_str());",
+      "kind": "call",
+      "text": "打印回包命令。"
+    },
+    {
+      "at": 109,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 110,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 111,
+      "quote": "}",
+      "kind": "note",
+      "text": "返回成功。"
+    },
+    {
+      "at": 112,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭成功分支。"
+    },
+    {
+      "at": 113,
+      "quote": "ALOGE_IF(mProcess->mDriverFD >= 0,",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 114,
+      "quote": "\"Driver returned error (%s). This is a bug in either libbinder or the driver. This \"",
+      "kind": "note",
+      "text": "E 级日志：驱动返回错误。"
+    },
+    {
+      "at": 115,
+      "quote": "\"thread's connection to %s will no longer work.\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 116,
+      "quote": "statusToString(err).c_str(), mProcess->mDriverName.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 117,
+      "quote": "return err;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "}",
+      "kind": "note",
+      "text": "返回错误，调用方据此判定连接失效。"
+    }
+  ]
+}

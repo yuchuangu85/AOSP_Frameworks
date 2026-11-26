@@ -1,0 +1,34 @@
+{
+  "step": "s04",
+  "title": "vsync 到达：doFrame 里的 CALLBACK_TRAVERSAL",
+  "tldr": "Choreographer 在同一个 doFrame 里按固定顺序跑五类回调，traversal 排第四。",
+  "why": "很多「为什么这个回调晚一帧」的问题，答案都在这个顺序表里：INPUT 先跑，所以输入事件引发的状态变化能在本帧被渲染；ANIMATION 在 TRAVERSAL 之前，所以属性动画改的值本帧生效；COMMIT 在最后，用来在绘制提交后做事。如果不知道这个顺序，就会误判「我明明在动画回调里改了 alpha，为什么画面晚一帧」这类问题。另外 doFrame 里还有一次关键的迟到修正：当 jitter 超过一个帧间隔时，它会把 frameTime 拉回最近的 vsync 网格并打印 Skipped N frames。",
+  "concepts": [
+    { "term": "FrameDisplayEventReceiver", "text": "接收 vsync 的 Java 端对象，把时间戳钳到「不晚于 now」后投一条 async 消息。" },
+    { "term": "五类回调", "text": "CALLBACK_INPUT → CALLBACK_ANIMATION → CALLBACK_INSETS_ANIMATION → CALLBACK_TRAVERSAL → CALLBACK_COMMIT。" },
+    { "term": "jitter 修正", "text": "计算 now - frameTime，超过一个 frameInterval 就把 frameTime 拉回网格边打日志。" }
+  ],
+  "walk": [
+    { "call": "public void postVsyncCallback(@NonNull VsyncCallback callback)", "ref": "base/core/java/android/view/Choreographer.java:656", "what": "排队的另一端：把遍历回调注册进 vsync 回调链。" },
+    { "call": "void doFrame(long frameTimeNanos, int frame,", "ref": "base/core/java/android/view/Choreographer.java:1074", "what": "vsync 到达后的统一入口。" },
+    { "call": "doCallbacks(Choreographer.CALLBACK_TRAVERSAL);", "ref": "base/core/java/android/view/Choreographer.java:1209", "what": "第四类回调：我们的 traversal 在动画之后、COMMIT 之前执行。" },
+    { "call": "final class TraversalCallback implements Choreographer.VsyncCallback {", "ref": "base/core/java/android/view/ViewRootImpl.java:11445", "what": "ViewRootImpl 侧的回调实现。" },
+    { "call": "doTraversal(frameData.getFrameTimeNanos());", "ref": "base/core/java/android/view/ViewRootImpl.java:11448", "what": "把 frameTime 带进 traversal——后面所有 frame info 都以它为基准。" }
+  ],
+  "state": [
+    { "field": "Choreographer 的回调队列", "before": "持有 CALLBACK_TRAVERSAL 条目", "after": "执行后移除", "note": "若 traversal 内部再次 scheduleTraversals，会重新入队。" },
+    { "field": "mFrameInfo", "before": "本帧的 vsyncId/deadline 尚未填", "after": "doFrame 写入后可用于归因", "note": "FrameTimeline 的 vsyncId 由此产生。" }
+  ],
+  "threads": "整个 doFrame 及其五类回调都在 UI 线程执行；vsync 从 EventThread 经 BitTube 唤醒，但那是另一线程的事。",
+  "pitfalls": [
+    "以为 TRAVERSAL 在 ANIMATION 之前：顺序相反，动画改的值才会被同一帧的遍历看到。",
+    "在 CALLBACK_COMMIT 里改 View 状态：此时本帧的 display list 已经录完，改动要到下一帧才生效。",
+    "把 jitter 修正当成掉帧：它只是把时间基准对齐网格，真正的掉帧判定看 FrameTimeline。"
+  ],
+  "debug": [
+    "trace 里 Choreographer#doFrame <vsyncId> 是每帧的锚点，与 DrawFrames <vsyncId> 的 id 应当一致。",
+    "打开 DEBUG_JANK 可见 Skipped N frames 与 Missed vsync by 日志。",
+    "Choreographer.getVsyncId() 在回调里取值，可用于把 Java 侧日志与 Perfetto 对齐。"
+  ],
+  "next": "拿到 frameTime 之后，ViewRootImpl 先拆屏障还是先遍历？见第 5 步。"
+}

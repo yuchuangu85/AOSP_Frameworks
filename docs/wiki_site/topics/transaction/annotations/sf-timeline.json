@@ -1,0 +1,270 @@
+{
+  "id": "sf-timeline",
+  "title": "transactionReadyTimelineCheck",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyTimelineCheck(",
+  "span": [
+    5315,
+    5357
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyTimelineCheck(",
+      "kind": "note",
+      "text": "时间维度的就绪判定。三条规则分别管「期望时间未到」「vsync 非法」「帧太早」。"
+    },
+    {
+      "at": 2,
+      "quote": "const TransactionHandler::TransactionFlushState& flushState) {",
+      "kind": "note",
+      "text": "参数是本轮刷写状态，含当前队首事务。"
+    },
+    {
+      "at": 3,
+      "quote": "const auto& transaction = *flushState.transaction;",
+      "kind": "data",
+      "text": "取出事务。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "const TimePoint desiredPresentTime = TimePoint::fromNs(transaction.desiredPresentTime);",
+      "kind": "data",
+      "text": "客户端指定的期望上屏时间。"
+    },
+    {
+      "at": 6,
+      "quote": "const TimePoint expectedPresentTime =",
+      "kind": "data",
+      "text": "**SF 本拍的计划上屏时间**（pacesetter 的）。"
+    },
+    {
+      "at": 7,
+      "quote": "mScheduler->pacesetterFrameTarget()->expectedPresentTime();",
+      "kind": "note",
+      "text": "续行：这是所有判定比较的基准。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "using TransactionReadiness = TransactionHandler::TransactionReadiness;",
+      "kind": "note",
+      "text": "局部别名。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 11,
+      "quote": "// Do not present if the desiredPresentTime has not passed unless it is more than",
+      "kind": "note",
+      "text": "**规则一**：期望时间未到就不应用——这是「提前提交不提前上屏」的实现。"
+    },
+    {
+      "at": 12,
+      "quote": "// one second in the future. We ignore timestamps more than 1 second in the future",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 13,
+      "quote": "// for stability reasons.",
+      "kind": "note",
+      "text": "注释：超过 1s 的未来时间戳会被忽略（保稳定，避免时钟异常导致永久阻塞）。"
+    },
+    {
+      "at": 14,
+      "quote": "if (!transaction.isAutoTimestamp && desiredPresentTime >= expectedPresentTime &&",
+      "kind": "decision",
+      "text": "非自动时间戳，且期望时间 >= 计划时间，且差距 < 1s。"
+    },
+    {
+      "at": 15,
+      "quote": "desiredPresentTime < expectedPresentTime + 1s) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 16,
+      "quote": "SFTRACE_FORMAT(\"not current desiredPresentTime: %\" PRId64 \" expectedPresentTime: %\" PRId64,",
+      "kind": "note",
+      "text": "打 trace 记录两侧时间。"
+    },
+    {
+      "at": 17,
+      "quote": "desiredPresentTime, expectedPresentTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 18,
+      "quote": "return TransactionReadiness::NotReady;",
+      "kind": "note",
+      "text": "**NotReady**：留在队里，下一拍再看。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭规则一。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "const auto vsyncId = VsyncId{transaction.frameTimelineInfo.vsyncId};",
+      "kind": "data",
+      "text": "取出 vsyncId。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "// Transactions with VsyncId are already throttled by the vsyncId (i.e. Choreographer issued",
+      "kind": "note",
+      "text": "**规则二**：带 vsyncId 的事务已经被 Choreographer 按帧率节奏限流过，不能再限一次。"
+    },
+    {
+      "at": 24,
+      "quote": "// the vsyncId according to the frame rate override cadence) so we shouldn't throttle again",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "// when applying the transaction. Otherwise we might throttle older transactions",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "// incorrectly as the frame rate of SF changed before it drained the older transactions.",
+      "kind": "note",
+      "text": "注释：否则会把被排在前面的旧事务误判为需要等待。"
+    },
+    {
+      "at": 27,
+      "quote": "if (ftl::to_underlying(vsyncId) == FrameTimelineInfo::INVALID_VSYNC_ID &&",
+      "kind": "branch",
+      "text": "没有有效 vsyncId 时，才用 isVsyncValid 判限流。"
+    },
+    {
+      "at": 28,
+      "quote": "!mScheduler->isVsyncValid(expectedPresentTime, transaction.originUid)) {",
+      "kind": "call",
+      "text": "按 uid 与引擎计划时间判断这一拍是否该应用。"
+    },
+    {
+      "at": 29,
+      "quote": "SFTRACE_FORMAT(\"!isVsyncValid expectedPresentTime: %\" PRId64 \" uid: %d\",",
+      "kind": "note",
+      "text": "打 trace。"
+    },
+    {
+      "at": 30,
+      "quote": "expectedPresentTime, transaction.originUid);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "return TransactionReadiness::NotReady;",
+      "kind": "note",
+      "text": "**NotReady**：被限流。"
+    },
+    {
+      "at": 32,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭规则二。"
+    },
+    {
+      "at": 33,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 34,
+      "quote": "// If the client didn't specify desiredPresentTime, use the vsyncId to determine the",
+      "kind": "note",
+      "text": "**规则三**：客户端没指定时间时，用 vsyncId 推断期望时间。"
+    },
+    {
+      "at": 35,
+      "quote": "// expected present time of this transaction.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 36,
+      "quote": "if (transaction.isAutoTimestamp && frameIsEarly(expectedPresentTime, vsyncId)) {",
+      "kind": "branch",
+      "text": "自动时间戳且帧太早（frameIsEarly）。"
+    },
+    {
+      "at": 37,
+      "quote": "SFTRACE_FORMAT(\"frameIsEarly vsyncId: %\" PRId64 \" expectedPresentTime: %\" PRId64,",
+      "kind": "note",
+      "text": "打 trace。"
+    },
+    {
+      "at": 38,
+      "quote": "transaction.frameTimelineInfo.vsyncId, expectedPresentTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 39,
+      "quote": "return TransactionReadiness::NotReady;",
+      "kind": "note",
+      "text": "**NotReady**：等到真正的 vsync。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭规则三。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 42,
+      "quote": "return TransactionReadiness::Ready;",
+      "kind": "note",
+      "text": "三条都过 → 可以应用。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

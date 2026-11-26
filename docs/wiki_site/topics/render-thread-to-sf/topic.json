@@ -1,0 +1,2934 @@
+{
+  "meta": {
+    "slug": "render-thread-to-sf",
+    "title": "RenderThread 回放 → 交给 SurfaceFlinger",
+    "subtitle": "UI 线程把一帧的数据交给 RenderThread，RT 回放、提交 GPU、queueBuffer，BLAST 把 buffer 交给 SurfaceFlinger 合成上屏",
+    "version": "android17-release",
+    "built": "2026-11-24",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲这条路径：ThreadedRenderer 把录制好的 display list、FrameInfo 交给 RenderThread；RT 同步 RenderNode、回放 draw op、flush、eglSwapBuffers 把 buffer 推进 BufferQueue；BLASTBufferQueue 用 Transaction 把 buffer 交给 SurfaceFlinger；SF commit/latch/composite/present 上屏，release fence 回流唤醒 app 的下一帧。",
+    "kicker": "AOSP · android17-release · RenderThread → SurfaceFlinger"
+  },
+  "lanes": [
+    {
+      "id": "UI",
+      "label": "App UI 线程",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "RT",
+      "label": "RenderThread",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "GUI",
+      "label": "BLAST / BufferQueue",
+      "color": "#ffb454"
+    },
+    {
+      "id": "SF",
+      "label": "SurfaceFlinger",
+      "color": "#c792ea"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "交棒",
+      "hint": "UI 把数据交给 RT"
+    },
+    {
+      "id": "P1",
+      "label": "RT 同步",
+      "hint": "staging→display list"
+    },
+    {
+      "id": "P2",
+      "label": "RT 回放",
+      "hint": "draw op → GPU"
+    },
+    {
+      "id": "P3",
+      "label": "交接 SF",
+      "hint": "queueBuffer → BLAST"
+    },
+    {
+      "id": "P4",
+      "label": "合成上屏",
+      "hint": "latch → compose → present"
+    },
+    {
+      "id": "P5",
+      "label": "回环/分支",
+      "hint": "fence 回流与异常"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "UI",
+      "title": "录制 display list（UI 线程）",
+      "brief": "ThreadedRenderer.draw 先 updateRootDisplayList：脏的 View 重建 RenderNode，录制内容进 staging 槽；这是 UI 交给 RT 的唯一产物。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/ThreadedRenderer.java",
+          "line": 827,
+          "symbol": "draw"
+        },
+        {
+          "file": "base/core/java/android/view/ThreadedRenderer.java",
+          "line": 730,
+          "symbol": "updateRootDisplayList"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "UI",
+      "title": "syncAndDrawFrame：把 FrameInfo 推出 Java 层",
+      "brief": "HardwareRenderer.syncAndDrawFrame 调 native nSyncAndDrawFrame，把 FrameInfo 的 long[] 与 native proxy 交给 JNI。",
+      "refs": [
+        {
+          "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+          "line": 595,
+          "symbol": "syncAndDrawFrame"
+        },
+        {
+          "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+          "line": 596,
+          "symbol": "nSyncAndDrawFrame"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P0",
+      "lane": "RT",
+      "title": "RenderProxy 接收并组帧",
+      "brief": "JNI 层（android_graphics_HardwareRenderer.cpp）已经把 FrameInfo 的 long[] 拷进 DrawFrameTask 自己的 mFrameInfo；RenderProxy::syncAndDrawFrame 只做转发，不碰 FrameInfo。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/RenderProxy.cpp",
+          "line": 237,
+          "symbol": "syncAndDrawFrame"
+        },
+        {
+          "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp",
+          "line": 471,
+          "symbol": "GetLongArrayRegion"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P0",
+      "lane": "RT",
+      "title": "drawFrame：把任务丢进 RenderThread 队列",
+      "brief": "DrawFrameTask::drawFrame 记录 frameInfo/上下文，然后 postAndWait。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 72,
+          "symbol": "drawFrame"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P0",
+      "lane": "RT",
+      "title": "postAndWait：UI 线程在这里停住",
+      "brief": "任务 post 到 RT 队列后，UI 线程在 mSignal 上 wait；RT 完成「同步」阶段会 signal 唤醒它，所以 UI 只等同步、不等绘制。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 82,
+          "symbol": "postAndWait"
+        }
+      ],
+      "p0": "df-postwait"
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "RenderThread::threadLoop 取出任务",
+      "brief": "RT 的 threadLoop 消费队列里的 drawFrame，进入 DrawFrameTask::run；atrace 名是 `DrawFrames <vsyncId>`，搜前缀能匹配、搜裸名不行。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 89,
+          "symbol": "run"
+        }
+      ],
+      "p0": "df-run"
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "syncFrameState：把 UI 侧状态搬进 RT",
+      "brief": "run 里先 syncFrameState：makeCurrent、unpinImages、prepareTree。它的返回值是 TreeInfo::prepareTextures（纹理 pin 是否成功），不是「这帧画不画」；跳帧由 info.out.skippedFrameReason 决定。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 169,
+          "symbol": "syncFrameState"
+        }
+      ],
+      "p0": "df-sync"
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "prepareTree：staging → display list",
+      "brief": "CanvasContext::prepareTree 遍历 RenderNode 树，把 staging display list 同步成 display list，计算 damage 与 layer 更新。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+          "line": 506,
+          "symbol": "prepareTree"
+        }
+      ],
+      "p0": "cc-prepare"
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "RenderNode::syncDisplayList",
+      "brief": "单个节点上把 mStagingDisplayList move 成 mDisplayList。此刻 UI 线程仍阻塞在 mSignal（unblock 在 syncFrameState 之后），所以 move 双槽是安全的。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/RenderNode.cpp",
+          "line": 431,
+          "symbol": "syncDisplayList"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "unblockUiThread：先把 UI 放走",
+      "brief": "同步完成后立刻 signal UI 线程，UI 可以开始下一帧的录制；RT 继续做回放与提交，这是 CPU/GPU 流水线的前提。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 219,
+          "symbol": "unblockUiThread"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P1",
+      "lane": "RT",
+      "title": "跳过判定：这一帧要不要画",
+      "brief": "跳帧有两道闸门：prepareTree 阶段（DrawingOff / 无根节点）和 draw 阶段（skipEmptyFrames 且 surface 不需重画）。两道条件不同，且 NothingToDraw/DrawingOff 不会上报给 SF。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+          "line": 699,
+          "symbol": "skipEmptyFrames"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "进入 RenderPipeline::draw",
+      "brief": "CanvasContext::draw 把 frame/dirty/layers 交给当前 pipeline（GL 或 Vulkan）；pipeline 决定怎样把 draw op 变成 GPU 命令。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+          "line": 742,
+          "symbol": "mRenderPipeline->draw"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "GL 后端：绑定 FBO 与 surface",
+      "brief": "SkiaOpenGLPipeline::draw 做 damageFrame、包 SkSurface，然后进 SkiaPipeline::renderFrame。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+          "line": 116,
+          "symbol": "draw"
+        }
+      ],
+      "p0": "gl-draw"
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "回放 draw op",
+      "brief": "renderFrameImpl 只回放根节点；RenderLayer（TextureView）由 SkiaPipeline::renderFrame 里的 renderLayersImpl 更早画完。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          "line": 374,
+          "symbol": "renderFrameImpl"
+        }
+      ],
+      "p0": "sk-render"
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "FlushAndSubmit：提交 GPU，不等完成",
+      "brief": "FlushAndSubmit 把 ganesh 的 draw op 刷给 GPU 就返回；同步靠 fence，不靠 CPU 等待。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+          "line": 182,
+          "symbol": "FlushAndSubmit"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "swapBuffers：把 buffer 交出去",
+      "brief": "CanvasContext 调 pipeline->swapBuffers。GL 的 requireSwap = drawResult.success || damageRequiresSwap()（后者只在 BufferAge 模式下可能为真），Vulkan 只看 drawResult.success。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+          "line": 787,
+          "symbol": "swapBuffers"
+        },
+        {
+          "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+          "line": 194,
+          "symbol": "swapBuffers"
+        }
+      ],
+      "p0": "gl-swap"
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P2",
+      "lane": "RT",
+      "title": "eglSwapBuffersWithDamageKHR",
+      "brief": "EGL 的 swap 内部就是 Surface::queueBuffer：把当前 buffer 入队，带 damage 区域。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/EglManager.cpp",
+          "line": 629,
+          "symbol": "eglSwapBuffersWithDamageKHR"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P3",
+      "lane": "GUI",
+      "title": "Surface::queueBufferImpl",
+      "brief": "持 mMutex 取 slot、组装 QueueBufferInput（含 acquire fence），临时放锁调 producer->queueBuffer，避免重入 onFrameAvailable 死锁。",
+      "refs": [
+        {
+          "file": "native/libs/gui/Surface.cpp",
+          "line": 1330,
+          "symbol": "queueBufferImpl"
+        }
+      ],
+      "p0": "surf-queue"
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P3",
+      "lane": "GUI",
+      "title": "BufferQueueProducer::queueBuffer",
+      "brief": "queueBuffer 把 buffer 入队；它没有 waitForFreeSlot，阻塞点是 lastQueuedFence->waitForever（等上一帧 GPU fence）。等空 slot 发生在 dequeueBuffer / waitForBufferRelease。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BufferQueueProducer.cpp",
+          "line": 976,
+          "symbol": "queueBuffer"
+        },
+        {
+          "file": "native/libs/gui/BufferQueueProducer.cpp",
+          "line": 1284,
+          "symbol": "waitForever"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P3",
+      "lane": "GUI",
+      "title": "BLASTBufferQueue::onFrameAvailable",
+      "brief": "app 侧消费者回调：mNumFrameAvailable 自增（frameNumber 来自 item），再决定立刻 acquireNextBufferLocked 还是等下一拍合并。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 779,
+          "symbol": "onFrameAvailable"
+        }
+      ],
+      "p0": "bbq-frame"
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P3",
+      "lane": "GUI",
+      "title": "acquireNextBufferLocked",
+      "brief": "从 BufferQueue acquire 出 BufferItem（拿 acquire fence），准备写进 Transaction。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 567,
+          "symbol": "acquireNextBufferLocked"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P3",
+      "lane": "GUI",
+      "title": "Transaction 交给 SurfaceFlinger",
+      "brief": "setBuffer + setApplyToken + apply(oneWay)：把 buffer、fence、frameNumber 打包成事务提交给 SF，不等 SF 处理。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 667,
+          "symbol": "setBuffer"
+        },
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 726,
+          "symbol": "apply"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "SF commit：收事务、更新快照",
+      "brief": "SurfaceFlinger::commit 收集/合并事务，更新 Layer 快照并把 buffer 挂到对应 Layer；返回 mustComposite 决定这一拍要不要合成。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2996,
+          "symbol": "commit"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "Layer::setBuffer / 快照",
+      "brief": "updateLayerSnapshots 把事务里的 buffer 写进 Layer 的 drawing state，同时记录 acquire fence。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2771,
+          "symbol": "updateLayerSnapshots"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 921,
+          "symbol": "setBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s25",
+      "num": 25,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "latchBufferImpl：等 acquire fence",
+      "brief": "合成前确认 buffer 可读：latchBufferImpl 轮询 acquire fence，未 signal 就 return false 并重排一次 commit；它不等也不超时，且调用方会忽略返回值继续标记 newDataLatched。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1506,
+          "symbol": "latchBufferImpl"
+        }
+      ]
+    },
+    {
+      "id": "s26",
+      "num": 26,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "composite：准备合成参数",
+      "brief": "SurfaceFlinger::composite 填 CompositionRefreshArgs、建 release fence future、收集有帧的 Layer。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3330,
+          "symbol": "composite"
+        }
+      ]
+    },
+    {
+      "id": "s27",
+      "num": 27,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "Output::prepare：算可见层",
+      "brief": "Output::prepare 只有三行（rebuildLayerStacks + uncacheBuffers）；真正的「算可见层」在 collectVisibleLayers，几何没变的帧整段跳过。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 441,
+          "symbol": "prepare"
+        }
+      ],
+      "p0": "out-present"
+    },
+    {
+      "id": "s28",
+      "num": 28,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "HWC 决定合成方式",
+      "brief": "CE 侧入口是 Display::chooseCompositionStrategy（由 Output::prepareFrame 调到），它再调 HWComposer::getDeviceCompositionChanges；validate 失败会静默退化成全 CLIENT 合成。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 537,
+          "symbol": "getDeviceCompositionChanges"
+        }
+      ]
+    },
+    {
+      "id": "s29",
+      "num": 29,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "GPU 合成路径（client composition）",
+      "brief": "需要 client 合成时用 RenderEngine 画进 client target：drawLayers 在当前线程同步跑完，跨线程串行靠 mRenderingMutex，不存在独立渲染线程。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1472,
+          "symbol": "drawLayers"
+        }
+      ]
+    },
+    {
+      "id": "s30",
+      "num": 30,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "present：交给 HWC 并取 release fence",
+      "brief": "presentFrameAndReleaseLayers → hwc.presentAndGetReleaseFences：present fence 决定何时上屏，release fence 逐层记下。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1726,
+          "symbol": "presentFrameAndReleaseLayers"
+        }
+      ]
+    },
+    {
+      "id": "s31",
+      "num": 31,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "onCompositionPresented：释放 buffer",
+      "brief": "上屏后：onCompositionPresented 只记账，真正的 release 由 releasePendingBuffer → TransactionCallbackInvoker::writeReleaseFence 发回 app。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3775,
+          "symbol": "onCompositionPresented"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3869,
+          "symbol": "layer->onCompositionPresented"
+        }
+      ]
+    },
+    {
+      "id": "s32",
+      "num": 32,
+      "phase": "P5",
+      "lane": "RT",
+      "title": "release fence 回流，唤醒下一帧",
+      "brief": "release fence 经 BufferReleaseChannel 回到 app，BBQBufferQueueProducer::dequeueBuffer 缺槽时放锁等待，收到后 slot 置 FREE。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BufferReleaseChannel.cpp",
+          "line": 202,
+          "symbol": "writeReleaseFence"
+        },
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 1302,
+          "symbol": "waitForBufferRelease"
+        }
+      ]
+    },
+    {
+      "id": "s33",
+      "num": 33,
+      "phase": "P5",
+      "lane": "RT",
+      "title": "分支：跳帧",
+      "brief": "没有脏区时 RT 不 swap，commit 回调 didProduceBuffer=false，SF 看不到这一帧——这是「UI 没画」而不是「丢帧」。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+          "line": 699,
+          "symbol": "skipEmptyFrames"
+        },
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 212,
+          "symbol": "didProduceBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s34",
+      "num": 34,
+      "phase": "P5",
+      "lane": "GUI",
+      "title": "分支：buffer 被替换",
+      "brief": "bufferReplaced 分支在标准 BLAST 路径基本不可达（mQueueBufferCanDrop=false），只在虚拟显示/异步生产者/共享 buffer 模式出现。",
+      "refs": [
+        {
+          "file": "native/libs/gui/Surface.cpp",
+          "line": 1390,
+          "symbol": "bufferReplaced"
+        }
+      ]
+    },
+    {
+      "id": "s35",
+      "num": 35,
+      "phase": "P5",
+      "lane": "RT",
+      "title": "分支：Vulkan 路径",
+      "brief": "SkiaVulkanPipeline::swapBuffers 与 GL 的 fence 时机不同：Vulkan 用自己的 queue/present，requireSwap 语义一致但同步点不同。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp",
+          "line": 130,
+          "symbol": "swapBuffers"
+        }
+      ]
+    },
+    {
+      "id": "s36",
+      "num": 36,
+      "phase": "P5",
+      "lane": "UI",
+      "title": "诊断：atrace / dumpsys / perfetto",
+      "brief": "atrace gfx view sched；dumpsys SurfaceFlinger --latency 看每帧时间；perfetto 看 DrawFrames/RenderThread/sf 的帧时间线。",
+      "refs": [
+        {
+          "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          "line": 91,
+          "symbol": "DrawFrames trace"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 6675,
+          "symbol": "--latency dump"
+        }
+      ]
+    }
+  ],
+  "p0": [
+    {
+      "id": "df-postwait",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "sig": "void DrawFrameTask::postAndWait()",
+      "symbol": "DrawFrameTask.postAndWait",
+      "start": 82,
+      "end": 87,
+      "hint": 82,
+      "why": "UI 线程唯一阻塞点，决定 UI 与 RT 的交接语义。"
+    },
+    {
+      "id": "df-run",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "sig": "void DrawFrameTask::run()",
+      "symbol": "DrawFrameTask.run",
+      "start": 89,
+      "end": 167,
+      "hint": 89,
+      "why": "RT 侧一帧的总入口：同步、放走 UI、回放、swap。"
+    },
+    {
+      "id": "df-sync",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "sig": "bool DrawFrameTask::syncFrameState(TreeInfo& info)",
+      "symbol": "DrawFrameTask.syncFrameState",
+      "start": 169,
+      "end": 217,
+      "hint": 169,
+      "why": "把 UI 侧状态搬进 RT 的唯一位置，返回 false 就是跳帧。"
+    },
+    {
+      "id": "cc-prepare",
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "sig": "void CanvasContext::prepareTree(TreeInfo& info",
+      "symbol": "CanvasContext.prepareTree",
+      "start": 506,
+      "end": 650,
+      "hint": 506,
+      "why": "staging→display list 的同步点，damage 与 layer 更新都在这。"
+    },
+    {
+      "id": "gl-draw",
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "sig": "IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(",
+      "symbol": "SkiaOpenGLPipeline.draw",
+      "start": 116,
+      "end": 192,
+      "hint": 116,
+      "why": "GL 后端把 canvas 包成 SkSurface 的位置。"
+    },
+    {
+      "id": "sk-render",
+      "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+      "sig": "void SkiaPipeline::renderFrameImpl(",
+      "symbol": "SkiaPipeline.renderFrameImpl",
+      "start": 374,
+      "end": 479,
+      "hint": 374,
+      "why": "display list 回放的真正实现。"
+    },
+    {
+      "id": "gl-swap",
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "sig": "bool SkiaOpenGLPipeline::swapBuffers(",
+      "symbol": "SkiaOpenGLPipeline.swapBuffers",
+      "start": 194,
+      "end": 214,
+      "hint": 194,
+      "why": "决定这一帧到底交不交 buffer（requireSwap）。"
+    },
+    {
+      "id": "surf-queue",
+      "file": "native/libs/gui/Surface.cpp",
+      "sig": "status_t Surface::queueBufferImpl(",
+      "symbol": "Surface.queueBufferImpl",
+      "start": 1330,
+      "end": 1412,
+      "hint": 1330,
+      "why": "RT 侧对 BufferQueue 的唯一出口，含放锁重入的坑。"
+    },
+    {
+      "id": "bbq-frame",
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "sig": "void BLASTBufferQueue::onFrameAvailable(",
+      "symbol": "BLASTBufferQueue.onFrameAvailable",
+      "start": 779,
+      "end": 870,
+      "hint": 779,
+      "why": "buffer 从 app 侧转成 SF 事务的起点。"
+    },
+    {
+      "id": "out-present",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "sig": "Output::present(",
+      "symbol": "Output.present",
+      "start": 450,
+      "end": 519,
+      "hint": 450,
+      "why": "一帧合成与 present 的总调度。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "ThreadedRenderer",
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "tier": 0,
+      "side": "UI",
+      "role": "UI 侧门面：录制 display list、把 FrameInfo 推给 native",
+      "members": [
+        "draw",
+        "updateRootDisplayList",
+        "syncAndDrawFrame"
+      ],
+      "fields": [
+        "mRootNode",
+        "mNativeProxy"
+      ]
+    },
+    {
+      "name": "HardwareRenderer",
+      "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+      "tier": 0,
+      "side": "UI",
+      "role": "Java 侧 native 桥：nSyncAndDrawFrame",
+      "members": [
+        "syncAndDrawFrame"
+      ],
+      "fields": [
+        "mNativeProxy"
+      ]
+    },
+    {
+      "name": "DrawFrameTask",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "一次 draw 的任务对象：同步、放走 UI、回放、swap",
+      "members": [
+        "drawFrame",
+        "postAndWait",
+        "run",
+        "syncFrameState"
+      ],
+      "fields": [
+        "mContext",
+        "mSyncResult",
+        "mSignal"
+      ]
+    },
+    {
+      "name": "CanvasContext",
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "RT 的绘制上下文：prepared tree、draw、swap 调度",
+      "members": [
+        "prepareTree",
+        "draw",
+        "makeCurrent"
+      ],
+      "fields": [
+        "mRenderPipeline",
+        "mDamageAccumulator",
+        "mSyncQueued"
+      ]
+    },
+    {
+      "name": "SkiaPipeline",
+      "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "回放 display list 的公共逻辑（GL/Vulkan 共用）",
+      "members": [
+        "renderFrame",
+        "renderFrameImpl"
+      ],
+      "fields": [
+        "mLayerUpdateQueue"
+      ]
+    },
+    {
+      "name": "SkiaOpenGLPipeline",
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "GL 后端：包 SkSurface、FlushAndSubmit、swapBuffers",
+      "members": [
+        "draw",
+        "swapBuffers"
+      ],
+      "fields": [
+        "mEglManager",
+        "mSurface"
+      ]
+    },
+    {
+      "name": "Surface",
+      "file": "native/libs/gui/Surface.cpp",
+      "tier": 2,
+      "side": "GUI",
+      "role": "生产者在 app 侧的入口：queueBufferImpl 组 input 并放锁",
+      "members": [
+        "queueBufferImpl",
+        "dequeueBuffer"
+      ],
+      "fields": [
+        "mGraphicBufferProducer",
+        "mMutex"
+      ]
+    },
+    {
+      "name": "BLASTBufferQueue",
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "tier": 2,
+      "side": "GUI",
+      "role": "app 侧消费者：acquire buffer 并用 Transaction 交给 SF",
+      "members": [
+        "onFrameAvailable",
+        "acquireNextBufferLocked"
+      ],
+      "fields": [
+        "mSurfaceControl",
+        "mApplyToken",
+        "mNumFrameAvailable"
+      ]
+    },
+    {
+      "name": "SurfaceFlinger",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "tier": 1,
+      "side": "SF",
+      "role": "合成器主循环：commit → composite → present",
+      "members": [
+        "commit",
+        "composite",
+        "onCompositionPresented"
+      ],
+      "fields": [
+        "mTransactionQueue",
+        "mLayersWithQueuedFrames"
+      ]
+    },
+    {
+      "name": "Layer",
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "tier": 2,
+      "side": "SF",
+      "role": "一个 Surface 在 SF 侧的表示：latch buffer、持有 acquire fence",
+      "members": [
+        "setBuffer",
+        "latchBufferImpl"
+      ],
+      "fields": [
+        "mDrawingState",
+        "mBufferInfo"
+      ]
+    },
+    {
+      "name": "CompositionEngine/Output",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "tier": 2,
+      "side": "SF",
+      "role": "单显示器合成：layer stack、client 合成、present",
+      "members": [
+        "prepare",
+        "present",
+        "composeSurfaces"
+      ],
+      "fields": [
+        "mDisplay",
+        "mRenderSurface"
+      ]
+    },
+    {
+      "name": "HWComposer",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "tier": 3,
+      "side": "SF",
+      "role": "HWC HAL 封装：决定 DEVICE/CLIENT 合成、present 与 release fence",
+      "members": [
+        "getDeviceCompositionChanges",
+        "presentAndGetReleaseFences"
+      ],
+      "fields": [
+        "mDisplayData",
+        "mHwcDisplay"
+      ]
+    }
+  ],
+  "architecture": {
+    "width": 1300,
+    "height": 620,
+    "groups": [
+      {
+        "id": "app",
+        "label": "App 进程",
+        "x": 20,
+        "y": 120,
+        "w": 560,
+        "h": 440,
+        "color": "#4c8dff"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger 进程",
+        "x": 860,
+        "y": 120,
+        "w": 420,
+        "h": 440,
+        "color": "#c792ea"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "ui",
+        "group": "app",
+        "label": "UI 线程 · ThreadedRenderer",
+        "sub": "录制 display list / FrameInfo",
+        "x": 44,
+        "y": 170,
+        "w": 250,
+        "h": 54
+      },
+      {
+        "id": "rt",
+        "group": "app",
+        "label": "RenderThread",
+        "sub": "DrawFrameTask → CanvasContext",
+        "x": 44,
+        "y": 260,
+        "w": 250,
+        "h": 54
+      },
+      {
+        "id": "sk",
+        "group": "app",
+        "label": "Skia pipeline (GL/VK)",
+        "sub": "回放 draw op / swap",
+        "x": 44,
+        "y": 350,
+        "w": 250,
+        "h": 54
+      },
+      {
+        "id": "surf",
+        "group": "app",
+        "label": "Surface / BufferQueueProducer",
+        "sub": "queueBufferImpl",
+        "x": 320,
+        "y": 260,
+        "w": 240,
+        "h": 54
+      },
+      {
+        "id": "bbq",
+        "group": "app",
+        "label": "BLASTBufferQueue",
+        "sub": "acquire → Transaction",
+        "x": 320,
+        "y": 350,
+        "w": 240,
+        "h": 54
+      },
+      {
+        "id": "sfsvc",
+        "group": "sf",
+        "label": "SurfaceFlinger",
+        "sub": "commit / composite",
+        "x": 884,
+        "y": 170,
+        "w": 370,
+        "h": 54
+      },
+      {
+        "id": "layer",
+        "group": "sf",
+        "label": "Layer",
+        "sub": "latchBuffer / acquire fence",
+        "x": 884,
+        "y": 260,
+        "w": 370,
+        "h": 54
+      },
+      {
+        "id": "out",
+        "group": "sf",
+        "label": "CompositionEngine · Output",
+        "sub": "prepare / present",
+        "x": 884,
+        "y": 350,
+        "w": 370,
+        "h": 54
+      },
+      {
+        "id": "hwc",
+        "group": "sf",
+        "label": "HWComposer",
+        "sub": "DEVICE/CLIENT · present fence",
+        "x": 884,
+        "y": 440,
+        "w": 370,
+        "h": 54
+      }
+    ],
+    "edges": [
+      {
+        "from": "ui",
+        "to": "rt",
+        "label": "syncAndDrawFrame",
+        "kind": "call"
+      },
+      {
+        "from": "rt",
+        "to": "sk",
+        "label": "draw",
+        "kind": "call"
+      },
+      {
+        "from": "sk",
+        "to": "surf",
+        "label": "",
+        "kind": "call"
+      },
+      {
+        "from": "surf",
+        "to": "bbq",
+        "label": "",
+        "kind": "callback"
+      },
+      {
+        "from": "bbq",
+        "to": "sfsvc",
+        "label": "Transaction apply",
+        "kind": "binder"
+      },
+      {
+        "from": "sfsvc",
+        "to": "layer",
+        "label": "setBuffer / latch",
+        "kind": "call"
+      },
+      {
+        "from": "sfsvc",
+        "to": "out",
+        "label": "composite",
+        "kind": "call"
+      },
+      {
+        "from": "out",
+        "to": "hwc",
+        "label": "present",
+        "kind": "call"
+      },
+      {
+        "from": "bbq",
+        "to": "rt",
+        "label": "",
+        "kind": "callback"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "n0",
+        "kind": "start",
+        "label": "UI: syncAndDrawFrame",
+        "x": 430,
+        "y": 44
+      },
+      {
+        "id": "n1",
+        "kind": "process",
+        "label": "RT 同步 staging → display list",
+        "x": 430,
+        "y": 150
+      },
+      {
+        "id": "n2",
+        "kind": "decision",
+        "label": "有脏区 / 需要重画？",
+        "x": 430,
+        "y": 260
+      },
+      {
+        "id": "n3",
+        "kind": "process",
+        "label": "回放 draw op + FlushAndSubmit",
+        "x": 430,
+        "y": 380
+      },
+      {
+        "id": "n4",
+        "kind": "decision",
+        "label": "requireSwap？",
+        "x": 430,
+        "y": 490
+      },
+      {
+        "id": "n5",
+        "kind": "process",
+        "label": "queueBuffer → BLAST Transaction",
+        "x": 430,
+        "y": 610
+      },
+      {
+        "id": "n6",
+        "kind": "process",
+        "label": "SF commit → latch → composite",
+        "x": 430,
+        "y": 720
+      },
+      {
+        "id": "n7",
+        "kind": "end",
+        "label": "HWC present + release fence 回流",
+        "x": 430,
+        "y": 830
+      },
+      {
+        "id": "n8",
+        "kind": "process",
+        "label": "跳帧：didProduceBuffer=false",
+        "x": 830,
+        "y": 490
+      },
+      {
+        "id": "n9",
+        "kind": "process",
+        "label": "等 release：waitForFreeSlot",
+        "x": 830,
+        "y": 610
+      }
+    ],
+    "edges": [
+      {
+        "from": "n0",
+        "to": "n1"
+      },
+      {
+        "from": "n1",
+        "to": "n2"
+      },
+      {
+        "from": "n2",
+        "to": "n3",
+        "label": "是"
+      },
+      {
+        "from": "n2",
+        "to": "n8",
+        "label": "否"
+      },
+      {
+        "from": "n3",
+        "to": "n4"
+      },
+      {
+        "from": "n4",
+        "to": "n5",
+        "label": "是"
+      },
+      {
+        "from": "n4",
+        "to": "n8",
+        "label": "否"
+      },
+      {
+        "from": "n5",
+        "to": "n9",
+        "label": "队列满"
+      },
+      {
+        "from": "n9",
+        "to": "n5"
+      },
+      {
+        "from": "n5",
+        "to": "n6"
+      },
+      {
+        "from": "n6",
+        "to": "n7"
+      },
+      {
+        "from": "n7",
+        "to": "n0",
+        "label": "下一帧"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s01",
+      "from": "UI",
+      "to": "UI",
+      "label": "updateRootDisplayList 录制（staging）",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "UI",
+      "to": "RT",
+      "label": "syncAndDrawFrame → nSyncAndDrawFrame",
+      "kind": "binder"
+    },
+    {
+      "step": "s04",
+      "from": "RT",
+      "to": "RT",
+      "label": "DrawFrameTask::drawFrame → postAndWait",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "UI",
+      "to": "RT",
+      "label": "UI 阻塞在 mSignal",
+      "kind": "call"
+    },
+    {
+      "step": "s06",
+      "from": "RT",
+      "to": "RT",
+      "label": "threadLoop → DrawFrameTask::run",
+      "kind": "call"
+    },
+    {
+      "step": "s07",
+      "from": "RT",
+      "to": "RT",
+      "label": "syncFrameState → prepareTree",
+      "kind": "call"
+    },
+    {
+      "step": "s08",
+      "from": "RT",
+      "to": "RT",
+      "label": "staging → display list",
+      "kind": "state"
+    },
+    {
+      "step": "s10",
+      "from": "RT",
+      "to": "UI",
+      "label": "unblockUiThread（UI 可继续下一帧）",
+      "kind": "callback"
+    },
+    {
+      "step": "s11",
+      "from": "RT",
+      "to": "RT",
+      "label": "skipEmptyFrames 判定",
+      "kind": "branch"
+    },
+    {
+      "step": "s13",
+      "from": "RT",
+      "to": "RT",
+      "label": "SkiaOpenGLPipeline::draw",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "RT",
+      "to": "RT",
+      "label": "renderFrameImpl 回放 draw op",
+      "kind": "call"
+    },
+    {
+      "step": "s15",
+      "from": "RT",
+      "to": "RT",
+      "label": "FlushAndSubmit（不等 GPU）",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "RT",
+      "to": "RT",
+      "label": "swapBuffers（requireSwap）",
+      "kind": "call"
+    },
+    {
+      "step": "s17",
+      "from": "RT",
+      "to": "GUI",
+      "label": "eglSwapBuffersWithDamage → queueBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s18",
+      "from": "GUI",
+      "to": "GUI",
+      "label": "Surface::queueBufferImpl 组 input",
+      "kind": "call"
+    },
+    {
+      "step": "s19",
+      "from": "GUI",
+      "to": "GUI",
+      "label": "BufferQueueProducer::queueBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s20",
+      "from": "GUI",
+      "to": "GUI",
+      "label": "onFrameAvailable",
+      "kind": "callback"
+    },
+    {
+      "step": "s21",
+      "from": "GUI",
+      "to": "GUI",
+      "label": "acquireNextBufferLocked（fence）",
+      "kind": "call"
+    },
+    {
+      "step": "s22",
+      "from": "GUI",
+      "to": "SF",
+      "label": "Transaction setBuffer + apply",
+      "kind": "binder"
+    },
+    {
+      "step": "s23",
+      "from": "SF",
+      "to": "SF",
+      "label": "commit → updateLayerSnapshots",
+      "kind": "call"
+    },
+    {
+      "step": "s24",
+      "from": "SF",
+      "to": "SF",
+      "label": "Layer::setBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s25",
+      "from": "SF",
+      "to": "SF",
+      "label": "latchBufferImpl 等 acquire fence",
+      "kind": "call"
+    },
+    {
+      "step": "s26",
+      "from": "SF",
+      "to": "SF",
+      "label": "composite 收集有帧的层",
+      "kind": "call"
+    },
+    {
+      "step": "s27",
+      "from": "SF",
+      "to": "SF",
+      "label": "Output::prepare（可见层）",
+      "kind": "call"
+    },
+    {
+      "step": "s28",
+      "from": "SF",
+      "to": "SF",
+      "label": "HWC getDeviceCompositionChanges",
+      "kind": "call"
+    },
+    {
+      "step": "s29",
+      "from": "SF",
+      "to": "SF",
+      "label": "client 合成 / GPU",
+      "kind": "call"
+    },
+    {
+      "step": "s30",
+      "from": "SF",
+      "to": "SF",
+      "label": "presentFrameAndReleaseLayers",
+      "kind": "call"
+    },
+    {
+      "step": "s31",
+      "from": "SF",
+      "to": "GUI",
+      "label": "release fence → BufferReleaseChannel",
+      "kind": "callback"
+    },
+    {
+      "step": "s32",
+      "from": "GUI",
+      "to": "RT",
+      "label": "dequeueBuffer 唤醒（下一帧）",
+      "kind": "callback"
+    }
+  ],
+  "pitfalls": [
+    {
+      "case": "UI 线程只等同步，不等绘制",
+      "behavior": "postAndWait 在 unblockUiThread 就返回，UI 可以开始下一帧；RT 还在画",
+      "ref": "DrawFrameTask.cpp:82-88 / 219"
+    },
+    {
+      "case": "跳帧 ≠ 丢帧",
+      "behavior": "没有脏区时 RT 不 swap，commit 回调 didProduceBuffer=false，SF 根本看不到这一帧",
+      "ref": "CanvasContext.cpp:699 / DrawFrameTask.cpp:212"
+    },
+    {
+      "case": "buffer 被替换",
+      "behavior": "BLAST 队列 mQueueBufferCanDrop=false，标准路径不会替换；bufferReplaced 只在虚拟显示/异步生产者/共享 buffer 出现",
+      "ref": "Surface.cpp:1390 · BufferQueueProducer.cpp:1521"
+    },
+    {
+      "case": "队列满时的等待",
+      "behavior": "queueBuffer 本身不等 slot；它阻塞在 lastQueuedFence->waitForever（等上一帧 GPU fence）。等空 slot 在 dequeueBuffer / waitForBufferRelease",
+      "ref": "BufferQueueProducer.cpp:1284 · 536 · 448"
+    },
+    {
+      "case": "acquire fence 不能省",
+      "behavior": "latchBufferImpl 轮询 fenceHasSignaled，未就绪就 return false 并重排 commit；它不等也不超时，调用方还会忽略返回值继续标记 newDataLatched",
+      "ref": "Layer.cpp:1209 / 1522 · SurfaceFlinger.cpp:2953"
+    },
+    {
+      "case": "HWC 决定合成方式",
+      "behavior": "DEVICE 合成由硬件叠加，CLIENT 合成才走 RenderEngine；排查花屏/闪烁先看这里",
+      "ref": "HWComposer.cpp:537"
+    },
+    {
+      "case": "release fence 决定下一帧能否开始",
+      "behavior": "SF present 后通过 BufferReleaseChannel 发回 release fence，app 拿不到就 dequeueBuffer 阻塞",
+      "ref": "BufferReleaseChannel.cpp:202"
+    },
+    {
+      "case": "Vulkan 与 GL 的 swap 同步点不同",
+      "behavior": "两者的 requireSwap 语义一致，但 fence/present 时机不同，掉帧归因不能照搬 GL",
+      "ref": "SkiaVulkanPipeline.cpp:130"
+    },
+    {
+      "case": "transaction 是 oneWay",
+      "behavior": "BLAST apply 不等 SF 处理，RT 继续下一帧；上屏时间由 SF 的 vsync 决定",
+      "ref": "BLASTBufferQueue.cpp:745"
+    },
+    {
+      "case": "三缓冲吃满后 UI 也会卡",
+      "behavior": "buffer 都在 SF/GPU 手里时，dequeueBuffer 拿不到 slot，UI 线程的绘制会被反压",
+      "ref": "BLASTBufferQueue.cpp:1305"
+    }
+  ],
+  "facts": [
+    "<b>UI 线程不等绘制</b>：postAndWait 只等「同步」阶段，unblockUiThread 一调就返回，RT 继续回放与提交——这是 CPU/GPU 能流水线的前提。",
+    "<b>swap 才交 buffer</b>：FlushAndSubmit 只把命令提交给 GPU、不等完成；GL 路径上 requireSwap 基本恒真（damageRequiresSwap 只在 BufferAge 模式可能为真），Vulkan 只看 drawResult.success。",
+    "<b>BLAST 用 Transaction 交接</b>：buffer、acquire fence、frameNumber 打包成 SurfaceControl.Transaction 交给 SF，oneWay，不等确认。",
+    "<b>SF 的闸门是 latch，但它是轮询不是等待</b>：latchBufferImpl 只看 fenceHasSignaled，未就绪就 return false 让下一拍再来，合成线程不会被 fence 卡死。",
+    "<b>闭环靠 release fence</b>：present 之后 SF 把 release fence 发回 app，app 才能 dequeue 下一块 buffer；三缓冲吃满时 UI 也会被卡住。"
+  ],
+  "glossary": [
+    {
+      "term": "staging display list",
+      "text": "UI 线程录制的产物，先放在 RenderNode 的 staging 槽，等 RT 同步时 move 成 display list。"
+    },
+    {
+      "term": "FrameInfo",
+      "text": "UI 交给 RT 的一帧参数：帧时间、vsyncId、期望上屏时间、掉帧信息。"
+    },
+    {
+      "term": "mSignal",
+      "text": "DrawFrameTask 的条件变量，UI 在这里等同步完成，RT 在 unblockUiThread 里 signal。"
+    },
+    {
+      "term": "damage",
+      "text": "本帧真正需要重绘的区域；为空时 RT 可以整帧跳过。"
+    },
+    {
+      "term": "requireSwap",
+      "text": "pipeline 判断这一帧是否真的产生了可提交的 buffer。"
+    },
+    {
+      "term": "acquire fence",
+      "text": "GPU 写完 buffer 的信号；SF 合成前必须等它。"
+    },
+    {
+      "term": "release fence",
+      "text": "SF 用完 buffer 的信号；app 拿到后才能重新 dequeue 这块 buffer。"
+    },
+    {
+      "term": "BufferQueue slot",
+      "text": "一块 buffer 的位置；dequeue 占用、queueBuffer 交还、release 后变 FREE。"
+    },
+    {
+      "term": "BLAST",
+      "text": "BufferQueue 的现代化实现：用 SurfaceControl.Transaction 把 buffer 交给 SF，替代旧的 BufferQueueConsumer。"
+    },
+    {
+      "term": "Transaction",
+      "text": "SurfaceControl 的属性/buffer 变更集合，可带 applyToken 一次性提交。"
+    },
+    {
+      "term": "latch",
+      "text": "SF 把 buffer 从队列里取出并等 acquire fence 的过程。"
+    },
+    {
+      "term": "client composition",
+      "text": "HWC 无法直接叠加时，由 RenderEngine 用 GPU 把层画进 client target。"
+    },
+    {
+      "term": "present fence",
+      "text": "HWC 表示「这一帧已上屏」的信号。"
+    },
+    {
+      "term": "triple buffering",
+      "text": "三块 buffer 轮转，允许一张在显示、一张在合成、一张在绘制。"
+    },
+    {
+      "term": "skipped frame",
+      "text": "RT 判定无内容可画，直接不 swap。"
+    },
+    {
+      "term": "bufferReplaced",
+      "text": "queueBuffer 时队列里未消费的旧帧被新帧替换。"
+    }
+  ],
+  "scenario": {
+    "title": "一帧从 UI 到屏幕（60Hz，示数量级）",
+    "events": [
+      {
+        "t": "0.0 ms",
+        "label": "UI 录制",
+        "detail": "updateRootDisplayList 重建脏节点，写入 staging"
+      },
+      {
+        "t": "0.3 ms",
+        "label": "交棒",
+        "detail": "syncAndDrawFrame → DrawFrameTask::postAndWait，UI 停住"
+      },
+      {
+        "t": "0.4 ms",
+        "label": "RT 同步",
+        "detail": "syncFrameState + prepareTree，staging→display list"
+      },
+      {
+        "t": "0.6 ms",
+        "label": "放走 UI",
+        "detail": "unblockUiThread，UI 开始下一帧录制"
+      },
+      {
+        "t": "0.7 ms",
+        "label": "回放",
+        "detail": "renderFrameImpl 把 draw op 交给 Skia，FlushAndSubmit"
+      },
+      {
+        "t": "2.5 ms",
+        "label": "swap",
+        "detail": "eglSwapBuffers → Surface::queueBuffer"
+      },
+      {
+        "t": "2.6 ms",
+        "label": "BLAST",
+        "detail": "onFrameAvailable → acquire → Transaction apply"
+      },
+      {
+        "t": "8.3 ms",
+        "label": "SF 合成",
+        "detail": "commit → latch → composite → present（下一个 VSYNC）"
+      },
+      {
+        "t": "16.6 ms",
+        "label": "上屏/释放",
+        "detail": "present fence 后 release fence 回到 app"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：谁在哪、buffer 怎么走",
+      "route": "全景·架构 → 流程图 → 时序图前 10 条"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：UI→RT→BLAST→SF",
+      "route": "精读第 1→22 步（交棒/同步/回放/交接）"
+    },
+    {
+      "time": "90 分钟",
+      "goal": "补齐合成与回环",
+      "route": "精读第 23→36 步 + 降级与坑"
+    },
+    {
+      "time": "半天",
+      "goal": "能改代码",
+      "route": "代码逐行 10 个热点函数 + 方法清单 + 文件结构核对调用关系"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "CanvasContext.draw",
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "line": 672,
+      "size": 262,
+      "thread": "RenderThread",
+      "lock": "无（RT 单线程）",
+      "purpose": "RT 一帧的总调度：跳过判定、damage 统计、pipeline->draw、swap、commit 回调。",
+      "risk": "跳过判定写错会「该画不画」，swap 条件写错会多交一帧。",
+      "status": "card"
+    },
+    {
+      "fn": "SurfaceFlinger.commit",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 2996,
+      "size": 207,
+      "thread": "SF 主线程",
+      "lock": "mStateLock",
+      "purpose": "收集合并事务、更新 Layer 快照、决定这一拍是否合成。",
+      "risk": "事务顺序或 snapshot 更新错，会表现为「画面落后一帧」或闪烁。",
+      "status": "card"
+    },
+    {
+      "fn": "Layer.latchBufferImpl",
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "line": 1506,
+      "size": 61,
+      "thread": "SF 主线程",
+      "lock": "mStateLock",
+      "purpose": "合成前从队列取 buffer 并等 acquire fence。",
+      "risk": "漏等 fence = GPU 读写竞争，表现为花屏/撕裂。",
+      "status": "card"
+    },
+    {
+      "fn": "SkiaOpenGLPipeline.draw",
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "line": 116,
+      "size": 77,
+      "thread": "RenderThread",
+      "lock": "无",
+      "purpose": "把 canvas 包成 SkSurface（FBO 0），准备 damage 区域。",
+      "risk": "surface 尺寸/damage 算错会局部残影。",
+      "status": "card"
+    },
+    {
+      "fn": "BufferQueueProducer.queueBuffer",
+      "file": "native/libs/gui/BufferQueueProducer.cpp",
+      "line": 976,
+      "size": 120,
+      "thread": "RenderThread",
+      "lock": "生产者锁",
+      "purpose": "buffer 入队、处理满队列等待与替换。",
+      "risk": "等待期间持有锁会死锁；替换会丢一帧。",
+      "status": "card"
+    },
+    {
+      "fn": "Surface.queueBufferImpl",
+      "file": "native/libs/gui/Surface.cpp",
+      "line": 1330,
+      "size": 83,
+      "thread": "RenderThread",
+      "lock": "mMutex（临时放锁）",
+      "purpose": "组 QueueBufferInput、取 slot、调用 producer。",
+      "risk": "放锁的原因就是重入 onFrameAvailable，改错会死锁。",
+      "status": "card"
+    }
+  ],
+  "scope": [
+    "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+    "base/libs/hwui/renderthread/CanvasContext.cpp",
+    "base/libs/hwui/renderthread/RenderProxy.cpp",
+    "base/libs/hwui/RenderNode.cpp",
+    "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+    "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+    "native/libs/gui/Surface.cpp",
+    "native/libs/gui/BufferQueueProducer.cpp",
+    "native/libs/gui/BLASTBufferQueue.cpp",
+    "native/services/surfaceflinger/SurfaceFlinger.cpp",
+    "native/services/surfaceflinger/Layer.cpp",
+    "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+    "base/core/java/android/view/ThreadedRenderer.java",
+    "base/graphics/java/android/graphics/HardwareRenderer.java"
+  ],
+  "relations": [
+    {
+      "from": "ThreadedRenderer",
+      "to": "DrawFrameTask",
+      "label": "syncAndDrawFrame",
+      "kind": "uses"
+    },
+    {
+      "from": "DrawFrameTask",
+      "to": "CanvasContext",
+      "label": "mContext->draw",
+      "kind": "uses"
+    },
+    {
+      "from": "CanvasContext",
+      "to": "SkiaOpenGLPipeline",
+      "label": "mRenderPipeline",
+      "kind": "owns"
+    },
+    {
+      "from": "SkiaPipeline",
+      "to": "Surface",
+      "label": "swapBuffers",
+      "kind": "uses"
+    },
+    {
+      "from": "Surface",
+      "to": "BLASTBufferQueue",
+      "label": "queueBuffer",
+      "kind": "uses"
+    },
+    {
+      "from": "BLASTBufferQueue",
+      "to": "SurfaceFlinger",
+      "label": "Transaction apply",
+      "kind": "uses"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "Layer",
+      "label": "setBuffer/latch",
+      "kind": "owns"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "CompositionEngine/Output",
+      "label": "composite",
+      "kind": "uses"
+    },
+    {
+      "from": "CompositionEngine/Output",
+      "to": "HWComposer",
+      "label": "present",
+      "kind": "uses"
+    },
+    {
+      "from": "BLASTBufferQueue",
+      "to": "CanvasContext",
+      "label": "release fence",
+      "kind": "uses"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s11",
+      "fn": "CanvasContext.draw",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:699",
+      "rows": [
+        {
+          "cond": "Properties::skipEmptyFrames && !surfaceRequiresRedraw()",
+          "then": "SkippedFrameReason::NothingToDraw",
+          "effect": "不提交 buffer，commit 回调 didProduceBuffer=false"
+        },
+        {
+          "cond": "damage 为空但 surface 需要重画",
+          "then": "照常回放（清屏/属性变更）",
+          "effect": "产生一帧但可能只有清屏"
+        },
+        {
+          "cond": "默认",
+          "then": "正常 draw → swap",
+          "effect": "buffer 入队"
+        }
+      ]
+    },
+    {
+      "step": "s16",
+      "fn": "SkiaOpenGLPipeline.swapBuffers / SkiaVulkanPipeline.swapBuffers",
+      "ref": "SkiaOpenGLPipeline.cpp:194-207 · SkiaVulkanPipeline.cpp:130-141",
+      "rows": [
+        {
+          "cond": "GL: drawResult.success 或 damageRequiresSwap()",
+          "then": "requireSwap=true，mEglManager.swapBuffers",
+          "effect": "queueBuffer，这一帧交出去"
+        },
+        {
+          "cond": "Vulkan: drawResult.success",
+          "then": "requireSwap=true",
+          "effect": "Vulkan 自己的 queue/present 路径"
+        },
+        {
+          "cond": "否则",
+          "then": "requireSwap=false",
+          "effect": "不交 buffer，SF 看不到"
+        }
+      ]
+    },
+    {
+      "step": "s19",
+      "fn": "BufferQueueProducer.queueBuffer / Surface.dequeueBuffer",
+      "ref": "BufferQueueProducer.cpp:976 / 1284 / 536",
+      "rows": [
+        {
+          "cond": "有 FREE slot 且未达 maxDequeued",
+          "then": "直接入队",
+          "effect": "返回新 frameNumber，不阻塞"
+        },
+        {
+          "cond": "上一帧 GPU fence 未完成",
+          "then": "lastQueuedFence->waitForever",
+          "effect": "RT 线程阻塞（Throttling EGL Production）"
+        },
+        {
+          "cond": "dequeue 时无空 slot",
+          "then": "waitForBufferRelease 等 release fence",
+          "effect": "等不到就掉帧/被反压"
+        }
+      ]
+    },
+    {
+      "step": "s23",
+      "fn": "SurfaceFlinger.commit",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2996",
+      "rows": [
+        {
+          "cond": "有待提交事务",
+          "then": "collectTransactions + updateLayerSnapshots",
+          "effect": "Layer 拿到新 buffer"
+        },
+        {
+          "cond": "没有新事务但需重合成",
+          "then": "mustComposite=true",
+          "effect": "照常走 composite"
+        },
+        {
+          "cond": "无事可做",
+          "then": "返回 false，scheduleFrame 等下一拍",
+          "effect": "省一次合成"
+        }
+      ]
+    },
+    {
+      "step": "s28",
+      "fn": "HWComposer.getDeviceCompositionChanges",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:537",
+      "rows": [
+        {
+          "cond": "所有层 HWC 能直接叠加",
+          "then": "DEVICE 合成",
+          "effect": "GPU 不参与，省电"
+        },
+        {
+          "cond": "有层不支持（缩放/混合/保护内容）",
+          "then": "标记 CLIENT",
+          "effect": "RenderEngine 画进 client target"
+        },
+        {
+          "cond": "HWC 不可用",
+          "then": "全部 CLIENT",
+          "effect": "纯 GPU 合成"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 30,
+    "minMethods": 150,
+    "minCards": 4,
+    "minPitfalls": 8
+  },
+  "archGrid": {
+    "width": 1560,
+    "rowH": 150,
+    "left": 150,
+    "rows": [
+      {
+        "id": "r1",
+        "label": "① 录制",
+        "note": "UI 线程把脏 View 录成 display list，放 staging 槽"
+      },
+      {
+        "id": "r2",
+        "label": "② 交棒",
+        "note": "FrameInfo 过 JNI，任务进 RT 队列；UI 在 mSignal 停住"
+      },
+      {
+        "id": "r3",
+        "label": "③ RT 同步",
+        "note": "staging→display list，算 damage；放走 UI 线程"
+      },
+      {
+        "id": "r4",
+        "label": "④ 回放",
+        "note": "draw op 提交 GPU；swap 才真正交 buffer"
+      },
+      {
+        "id": "r5",
+        "label": "⑤ 交接",
+        "note": "buffer 入队 → BLAST 取 buffer → Transaction 给 SF"
+      },
+      {
+        "id": "r6",
+        "label": "⑥ 合成",
+        "note": "commit/latch 取 buffer，HWC 决定合成方式并 present"
+      },
+      {
+        "id": "r7",
+        "label": "⑦ 回环",
+        "note": "release fence 回到 app，下一帧才能 dequeue"
+      }
+    ],
+    "cols": [
+      {
+        "id": "ui",
+        "label": "App · UI 线程",
+        "color": "#4c8dff"
+      },
+      {
+        "id": "rt",
+        "label": "App · RenderThread",
+        "color": "#33d6c0"
+      },
+      {
+        "id": "gui",
+        "label": "App · BLAST / BufferQueue",
+        "color": "#ffb454"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger",
+        "color": "#c792ea"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "ui-dl",
+        "row": "r1",
+        "col": "ui",
+        "label": "ThreadedRenderer.draw",
+        "sub": "updateRootDisplayList",
+        "thread": "UI",
+        "badge": "display list → staging",
+        "slot": 0
+      },
+      {
+        "id": "ui-sync",
+        "row": "r2",
+        "col": "ui",
+        "label": "HardwareRenderer.syncAndDrawFrame",
+        "sub": "nSyncAndDrawFrame (JNI)",
+        "thread": "UI",
+        "slot": 0
+      },
+      {
+        "id": "rt-task",
+        "row": "r2",
+        "col": "rt",
+        "label": "RenderProxy → DrawFrameTask",
+        "sub": "drawFrame / postAndWait",
+        "thread": "RT",
+        "badge": "UI 阻塞 mSignal",
+        "slot": 0
+      },
+      {
+        "id": "rt-run",
+        "row": "r3",
+        "col": "rt",
+        "label": "DrawFrameTask.run",
+        "sub": "syncFrameState",
+        "thread": "RT",
+        "slot": 0
+      },
+      {
+        "id": "rt-tree",
+        "row": "r3",
+        "col": "rt",
+        "label": "CanvasContext.prepareTree",
+        "sub": "staging → display list",
+        "thread": "RT",
+        "slot": 1
+      },
+      {
+        "id": "rt-render",
+        "row": "r4",
+        "col": "rt",
+        "label": "SkiaPipeline.renderFrameImpl",
+        "sub": "回放 draw op",
+        "thread": "RT",
+        "slot": 0
+      },
+      {
+        "id": "rt-swap",
+        "row": "r4",
+        "col": "rt",
+        "label": "swapBuffers → eglSwap",
+        "sub": "FlushAndSubmit / requireSwap",
+        "thread": "RT",
+        "badge": "buffer 交给队列",
+        "slot": 1
+      },
+      {
+        "id": "gui-queue",
+        "row": "r5",
+        "col": "gui",
+        "label": "Surface.queueBufferImpl",
+        "sub": "BufferQueueProducer.queueBuffer",
+        "thread": "RT 调用",
+        "slot": 0
+      },
+      {
+        "id": "gui-bbq",
+        "row": "r5",
+        "col": "gui",
+        "label": "BLASTBufferQueue.onFrameAvailable",
+        "sub": "acquireNextBufferLocked",
+        "thread": "app 回调",
+        "slot": 1
+      },
+      {
+        "id": "gui-txn",
+        "row": "r5",
+        "col": "gui",
+        "label": "Transaction setBuffer + apply",
+        "sub": "oneWay 给 SF",
+        "thread": "app",
+        "slot": 2
+      },
+      {
+        "id": "sf-commit",
+        "row": "r6",
+        "col": "sf",
+        "label": "SurfaceFlinger.commit",
+        "sub": "flushTransactions / updateLayerSnapshots",
+        "thread": "SF 主线程",
+        "slot": 0
+      },
+      {
+        "id": "sf-latch",
+        "row": "r6",
+        "col": "sf",
+        "label": "Layer.setBuffer / latch",
+        "sub": "latchBufferImpl 轮询 fence",
+        "thread": "SF 主线程",
+        "slot": 1
+      },
+      {
+        "id": "sf-out",
+        "row": "r6",
+        "col": "sf",
+        "label": "Output.prepare / present",
+        "sub": "collectVisibleLayers → present",
+        "thread": "SF 主线程",
+        "slot": 2
+      },
+      {
+        "id": "sf-hwc",
+        "row": "r6",
+        "col": "sf",
+        "label": "HWComposer",
+        "sub": "DEVICE / CLIENT · present fence",
+        "thread": "SF 主线程",
+        "slot": 3
+      },
+      {
+        "id": "gui-release",
+        "row": "r7",
+        "col": "gui",
+        "label": "BufferReleaseChannel",
+        "sub": "release fence 回到 app",
+        "thread": "app",
+        "slot": 0
+      },
+      {
+        "id": "rt-dequeue",
+        "row": "r7",
+        "col": "rt",
+        "label": "dequeueBuffer",
+        "sub": "下一帧取 slot",
+        "thread": "RT",
+        "slot": 0
+      }
+    ],
+    "edges": [
+      {
+        "from": "ui-dl",
+        "to": "ui-sync",
+        "label": "display list 已录制",
+        "kind": "call"
+      },
+      {
+        "from": "ui-sync",
+        "to": "rt-task",
+        "label": "FrameInfo",
+        "data": "long[] → JNI 拷贝",
+        "kind": "call"
+      },
+      {
+        "from": "rt-task",
+        "to": "rt-run",
+        "label": "队列消费",
+        "kind": "call"
+      },
+      {
+        "from": "rt-run",
+        "to": "rt-tree",
+        "label": "TreeInfo",
+        "kind": "call"
+      },
+      {
+        "from": "rt-tree",
+        "to": "rt-render",
+        "label": "mDisplayList",
+        "kind": "call"
+      },
+      {
+        "from": "rt-render",
+        "to": "rt-swap",
+        "label": "draw ops → GPU",
+        "kind": "call"
+      },
+      {
+        "from": "rt-swap",
+        "to": "gui-queue",
+        "label": "queueBuffer",
+        "data": "GraphicBuffer + acquire fence",
+        "kind": "call"
+      },
+      {
+        "from": "gui-queue",
+        "to": "gui-bbq",
+        "label": "onFrameAvailable",
+        "kind": "callback"
+      },
+      {
+        "from": "gui-bbq",
+        "to": "gui-txn",
+        "label": "BufferItem",
+        "data": "slot + fence + frameNumber",
+        "kind": "call"
+      },
+      {
+        "from": "gui-txn",
+        "to": "sf-commit",
+        "label": "Transaction",
+        "data": "oneWay，不等确认",
+        "kind": "oneway"
+      },
+      {
+        "from": "sf-commit",
+        "to": "sf-latch",
+        "label": "setBuffer",
+        "kind": "call"
+      },
+      {
+        "from": "sf-latch",
+        "to": "sf-out",
+        "label": "latch 完成",
+        "kind": "call"
+      },
+      {
+        "from": "sf-out",
+        "to": "sf-hwc",
+        "label": "layers / client target",
+        "kind": "call"
+      },
+      {
+        "from": "sf-hwc",
+        "to": "gui-release",
+        "label": "release fence",
+        "data": "present 之后",
+        "kind": "callback"
+      },
+      {
+        "from": "gui-release",
+        "to": "rt-dequeue",
+        "label": "slot 置 FREE",
+        "kind": "callback"
+      }
+    ]
+  },
+  "seqDetail": {
+    "lanes": [
+      {
+        "id": "ui",
+        "label": "UI 线程"
+      },
+      {
+        "id": "rt",
+        "label": "RenderThread"
+      },
+      {
+        "id": "gpu",
+        "label": "GPU"
+      },
+      {
+        "id": "gui",
+        "label": "BLAST / BufferQueue"
+      },
+      {
+        "id": "sf",
+        "label": "SurfaceFlinger"
+      },
+      {
+        "id": "hwc",
+        "label": "HWComposer"
+      }
+    ],
+    "phases": [
+      {
+        "id": "p1",
+        "label": "P1 交棒（UI → RT）"
+      },
+      {
+        "id": "p2",
+        "label": "P2 RT 同步"
+      },
+      {
+        "id": "p3",
+        "label": "P3 回放与提交"
+      },
+      {
+        "id": "p4",
+        "label": "P4 交接 SF"
+      },
+      {
+        "id": "p5",
+        "label": "P5 合成上屏"
+      },
+      {
+        "id": "p6",
+        "label": "P6 回环与分支"
+      }
+    ],
+    "messages": [
+      {
+        "phase": "p1",
+        "step": "s01",
+        "from": "ui",
+        "to": "ui",
+        "label": "updateRootDisplayList",
+        "data": "重建脏 RenderNode，写 staging",
+        "kind": "call"
+      },
+      {
+        "phase": "p1",
+        "step": "s02",
+        "from": "ui",
+        "to": "rt",
+        "label": "syncAndDrawFrame",
+        "data": "FrameInfo(long[])",
+        "kind": "call"
+      },
+      {
+        "phase": "p1",
+        "step": "s04",
+        "from": "rt",
+        "to": "rt",
+        "label": "drawFrame → postAndWait",
+        "kind": "call",
+        "block": "UI 阻塞在 mSignal",
+        "blockLane": "ui"
+      },
+      {
+        "phase": "p1",
+        "step": "s05",
+        "from": "ui",
+        "to": "rt",
+        "label": "等待（条件变量）",
+        "kind": "call"
+      },
+      {
+        "phase": "p2",
+        "step": "s06",
+        "from": "rt",
+        "to": "rt",
+        "label": "DrawFrameTask.run",
+        "data": "trace DrawFrames <vsyncId>",
+        "kind": "call"
+      },
+      {
+        "phase": "p2",
+        "step": "s07",
+        "from": "rt",
+        "to": "rt",
+        "label": "syncFrameState",
+        "data": "makeCurrent / pinImages",
+        "kind": "call"
+      },
+      {
+        "phase": "p2",
+        "step": "s08",
+        "from": "rt",
+        "to": "rt",
+        "label": "prepareTree",
+        "data": "staging→display list, damage",
+        "kind": "state"
+      },
+      {
+        "phase": "p2",
+        "step": "s10",
+        "from": "rt",
+        "to": "ui",
+        "label": "unblockUiThread",
+        "data": "UI 可以开始下一帧",
+        "kind": "callback"
+      },
+      {
+        "phase": "p2",
+        "step": "s11",
+        "from": "rt",
+        "to": "rt",
+        "label": "跳帧判定",
+        "data": "skipEmptyFrames / DrawingOff",
+        "kind": "branch"
+      },
+      {
+        "phase": "p3",
+        "step": "s14",
+        "from": "rt",
+        "to": "gpu",
+        "label": "renderFrameImpl",
+        "data": "GL/VK draw op",
+        "kind": "call"
+      },
+      {
+        "phase": "p3",
+        "step": "s15",
+        "from": "rt",
+        "to": "gpu",
+        "label": "FlushAndSubmit",
+        "data": "提交即返回，不等完成",
+        "kind": "call"
+      },
+      {
+        "phase": "p3",
+        "step": "s16",
+        "from": "rt",
+        "to": "rt",
+        "label": "swapBuffers",
+        "data": "requireSwap 判定",
+        "kind": "branch"
+      },
+      {
+        "phase": "p3",
+        "step": "s17",
+        "from": "rt",
+        "to": "gui",
+        "label": "eglSwapBuffers",
+        "data": "GraphicBuffer + acquire fence",
+        "kind": "call"
+      },
+      {
+        "phase": "p4",
+        "step": "s19",
+        "from": "gui",
+        "to": "gui",
+        "label": "queueBuffer 入队",
+        "data": "slot=QUEUED, frameNumber++",
+        "kind": "call"
+      },
+      {
+        "phase": "p4",
+        "step": "s20",
+        "from": "gui",
+        "to": "gui",
+        "label": "onFrameAvailable",
+        "data": "mNumFrameAvailable++",
+        "kind": "callback"
+      },
+      {
+        "phase": "p4",
+        "step": "s21",
+        "from": "gui",
+        "to": "gui",
+        "label": "acquireNextBufferLocked",
+        "data": "BufferItem + fence",
+        "kind": "call"
+      },
+      {
+        "phase": "p4",
+        "step": "s22",
+        "from": "gui",
+        "to": "sf",
+        "label": "Transaction setBuffer + apply",
+        "data": "oneWay",
+        "kind": "oneway"
+      },
+      {
+        "phase": "p5",
+        "step": "s23",
+        "from": "sf",
+        "to": "sf",
+        "label": "commit",
+        "data": "flushTransactions（按 readiness 过滤）",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s24",
+        "from": "sf",
+        "to": "sf",
+        "label": "updateLayerSnapshots → setBuffer",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s25",
+        "from": "sf",
+        "to": "sf",
+        "label": "latchBufferImpl",
+        "data": "轮询 acquire fence",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s26",
+        "from": "sf",
+        "to": "sf",
+        "label": "composite",
+        "data": "有帧的 Layer 集合",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s27",
+        "from": "sf",
+        "to": "sf",
+        "label": "Output::prepare",
+        "data": "collectVisibleLayers",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s28",
+        "from": "sf",
+        "to": "hwc",
+        "label": "getDeviceCompositionChanges",
+        "data": "DEVICE / CLIENT",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s29",
+        "from": "sf",
+        "to": "gpu",
+        "label": "client 合成 drawLayers",
+        "data": "RenderEngine（同步）",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s30",
+        "from": "sf",
+        "to": "hwc",
+        "label": "present",
+        "data": "layers / client target",
+        "kind": "call"
+      },
+      {
+        "phase": "p5",
+        "step": "s30",
+        "from": "hwc",
+        "to": "hwc",
+        "label": "present fence（异步上屏）",
+        "kind": "call"
+      },
+      {
+        "phase": "p6",
+        "step": "s31",
+        "from": "hwc",
+        "to": "sf",
+        "label": "onCompositionPresented",
+        "kind": "callback"
+      },
+      {
+        "phase": "p6",
+        "step": "s31",
+        "from": "sf",
+        "to": "gui",
+        "label": "writeReleaseFence",
+        "data": "BufferReleaseChannel",
+        "kind": "callback"
+      },
+      {
+        "phase": "p6",
+        "step": "s32",
+        "from": "gui",
+        "to": "rt",
+        "label": "dequeueBuffer 唤醒",
+        "data": "slot 置 FREE",
+        "kind": "callback"
+      },
+      {
+        "phase": "p6",
+        "step": "s33",
+        "from": "rt",
+        "to": "rt",
+        "label": "跳帧：didProduceBuffer=false",
+        "kind": "branch"
+      },
+      {
+        "phase": "p6",
+        "step": "s34",
+        "from": "gui",
+        "to": "gui",
+        "label": "bufferReplaced（BLAST 下基本不可达）",
+        "kind": "branch"
+      },
+      {
+        "phase": "p6",
+        "step": "s35",
+        "from": "rt",
+        "to": "gpu",
+        "label": "Vulkan swap 路径",
+        "data": "present 时机不同",
+        "kind": "branch"
+      },
+      {
+        "phase": "p6",
+        "step": "s36",
+        "from": "ui",
+        "to": "ui",
+        "label": "atrace / dumpsys 观测",
+        "kind": "note"
+      }
+    ]
+  },
+  "flowDetail": {
+    "width": 1500,
+    "height": 980,
+    "regions": [
+      {
+        "id": "A",
+        "label": "A · 这一帧要不要画（RT 同步与判定）",
+        "x": 30,
+        "y": 50,
+        "w": 500,
+        "h": 740
+      },
+      {
+        "id": "B",
+        "label": "B · buffer 怎么入队（生产 → BLAST）",
+        "x": 560,
+        "y": 50,
+        "w": 380,
+        "h": 740
+      },
+      {
+        "id": "C",
+        "label": "C · SF 怎么合成上屏（commit → present）",
+        "x": 970,
+        "y": 50,
+        "w": 500,
+        "h": 880
+      }
+    ],
+    "nodes": [
+      {
+        "id": "a1",
+        "kind": "start",
+        "label": "UI: syncAndDrawFrame",
+        "x": 280,
+        "y": 120,
+        "region": "A"
+      },
+      {
+        "id": "a2",
+        "kind": "process",
+        "label": "DrawFrameTask.run → syncFrameState",
+        "x": 280,
+        "y": 210,
+        "note": "UI 在 mSignal 停住",
+        "region": "A"
+      },
+      {
+        "id": "a3",
+        "kind": "decision",
+        "label": "DrawingOff / 无根节点？",
+        "x": 280,
+        "y": 310,
+        "region": "A"
+      },
+      {
+        "id": "a4",
+        "kind": "decision",
+        "label": "skipEmptyFrames 且无需重画？",
+        "x": 280,
+        "y": 420,
+        "region": "A"
+      },
+      {
+        "id": "a5",
+        "kind": "process",
+        "label": "回放 draw op + FlushAndSubmit",
+        "x": 280,
+        "y": 530,
+        "region": "A"
+      },
+      {
+        "id": "a6",
+        "kind": "decision",
+        "label": "requireSwap？（GL: 基本恒真）",
+        "x": 280,
+        "y": 630,
+        "region": "A"
+      },
+      {
+        "id": "a7",
+        "kind": "process",
+        "label": "跳帧：didProduceBuffer=false",
+        "x": 280,
+        "y": 730,
+        "note": "SF 看不到这一帧",
+        "region": "A"
+      },
+      {
+        "id": "b1",
+        "kind": "process",
+        "label": "Surface.queueBufferImpl 取 slot",
+        "x": 750,
+        "y": 120,
+        "note": "临时放锁防重入",
+        "region": "B"
+      },
+      {
+        "id": "b2",
+        "kind": "decision",
+        "label": "上一帧 GPU fence 完成？",
+        "x": 750,
+        "y": 230,
+        "region": "B"
+      },
+      {
+        "id": "b3",
+        "kind": "process",
+        "label": "waitForever（Throttling EGL）",
+        "x": 750,
+        "y": 330,
+        "region": "B"
+      },
+      {
+        "id": "b4",
+        "kind": "process",
+        "label": "入队：slot=QUEUED，frameNumber++",
+        "x": 750,
+        "y": 440,
+        "region": "B"
+      },
+      {
+        "id": "b5",
+        "kind": "process",
+        "label": "onFrameAvailable → acquire",
+        "x": 750,
+        "y": 550,
+        "region": "B"
+      },
+      {
+        "id": "b6",
+        "kind": "process",
+        "label": "Transaction setBuffer + apply(oneWay)",
+        "x": 750,
+        "y": 660,
+        "region": "B"
+      },
+      {
+        "id": "c1",
+        "kind": "process",
+        "label": "SF commit：flushTransactions",
+        "x": 1220,
+        "y": 120,
+        "note": "按 readiness 过滤",
+        "region": "C"
+      },
+      {
+        "id": "c2",
+        "kind": "decision",
+        "label": "事务 ready？",
+        "x": 1220,
+        "y": 220,
+        "region": "C"
+      },
+      {
+        "id": "c3",
+        "kind": "process",
+        "label": "updateLayerSnapshots → setBuffer",
+        "x": 1220,
+        "y": 330,
+        "region": "C"
+      },
+      {
+        "id": "c4",
+        "kind": "decision",
+        "label": "latch fence signaled？",
+        "x": 1220,
+        "y": 440,
+        "region": "C"
+      },
+      {
+        "id": "c5",
+        "kind": "process",
+        "label": "return false → 重排 commit",
+        "x": 1220,
+        "y": 540,
+        "note": "不等、不超时",
+        "region": "C"
+      },
+      {
+        "id": "c6",
+        "kind": "process",
+        "label": "composite → Output::prepare",
+        "x": 1220,
+        "y": 640,
+        "region": "C"
+      },
+      {
+        "id": "c7",
+        "kind": "decision",
+        "label": "HWC 能 DEVICE 合成？",
+        "x": 1220,
+        "y": 740,
+        "region": "C"
+      },
+      {
+        "id": "c8",
+        "kind": "process",
+        "label": "CLIENT：RenderEngine 画进 target",
+        "x": 1220,
+        "y": 840,
+        "note": "DEVICE 则直接 present",
+        "region": "C"
+      },
+      {
+        "id": "c9",
+        "kind": "end",
+        "label": "present → release fence 回流",
+        "x": 1220,
+        "y": 930,
+        "region": "C"
+      }
+    ],
+    "edges": [
+      {
+        "from": "a1",
+        "to": "a2"
+      },
+      {
+        "from": "a2",
+        "to": "a3"
+      },
+      {
+        "from": "a3",
+        "to": "a4",
+        "label": "否"
+      },
+      {
+        "from": "a3",
+        "to": "a7",
+        "label": "是（跳到跳帧）",
+        "route": "left"
+      },
+      {
+        "from": "a4",
+        "to": "a5",
+        "label": "否"
+      },
+      {
+        "from": "a4",
+        "to": "a7",
+        "label": "是"
+      },
+      {
+        "from": "a5",
+        "to": "a6"
+      },
+      {
+        "from": "a6",
+        "to": "b1",
+        "label": "是",
+        "route": "h"
+      },
+      {
+        "from": "a6",
+        "to": "a7",
+        "label": "否"
+      },
+      {
+        "from": "b1",
+        "to": "b2"
+      },
+      {
+        "from": "b2",
+        "to": "b4",
+        "label": "是"
+      },
+      {
+        "from": "b2",
+        "to": "b3",
+        "label": "否"
+      },
+      {
+        "from": "b3",
+        "to": "b4"
+      },
+      {
+        "from": "b4",
+        "to": "b5"
+      },
+      {
+        "from": "b5",
+        "to": "b6"
+      },
+      {
+        "from": "b6",
+        "to": "c1",
+        "label": "oneWay",
+        "route": "h"
+      },
+      {
+        "from": "c1",
+        "to": "c2"
+      },
+      {
+        "from": "c2",
+        "to": "c3",
+        "label": "是"
+      },
+      {
+        "from": "c2",
+        "to": "c1",
+        "label": "否，等下一拍",
+        "route": "right"
+      },
+      {
+        "from": "c3",
+        "to": "c4"
+      },
+      {
+        "from": "c4",
+        "to": "c6",
+        "label": "是"
+      },
+      {
+        "from": "c4",
+        "to": "c5",
+        "label": "否"
+      },
+      {
+        "from": "c5",
+        "to": "c1",
+        "label": "下一拍重试",
+        "route": "right"
+      },
+      {
+        "from": "c6",
+        "to": "c7"
+      },
+      {
+        "from": "c7",
+        "to": "c9",
+        "label": "是"
+      },
+      {
+        "from": "c7",
+        "to": "c8",
+        "label": "否"
+      },
+      {
+        "from": "c8",
+        "to": "c9"
+      }
+    ]
+  }
+}

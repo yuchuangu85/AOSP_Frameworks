@@ -1,0 +1,240 @@
+{
+  "id": "id-processanrs",
+  "title": "InputDispatcher::processAnrsLocked",
+  "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+  "sig": "nsecs_t InputDispatcher::processAnrsLocked()",
+  "span": [
+    1143,
+    1180
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "nsecs_t InputDispatcher::processAnrsLocked() {",
+      "kind": "note",
+      "text": "每轮 dispatchOnce 都会调用它；返回值是「下次需要检查 ANR 的时间」，直接参与 poll 超时的取最小值。"
+    },
+    {
+      "at": 2,
+      "quote": "const nsecs_t currentTime = now();",
+      "kind": "data",
+      "text": "当前 time。"
+    },
+    {
+      "at": 3,
+      "quote": "nsecs_t nextAnrCheck = LLONG_MAX;",
+      "kind": "data",
+      "text": "默认 LLONG_MAX 表示「没有需要检查的 ANR」。"
+    },
+    {
+      "at": 4,
+      "quote": "// Check if we are waiting for a focused window to appear. Raise ANR if waited too long",
+      "kind": "note",
+      "text": "第一类：等焦点窗口的超时。这类 ANR 与具体连接无关，是「有 focused application 但没有 focused window」时起的定时器。"
+    },
+    {
+      "at": 5,
+      "quote": "if (mNoFocusedWindowAnrState.has_value()) {",
+      "kind": "branch",
+      "text": "存在「等待焦点窗口」状态。"
+    },
+    {
+      "at": 6,
+      "quote": "if (currentTime >= mNoFocusedWindowAnrState->timeoutEndTime) {",
+      "kind": "decision",
+      "text": "已经超过该状态的 timeoutEndTime。"
+    },
+    {
+      "at": 7,
+      "quote": "processNoFocusedWindowAnrLocked();",
+      "kind": "call",
+      "text": "执行「无焦点窗口」的 ANR 处理：会再确认一次焦点应用是否仍是同一个。"
+    },
+    {
+      "at": 8,
+      "quote": "resetNoFocusedWindowTimeoutLocked();",
+      "kind": "call",
+      "text": "清除等待状态与定时器。"
+    },
+    {
+      "at": 9,
+      "quote": "return LLONG_MIN;",
+      "kind": "note",
+      "text": "立刻返回 LLONG_MIN：表示「马上还要再看一轮」，让 dispatchOnce 立即 poll 返回。"
+    },
+    {
+      "at": 10,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则继续等。"
+    },
+    {
+      "at": 11,
+      "quote": "// Keep waiting. We will drop the event when mNoFocusedWindowAnrState->timeoutEndTime",
+      "kind": "note",
+      "text": "注释：等到 timeoutEndTime 时才会丢事件。"
+    },
+    {
+      "at": 12,
+      "quote": "// comes.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 13,
+      "quote": "nextAnrCheck = mNoFocusedWindowAnrState->timeoutEndTime;",
+      "kind": "data",
+      "text": "下次检查时间就是该状态的到期时间。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭第一类判断。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "// Check if any connection ANRs are due",
+      "kind": "note",
+      "text": "第二类：连接级超时——即「事件已投递但 app 没在 timeout 内 finish」。"
+    },
+    {
+      "at": 18,
+      "quote": "nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());",
+      "kind": "decision",
+      "text": "与 AnrTracker 的最早超时取更小的那个。"
+    },
+    {
+      "at": 19,
+      "quote": "if (currentTime < nextAnrCheck) { // most likely scenario",
+      "kind": "branch",
+      "text": "最常见的分支：还没到任何超时时间。"
+    },
+    {
+      "at": 20,
+      "quote": "return nextAnrCheck;          // everything is normal. Let's check again at nextAnrCheck",
+      "kind": "note",
+      "text": "返回下次检查时间，本轮到此为止。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭正常分支。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "// If we reached here, we have an unresponsive connection.",
+      "kind": "note",
+      "text": "走到这里说明有连接超时了。"
+    },
+    {
+      "at": 24,
+      "quote": "std::shared_ptr<Connection> connection =",
+      "kind": "data",
+      "text": "按 AnrTracker 的最早 token 找连接。"
+    },
+    {
+      "at": 25,
+      "quote": "mConnectionManager.getConnection(mAnrTracker.firstToken());",
+      "kind": "call",
+      "text": "从 ConnectionManager 取 Connection。"
+    },
+    {
+      "at": 26,
+      "quote": "if (connection == nullptr) {",
+      "kind": "branch",
+      "text": "连接已不存在（窗口被销毁）。"
+    },
+    {
+      "at": 27,
+      "quote": "ALOGE(\"Could not find connection for entry %\" PRId64, mAnrTracker.firstTimeout());",
+      "kind": "note",
+      "text": "只在日志里提示，因为这是竞态但可恢复。"
+    },
+    {
+      "at": 28,
+      "quote": "// As we no longer have entry for this connection, remove it form Anr tracker to prevent",
+      "kind": "note",
+      "text": "注释：连接已无对应项时要从 tracker 移除。"
+    },
+    {
+      "at": 29,
+      "quote": "// samme error being logged multiple times.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 30,
+      "quote": "mAnrTracker.eraseToken(mAnrTracker.firstToken());",
+      "kind": "call",
+      "text": "移除 token，避免同一错误被反复记录。"
+    },
+    {
+      "at": 31,
+      "quote": "return nextAnrCheck;",
+      "kind": "note",
+      "text": "返回原定的下次检查时间。"
+    },
+    {
+      "at": 32,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭连接判断。"
+    },
+    {
+      "at": 33,
+      "quote": "connection->responsive = false;",
+      "kind": "state",
+      "text": "**核心副作用**：把连接标记为不响应。之后 canWindowReceiveMotion 会直接拒绝给它送触摸。"
+    },
+    {
+      "at": 34,
+      "quote": "// Stop waking up for this unresponsive connection",
+      "kind": "note",
+      "text": "注释：不再为这个连接唤醒。"
+    },
+    {
+      "at": 35,
+      "quote": "mAnrTracker.eraseToken(connection->getToken());",
+      "kind": "call",
+      "text": "从 AnrTracker 移除该 token。"
+    },
+    {
+      "at": 36,
+      "quote": "onAnrLocked(connection);",
+      "kind": "call",
+      "text": "触发 ANR：拼 reason、投递「窗口无响应」命令给 policy。"
+    },
+    {
+      "at": 37,
+      "quote": "return LLONG_MIN;",
+      "kind": "note",
+      "text": "返回 LLONG_MIN，让下一轮立刻处理后续（例如合成 CANCEL）。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

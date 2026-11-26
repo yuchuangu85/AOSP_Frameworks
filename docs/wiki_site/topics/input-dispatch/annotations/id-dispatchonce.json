@@ -1,0 +1,276 @@
+{
+  "id": "id-dispatchonce",
+  "title": "InputDispatcher::dispatchOnce",
+  "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+  "sig": "void InputDispatcher::dispatchOnce()",
+  "span": [
+    983,
+    1026
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void InputDispatcher::dispatchOnce() {",
+      "kind": "note",
+      "text": "dispatcher 线程的心跳。注意它没有 while 循环——外层 Looper 每醒来一次就调一轮。"
+    },
+    {
+      "at": 2,
+      "quote": "nsecs_t nextWakeupTime = LLONG_MAX;",
+      "kind": "data",
+      "text": "默认 LLONG_MAX 表示「没有定时任务，可以无限睡」。"
+    },
+    {
+      "at": 3,
+      "quote": "{ // acquire lock",
+      "kind": "lock",
+      "text": "整段持 mLock：分发、command、ANR 检查都在锁内完成。"
+    },
+    {
+      "at": 4,
+      "quote": "std::scoped_lock _l(mLock);",
+      "kind": "lock",
+      "text": "RAII 加锁，作用域结束自动释放。"
+    },
+    {
+      "at": 5,
+      "quote": "mDispatcherIsAlive.notify_all();",
+      "kind": "call",
+      "text": "用于测试与析构等待，告知「dispatcher 还活着」。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "// Run a dispatch loop if there are no pending commands.",
+      "kind": "note",
+      "text": "有 pending command 时先不分发——command 往往是为了改变分发决策（例如冻结/解冻）。"
+    },
+    {
+      "at": 8,
+      "quote": "// The dispatch loop might enqueue commands to run afterwards.",
+      "kind": "note",
+      "text": "注释：分发循环本身也可能追加 command。"
+    },
+    {
+      "at": 9,
+      "quote": "if (!haveCommandsLocked()) {",
+      "kind": "branch",
+      "text": "没有待执行命令才跑分发。"
+    },
+    {
+      "at": 10,
+      "quote": "dispatchOnceInnerLocked(/*byref*/ nextWakeupTime);",
+      "kind": "call",
+      "text": "**核心**：取出并分发一条事件；nextWakeupTime 通过引用带回。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "// Run all pending commands if there are any.",
+      "kind": "note",
+      "text": "执行本轮累积的命令。"
+    },
+    {
+      "at": 14,
+      "quote": "// If any commands were run then force the next poll to wake up immediately.",
+      "kind": "note",
+      "text": "执行过命令就强制下一轮立刻醒来。"
+    },
+    {
+      "at": 15,
+      "quote": "if (runCommandsLockedInterruptable()) {",
+      "kind": "branch",
+      "text": "runCommandsLockedInterruptable 返回是否执行了命令。"
+    },
+    {
+      "at": 16,
+      "quote": "nextWakeupTime = LLONG_MIN;",
+      "kind": "state",
+      "text": "把下次唤醒设为 LLONG_MIN，等价于「马上再跑一轮」。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "// If we are still waiting for ack on some events,",
+      "kind": "note",
+      "text": "接下来是关键：等待 ack 期间要提前醒来检查 ANR。"
+    },
+    {
+      "at": 20,
+      "quote": "// we might have to wake up earlier to check if an app is ANRing.",
+      "kind": "note",
+      "text": "否则 app 一直不 finish 时，poll 会睡到天荒地老。"
+    },
+    {
+      "at": 21,
+      "quote": "// This call is guarded by the enable_anr_warning_callback_input_dispatcher flag",
+      "kind": "note",
+      "text": "pre-ANR 回调受 flag 控制（enable_anr_warning_callback_input_dispatcher）。"
+    },
+    {
+      "at": 22,
+      "quote": "nextWakeupTime = std::min({nextWakeupTime,",
+      "kind": "decision",
+      "text": "三者取最小唤醒时间。"
+    },
+    {
+      "at": 23,
+      "quote": "// Notify the process that an ANR is imminent (pre-ANR), a few",
+      "kind": "note",
+      "text": "pre-ANR：正式 ANR 前几秒先预警。"
+    },
+    {
+      "at": 24,
+      "quote": "// seconds before the actual ANR handling runs.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 25,
+      "quote": "processPreAnrsLocked(),",
+      "kind": "call",
+      "text": "返回 pre-ANR 的下次检查时间。"
+    },
+    {
+      "at": 26,
+      "quote": "// The ANRs are then processed.",
+      "kind": "note",
+      "text": "真正的 ANR 检查。"
+    },
+    {
+      "at": 27,
+      "quote": "processAnrsLocked()});",
+      "kind": "call",
+      "text": "返回 ANR 的下次检查时间；两者都可能返回 LLONG_MIN 表示立刻再看。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 29,
+      "quote": "if (mPerDeviceInputLatencyMetricsFlag) {",
+      "kind": "branch",
+      "text": "按设备统计输入延迟度量（flag 控制）。"
+    },
+    {
+      "at": 30,
+      "quote": "processLatencyStatisticsLocked();",
+      "kind": "call",
+      "text": "更新延迟直方图。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 32,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 33,
+      "quote": "// We are about to enter an infinitely long sleep, because we have no commands or",
+      "kind": "note",
+      "text": "如果没有任何待办，说明即将进入无限睡眠。"
+    },
+    {
+      "at": 34,
+      "quote": "// pending or queued events",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 35,
+      "quote": "if (nextWakeupTime == LLONG_MAX) {",
+      "kind": "branch",
+      "text": "没有任何定时任务。"
+    },
+    {
+      "at": 36,
+      "quote": "mDispatcherEnteredIdle.notify_all();",
+      "kind": "call",
+      "text": "通知「已进入 idle」，供测试与诊断使用。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 38,
+      "quote": "} // release lock",
+      "kind": "lock",
+      "text": "释放 mLock——注意是在 poll 之前释放。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "// Wait for callback or timeout or wake.  (make sure we round up, not down)",
+      "kind": "note",
+      "text": "接下来进入 poll：等待回调、超时或被 wake。"
+    },
+    {
+      "at": 41,
+      "quote": "nsecs_t currentTime = now();",
+      "kind": "data",
+      "text": "当前时间。"
+    },
+    {
+      "at": 42,
+      "quote": "int timeoutMillis = toMillisecondTimeoutDelay(currentTime, nextWakeupTime);",
+      "kind": "call",
+      "text": "把下次唤醒时间折算成 poll 超时；取整方向向上，避免提前醒来空转。"
+    },
+    {
+      "at": 43,
+      "quote": "mLooper->pollOnce(timeoutMillis);",
+      "kind": "call",
+      "text": "**锁外** pollOnce：fd 回调（例如应用 finish）会在这里被处理。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

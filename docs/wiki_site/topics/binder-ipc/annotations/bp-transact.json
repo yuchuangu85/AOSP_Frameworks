@@ -1,0 +1,468 @@
+{
+  "id": "bp-transact",
+  "title": "IPCThreadState::transact",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::transact(",
+  "span": [
+    921,
+    996
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::transact(int32_t handle,",
+      "kind": "note",
+      "text": "客户端调用出口：同步与 oneway 在这里分叉。"
+    },
+    {
+      "at": 2,
+      "quote": "uint32_t code, const Parcel& data,",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 3,
+      "quote": "Parcel* reply, uint32_t flags)",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 4,
+      "quote": "{",
+      "kind": "note",
+      "text": "**硬断言**：Parcel 若被标记为 RPC 用途，就不能走本地 binder——这是防止两条通道混用的防线。"
+    },
+    {
+      "at": 5,
+      "quote": "LOG_ALWAYS_FATAL_IF(data.isForRpc(), \"Parcel constructed for RPC, but being used with binder.\");",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "data",
+      "text": "结果码。"
+    },
+    {
+      "at": 7,
+      "quote": "status_t err;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "state",
+      "text": "**总是接受 fd**：允许调用方在数据里传文件描述符。"
+    },
+    {
+      "at": 9,
+      "quote": "flags |= TF_ACCEPT_FDS;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "branch",
+      "text": "事务日志开关。"
+    },
+    {
+      "at": 11,
+      "quote": "IF_LOG_TRANSACTIONS() {",
+      "kind": "note",
+      "text": "日志流。"
+    },
+    {
+      "at": 12,
+      "quote": "std::ostringstream logStream;",
+      "kind": "note",
+      "text": "记录线程、handle、code。"
+    },
+    {
+      "at": 13,
+      "quote": "logStream << \"BC_TRANSACTION thr \" << (void*)pthread_self() << \" / hand \" << handle",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 14,
+      "quote": "<< \" / code \" << TypeCode(code) << \": \\t\" << data << \"\\n\";",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 15,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "打印 Parcel 内容。"
+    },
+    {
+      "at": 16,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "LOG_ONEWAY(\">>>> SEND from pid %d uid %d %s\", getpid(), getuid(),",
+      "kind": "note",
+      "text": "调试日志：明确区分 READ REPLY 与 ONE WAY。"
+    },
+    {
+      "at": 20,
+      "quote": "(flags & TF_ONE_WAY) == 0 ? \"READ REPLY\" : \"ONE WAY\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "err = writeTransactionData(BC_TRANSACTION, flags, handle, code, data, nullptr);",
+      "kind": "call",
+      "text": "**把调用编码进 mOut**（BC_TRANSACTION）。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "if (err != NO_ERROR) {",
+      "kind": "branch",
+      "text": "编码失败。"
+    },
+    {
+      "at": 24,
+      "quote": "if (reply) reply->setError(err);",
+      "kind": "branch",
+      "text": "有 reply 承接。"
+    },
+    {
+      "at": 25,
+      "quote": "return (mLastError = err);",
+      "kind": "note",
+      "text": "把错误写进 Parcel，让上层能读到。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 27,
+      "quote": "",
+      "kind": "note",
+      "text": "记录最后错误并返回。"
+    },
+    {
+      "at": 28,
+      "quote": "if ((flags & TF_ONE_WAY) == 0) {",
+      "kind": "note",
+      "text": "关闭失败分支。"
+    },
+    {
+      "at": 29,
+      "quote": "if (mCallRestriction != ProcessState::CallRestriction::NONE) [[unlikely]] {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "if (mCallRestriction == ProcessState::CallRestriction::ERROR_IF_NOT_ONEWAY) {",
+      "kind": "branch",
+      "text": "**同步调用**（没有 TF_ONE_WAY）。"
+    },
+    {
+      "at": 31,
+      "quote": "ALOGE(\"Process making non-oneway call (code: %u) but is restricted.\", code);",
+      "kind": "branch",
+      "text": "进程被设置了调用限制。"
+    },
+    {
+      "at": 32,
+      "quote": "CallStack::logStack(\"non-oneway call\", CallStack::getCurrent(10).get(),",
+      "kind": "branch",
+      "text": "**只允许 oneway** 的限制下发了同步调用。"
+    },
+    {
+      "at": 33,
+      "quote": "ANDROID_LOG_ERROR);",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 34,
+      "quote": "} else /* FATAL_IF_NOT_ONEWAY */ {",
+      "kind": "note",
+      "text": "打印调用栈：定位是谁违规。"
+    },
+    {
+      "at": 35,
+      "quote": "LOG_ALWAYS_FATAL(\"Process may not make non-oneway calls (code: %u).\", code);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "否则是致命级别限制。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "**直接 FATAL**。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭限制级别判断。"
+    },
+    {
+      "at": 39,
+      "quote": "#if 0",
+      "kind": "note",
+      "text": "关闭限制判断。"
+    },
+    {
+      "at": 40,
+      "quote": "if (code == 4) { // relayout",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "ALOGI(\">>>>>> CALLING transaction 4\");",
+      "kind": "note",
+      "text": "注释掉的调试代码。"
+    },
+    {
+      "at": 42,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 43,
+      "quote": "ALOGI(\">>>>>> CALLING transaction %d\", code);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "#endif",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 46,
+      "quote": "if (reply) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 47,
+      "quote": "err = waitForResponse(reply);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 48,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "关闭注释块。"
+    },
+    {
+      "at": 49,
+      "quote": "Parcel fakeReply;",
+      "kind": "branch",
+      "text": "调用方给了 reply。"
+    },
+    {
+      "at": 50,
+      "quote": "err = waitForResponse(&fakeReply);",
+      "kind": "call",
+      "text": "**在这里阻塞，直到收到回复**。"
+    },
+    {
+      "at": 51,
+      "quote": "}",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 52,
+      "quote": "#if 0",
+      "kind": "data",
+      "text": "造一个临时 reply 来承接（内容不需要）。"
+    },
+    {
+      "at": 53,
+      "quote": "if (code == 4) { // relayout",
+      "kind": "call",
+      "text": "同样要等回复，否则协议错乱。"
+    },
+    {
+      "at": 54,
+      "quote": "ALOGI(\"<<<<<< RETURNING transaction 4\");",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 55,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "注释块。"
+    },
+    {
+      "at": 56,
+      "quote": "ALOGI(\"<<<<<< RETURNING transaction %d\", code);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 58,
+      "quote": "#endif",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 59,
+      "quote": "",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 60,
+      "quote": "IF_LOG_TRANSACTIONS() {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 61,
+      "quote": "std::ostringstream logStream;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "logStream << \"BR_REPLY thr \" << (void*)pthread_self() << \" / hand \" << handle << \": \";",
+      "kind": "note",
+      "text": "关闭注释块。"
+    },
+    {
+      "at": 63,
+      "quote": "if (reply)",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 64,
+      "quote": "logStream << \"\\t\" << *reply << \"\\n\";",
+      "kind": "branch",
+      "text": "事务日志开关。"
+    },
+    {
+      "at": 65,
+      "quote": "else",
+      "kind": "note",
+      "text": "日志流。"
+    },
+    {
+      "at": 66,
+      "quote": "logStream << \"(none requested)\"",
+      "kind": "note",
+      "text": "记录收到回复。"
+    },
+    {
+      "at": 67,
+      "quote": "<< \"\\n\";",
+      "kind": "branch",
+      "text": "有 reply。"
+    },
+    {
+      "at": 68,
+      "quote": "std::string message = logStream.str();",
+      "kind": "note",
+      "text": "打印内容。"
+    },
+    {
+      "at": 69,
+      "quote": "ALOGI(\"%s\", message.c_str());",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "标注未请求回复。"
+    },
+    {
+      "at": 71,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 72,
+      "quote": "err = waitForResponse(nullptr, nullptr);",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 73,
+      "quote": "}",
+      "kind": "note",
+      "text": "打印。"
+    },
+    {
+      "at": 74,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 75,
+      "quote": "return err;",
+      "kind": "note",
+      "text": "否则（oneway）。"
+    },
+    {
+      "at": 76,
+      "quote": "}",
+      "kind": "call",
+      "text": "**只等 BR_TRANSACTION_COMPLETE**，不等对端执行。"
+    }
+  ]
+}

@@ -1,0 +1,402 @@
+{
+  "id": "et-consume",
+  "title": "EventThread::shouldConsumeEvent",
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "sig": "bool EventThread::shouldConsumeEvent",
+  "span": [
+    637,
+    701
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool EventThread::shouldConsumeEvent(const DisplayEventReceiver::Event& event,",
+      "kind": "note",
+      "text": "决定「这个事件要不要发给这个连接」。它同时处理两类控制：请求模式（None/Single/Periodic/rate）与相位限流。"
+    },
+    {
+      "at": 2,
+      "quote": "const sp<EventThreadConnection>& connection) const {",
+      "kind": "note",
+      "text": "参数：事件与目标连接。"
+    },
+    {
+      "at": 3,
+      "quote": "const auto throttleVsync = [&]() REQUIRES(mMutex) {",
+      "kind": "data",
+      "text": "限流 lambda：按相位判断这一拍是否该给该连接。"
+    },
+    {
+      "at": 4,
+      "quote": "const auto& vsyncData = event.vsync.vsyncData;",
+      "kind": "note",
+      "text": "续行：要求持 mMutex。"
+    },
+    {
+      "at": 5,
+      "quote": "if (connection->frameRate.isValid()) {",
+      "kind": "data",
+      "text": "取 vsync 数据。"
+    },
+    {
+      "at": 6,
+      "quote": "return !mVsyncSchedule->getTracker()",
+      "kind": "branch",
+      "text": "连接指定了帧率（frameRate override）。"
+    },
+    {
+      "at": 7,
+      "quote": ".isVSyncInPhase(vsyncData.preferredExpectedPresentationTime(),",
+      "kind": "call",
+      "text": "**按相位判断**：该帧率是否落在这一拍上。"
+    },
+    {
+      "at": 8,
+      "quote": "connection->frameRate);",
+      "kind": "call",
+      "text": "用 preferred 时间与该连接的帧率判断相位。"
+    },
+    {
+      "at": 9,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 11,
+      "quote": "const auto expectedPresentTime =",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "TimePoint::fromNs(event.vsync.vsyncData.preferredExpectedPresentationTime());",
+      "kind": "data",
+      "text": "没有指定帧率时走 Scheduler 的通用限流。"
+    },
+    {
+      "at": 13,
+      "quote": "return mCallback.throttleVsync(expectedPresentTime, connection->mOwnerUid);",
+      "kind": "call",
+      "text": "取 preferred 时间。"
+    },
+    {
+      "at": 14,
+      "quote": "};",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "call",
+      "text": "按 uid 与时间点判断。"
+    },
+    {
+      "at": 16,
+      "quote": "switch (event.header.type) {",
+      "kind": "note",
+      "text": "闭合 lambda。"
+    },
+    {
+      "at": 17,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_HOTPLUG:",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 18,
+      "quote": "return true;",
+      "kind": "decision",
+      "text": "**按事件类型分派**：只有 vsync 与刷新率相关事件需要限流。"
+    },
+    {
+      "at": 19,
+      "quote": "",
+      "kind": "branch",
+      "text": "hotplug。"
+    },
+    {
+      "at": 20,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_HDCP_LEVELS_CHANGE:",
+      "kind": "note",
+      "text": "所有连接都要收到。"
+    },
+    {
+      "at": 21,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "branch",
+      "text": "HDCP 等级变化。"
+    },
+    {
+      "at": 23,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_MODE_AND_FRAME_RATE_CHANGE:",
+      "kind": "note",
+      "text": "同上。"
+    },
+    {
+      "at": 24,
+      "quote": "[[fallthrough]];",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_SUPPORTED_REFRESH_RATE:",
+      "kind": "branch",
+      "text": "模式与帧率变化通知。"
+    },
+    {
+      "at": 26,
+      "quote": "return connection->mEventRegistration.test(",
+      "kind": "note",
+      "text": "与下一分支共用一个 return。"
+    },
+    {
+      "at": 27,
+      "quote": "gui::ISurfaceComposer::EventRegistration::modeChanged);",
+      "kind": "branch",
+      "text": "支持的刷新率列表。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "call",
+      "text": "**按注册位过滤**：没注册 modeChanged 的连接收不到。"
+    },
+    {
+      "at": 29,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_MODE_REJECTION:",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "return connection->mEventRegistration.test(",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "gui::ISurfaceComposer::EventRegistration::modeRejected);",
+      "kind": "branch",
+      "text": "模式被拒通知。"
+    },
+    {
+      "at": 32,
+      "quote": "",
+      "kind": "call",
+      "text": "按 modeRejected 注册位过滤。"
+    },
+    {
+      "at": 33,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_VSYNC:",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 34,
+      "quote": "switch (connection->vsyncRequest) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 35,
+      "quote": "case VSyncRequest::None:",
+      "kind": "branch",
+      "text": "**vsync 事件**：这里才是核心。"
+    },
+    {
+      "at": 36,
+      "quote": "return false;",
+      "kind": "decision",
+      "text": "按连接的请求模式分派。"
+    },
+    {
+      "at": 37,
+      "quote": "case VSyncRequest::SingleSuppressCallback:",
+      "kind": "branch",
+      "text": "None：从没请求。"
+    },
+    {
+      "at": 38,
+      "quote": "connection->vsyncRequest = VSyncRequest::None;",
+      "kind": "note",
+      "text": "丢弃。"
+    },
+    {
+      "at": 39,
+      "quote": "return false;",
+      "kind": "branch",
+      "text": "SingleSuppressCallback：上一次 Single 已经发过。"
+    },
+    {
+      "at": 40,
+      "quote": "case VSyncRequest::Single: {",
+      "kind": "state",
+      "text": "降级为 None。"
+    },
+    {
+      "at": 41,
+      "quote": "if (throttleVsync()) {",
+      "kind": "note",
+      "text": "丢弃。"
+    },
+    {
+      "at": 42,
+      "quote": "return false;",
+      "kind": "branch",
+      "text": "Single：requestNextVsync 的一次性请求。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "branch",
+      "text": "相位不匹配（被限流）。"
+    },
+    {
+      "at": 44,
+      "quote": "connection->vsyncRequest = VSyncRequest::SingleSuppressCallback;",
+      "kind": "note",
+      "text": "丢弃，但保持 Single——下一拍还会试。"
+    },
+    {
+      "at": 45,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 46,
+      "quote": "}",
+      "kind": "state",
+      "text": "**消费后降级**为 SingleSuppressCallback，保证只发一次。"
+    },
+    {
+      "at": 47,
+      "quote": "case VSyncRequest::Periodic:",
+      "kind": "note",
+      "text": "发送。"
+    },
+    {
+      "at": 48,
+      "quote": "if (throttleVsync()) {",
+      "kind": "branch",
+      "text": "Periodic：常开。"
+    },
+    {
+      "at": 49,
+      "quote": "return false;",
+      "kind": "branch",
+      "text": "限流命中。"
+    },
+    {
+      "at": 50,
+      "quote": "}",
+      "kind": "note",
+      "text": "丢弃。"
+    },
+    {
+      "at": 51,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 52,
+      "quote": "default:",
+      "kind": "note",
+      "text": "发送。"
+    },
+    {
+      "at": 53,
+      "quote": "// We don't throttle vsync if the app set a vsync request rate",
+      "kind": "note",
+      "text": "否则是数字 rate（app 显式设了帧率）。"
+    },
+    {
+      "at": 54,
+      "quote": "// since there is no easy way to do that and this is a very",
+      "kind": "note",
+      "text": "注释：rate 模式下不做相位限流（实现成本高且场景罕见）。"
+    },
+    {
+      "at": 55,
+      "quote": "// rare case",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 56,
+      "quote": "return event.vsync.count % vsyncPeriod(connection->vsyncRequest) == 0;",
+      "kind": "call",
+      "text": "**count % rate**：只在整倍数拍上发送。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 58,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 59,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_FRAME_RATE_OVERRIDE:",
+      "kind": "branch",
+      "text": "帧率 override 通知。"
+    },
+    {
+      "at": 60,
+      "quote": "return connection->mEventRegistration.test(",
+      "kind": "call",
+      "text": "按 frameRateOverride 注册位过滤。"
+    },
+    {
+      "at": 61,
+      "quote": "gui::ISurfaceComposer::EventRegistration::frameRateOverride);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "case DisplayEventType::DISPLAY_EVENT_NULL:",
+      "kind": "branch",
+      "text": "空事件。"
+    },
+    {
+      "at": 63,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "丢弃。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭事件类型 switch。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

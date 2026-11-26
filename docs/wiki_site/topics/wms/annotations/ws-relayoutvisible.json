@@ -1,0 +1,228 @@
+{
+  "id": "ws-relayoutvisible",
+  "title": "WindowState.relayoutVisibleWindow",
+  "file": "base/services/core/java/com/android/server/wm/WindowState.java",
+  "sig": "int relayoutVisibleWindow(int result) {",
+  "span": [
+    5103,
+    5138
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "int relayoutVisibleWindow(int result) {",
+      "kind": "note",
+      "text": "可见窗口的 relayout 收尾。它决定「首次可见」标记、取消退场动画、并把窗口推进到可显示状态。"
+    },
+    {
+      "at": 2,
+      "quote": "final boolean wasVisible = isVisible();",
+      "kind": "data",
+      "text": "记录调用前是否可见。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 4,
+      "quote": "result |= (!wasVisible || !isDrawn()) ? RELAYOUT_RES_FIRST_TIME : 0;",
+      "kind": "state",
+      "text": "**首次显示标记**：之前不可见或还没 drawn 时置 RELAYOUT_RES_FIRST_TIME，客户端据此做首帧处理（例如跳过动画）。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "if (mAnimatingExit) {",
+      "kind": "branch",
+      "text": "窗口正在播放退场动画。"
+    },
+    {
+      "at": 7,
+      "quote": "Slog.d(TAG, \"relayoutVisibleWindow: \" + this + \" mAnimatingExit=true, mRemoveOnExit=\"",
+      "kind": "note",
+      "text": "D 级日志：带 mRemoveOnExit / mDestroying 便于排障。"
+    },
+    {
+      "at": 8,
+      "quote": "+ mRemoveOnExit + \", mDestroying=\" + mDestroying);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "mAnimatingExit = false;",
+      "kind": "state",
+      "text": "**取消退场**：窗口又要显示了。"
+    },
+    {
+      "at": 11,
+      "quote": "// Cancel the existing exit animation for the next enter animation.",
+      "kind": "note",
+      "text": "注释：为接下来的进场动画取消已有退场动画。"
+    },
+    {
+      "at": 12,
+      "quote": "if (isAnimating()) {",
+      "kind": "branch",
+      "text": "确实在动画中。"
+    },
+    {
+      "at": 13,
+      "quote": "cancelAnimation();",
+      "kind": "call",
+      "text": "取消动画。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 15,
+      "quote": "ProtoLog.d(WM_DEBUG_ANIM, \"Clear animatingExit: reason=relayoutVisibleWindow win=%s\",",
+      "kind": "note",
+      "text": "ProtoLog：debug.wm 的动画日志。"
+    },
+    {
+      "at": 16,
+      "quote": "this);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭退场分支。"
+    },
+    {
+      "at": 18,
+      "quote": "if (mDestroying) {",
+      "kind": "branch",
+      "text": "窗口正在销毁。"
+    },
+    {
+      "at": 19,
+      "quote": "mDestroying = false;",
+      "kind": "state",
+      "text": "**撤销销毁标记**。"
+    },
+    {
+      "at": 20,
+      "quote": "mWmService.mDestroySurface.remove(this);",
+      "kind": "call",
+      "text": "从待销毁集合里移除 surface——避免刚显示就被回收。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 22,
+      "quote": "if (!wasVisible) {",
+      "kind": "branch",
+      "text": "之前不可见。"
+    },
+    {
+      "at": 23,
+      "quote": "mWinAnimator.mEnterAnimationPending = true;",
+      "kind": "state",
+      "text": "**标记待播放进场动画**。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "mWinAnimator.mEnteringAnimation = true;",
+      "kind": "state",
+      "text": "标记正在进场。"
+    },
+    {
+      "at": 27,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 28,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"prepareToDisplay\");",
+      "kind": "trace",
+      "text": "atrace 切片 prepareToDisplay。"
+    },
+    {
+      "at": 29,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 块开始。"
+    },
+    {
+      "at": 30,
+      "quote": "prepareWindowToDisplayDuringRelayout(wasVisible);",
+      "kind": "call",
+      "text": "**准备显示**：内部会处理 surface 创建、alpha 初值等。"
+    },
+    {
+      "at": 31,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 32,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "结束切片（保证异常也闭合）。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 try。"
+    },
+    {
+      "at": 34,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 35,
+      "quote": "return result;",
+      "kind": "note",
+      "text": "返回累积的 relayout 结果。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

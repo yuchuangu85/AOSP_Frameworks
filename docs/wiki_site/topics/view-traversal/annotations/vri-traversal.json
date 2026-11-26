@@ -1,0 +1,54 @@
+{
+  "id": "vri-traversal",
+  "title": "ViewRootImpl::doTraversal",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "void doTraversal(long frameTimeNanos)",
+  "span": [
+    3347,
+    3353
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void doTraversal(long frameTimeNanos) {",
+      "kind": "note",
+      "text": "只有 7 行，却是「屏障什么时候拆、遍历什么时候进」的唯一决定点。frameTimeNanos 是本次 vsync 的帧时间。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mTraversalScheduled) {",
+      "kind": "branch",
+      "text": "再确认一次标志：期间若被 unscheduleTraversals() 撤销（例如窗口移除），这次回调直接空转。"
+    },
+    {
+      "at": 3,
+      "quote": "mTraversalScheduled = false;",
+      "kind": "state",
+      "text": "先清标志，遍历过程中再来的 invalidate 才能重新排下一帧，而不是被当成「已排队」吞掉。"
+    },
+    {
+      "at": 4,
+      "quote": "removeTraversalBarrier();",
+      "kind": "lock",
+      "text": "拆屏障。位置很关键：在 performTraversals 之前拆，所以遍历期间新投递的同步消息不会插进 measure/layout/draw 中间。"
+    },
+    {
+      "at": 5,
+      "quote": "performTraversals(frameTimeNanos);",
+      "kind": "call",
+      "text": "真正的一帧：relayout/measure/layout/draw 全在里面。这里是 UI 线程工作量的大头。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 7,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。若这里抛异常，屏障已经拆掉，不会把 app 的消息队列永久堵死。"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "step": "s02",
+  "title": "Session 转发：会话即权限与身份",
+  "tldr": "Session 几乎是纯转发，但把自身作为 this 传下去，WMS 后续的身份判断都以它为准。",
+  "why": "这一层看起来多余，但它承担了两件事：一是把「会话」这个长期身份对象带进 WMS 的每一条路径；二是作为 IWindowSession 的实现隔离层，客户端只能通过这几个固定方法操作窗口。理解这一点，就能明白为什么 WMS 里几乎不直接信任调用者传进来的 uid——它总是用自己的 Session。",
+  "concepts": [
+    {
+      "term": "转发",
+      "text": "Session 不改变参数，只补上 this。"
+    },
+    {
+      "term": "mCanAddInternalSystemWindow",
+      "text": "会话级能力位，决定能否加系统窗口。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+      "ref": "base/services/core/java/com/android/server/wm/Session.java:272",
+      "what": "入口。"
+    },
+    {
+      "call": "return mService.addWindow(this, window, attrs, viewVisibility, displayId, userId,",
+      "ref": "base/services/core/java/com/android/server/wm/Session.java:275",
+      "what": "带 this 转发。"
+    },
+    {
+      "call": "addWindow(this, window, attrs, viewVisibility, displayId, userId,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1672",
+      "what": "WMS 收到会话。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mService",
+      "before": "WMS 引用",
+      "after": "不变",
+      "note": "会话生命周期由客户端 token 决定。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "误以为转发层没有逻辑：能力位在这里携带。",
+    "跨会话复用窗口：会触发归属校验失败。"
+  ],
+  "debug": [
+    "dumpsys window 的 Session 段。",
+    "日志带 session 的 uid/pid。"
+  ],
+  "next": "加窗口第一步做什么？见第 3 步。"
+}

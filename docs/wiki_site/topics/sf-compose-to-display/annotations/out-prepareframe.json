@@ -1,0 +1,186 @@
+{
+  "id": "out-prepareframe",
+  "title": "Output::prepareFrame",
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "sig": "void Output::prepareFrame()",
+  "span": [
+    1177,
+    1205
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void Output::prepareFrame() {",
+      "kind": "note",
+      "text": "合成方式的分水岭：这一步之前的 writeCompositionState 只是把状态写好，这一步之后才知道每层到底走 DEVICE 还是 CLIENT。"
+    },
+    {
+      "at": 2,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片 prepareFrame；里面会嵌着 HWC validate 的子切片。"
+    },
+    {
+      "at": 3,
+      "quote": "ALOGV(__FUNCTION__);",
+      "kind": "note",
+      "text": "VERBOSE 日志。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "auto& outputState = editState();",
+      "kind": "data",
+      "text": "本输出的可变状态；合成策略结论最终写回这里（usesClientComposition / usesDeviceComposition）。"
+    },
+    {
+      "at": 6,
+      "quote": "if (!outputState.isEnabled) {",
+      "kind": "branch",
+      "text": "输出被关（例如副屏休眠）就完全不做 HWC 往返。"
+    },
+    {
+      "at": 7,
+      "quote": "return;",
+      "kind": "note",
+      "text": "直接退出。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭启用判断。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "std::optional<android::HWComposer::DeviceRequestedChanges> changes;",
+      "kind": "data",
+      "text": "HWC 返回的变更集合：changedTypes、displayRequests、layerRequests、clientTargetProperty、LUT。"
+    },
+    {
+      "at": 11,
+      "quote": "bool success = chooseCompositionStrategy(&changes);",
+      "kind": "call",
+      "text": "虚函数：Display 覆写它去调 HWComposer::getDeviceCompositionChanges；基类 Output 只会全 CLIENT。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "if (success && changes.has_value()) {",
+      "kind": "branch",
+      "text": "只有成功拿到变更才需要补全。"
+    },
+    {
+      "at": 14,
+      "quote": "for (const compositionengine::OutputLayer* layer : getOutputLayersOrderedByZ()) {",
+      "kind": "call",
+      "text": "按 z 序遍历本输出的层。"
+    },
+    {
+      "at": 15,
+      "quote": "HWC2::Layer* hwcLayer = layer->getHwcLayer();",
+      "kind": "data",
+      "text": "取该层对应的 HWC 代理；为空表示这层在这个输出上没有 HWC 表示（例如合成用的虚拟层）。"
+    },
+    {
+      "at": 16,
+      "quote": "if (!hwcLayer || changes->changedTypes.contains(hwcLayer)) continue;",
+      "kind": "branch",
+      "text": "HWC 没提到的层，就沿用我们之前写的 composition type。"
+    },
+    {
+      "at": 17,
+      "quote": "changes->changedTypes[hwcLayer] = layer->getState().hwc->hwcCompositionType;",
+      "kind": "data",
+      "text": "把「没有变化」显式记进 changedTypes，保证后面 apply 时每个层都有确定取值。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭补全分支。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "resetCompositionStrategy();",
+      "kind": "call",
+      "text": "先把策略复位成「全 CLIENT」：失败路径就自动落在 GPU 兜底上，不需要额外分支。"
+    },
+    {
+      "at": 22,
+      "quote": "outputState.strategyPrediction = CompositionStrategyPredictionState::DISABLED;",
+      "kind": "state",
+      "text": "同步模式不使用策略预测；异步预测路径由 prepareFrameAsync 负责。"
+    },
+    {
+      "at": 23,
+      "quote": "outputState.previousDeviceRequestedChanges = changes;",
+      "kind": "data",
+      "text": "把这一拍的 HWC 结论缓存起来，供下一拍做策略预测。"
+    },
+    {
+      "at": 24,
+      "quote": "outputState.previousDeviceRequestedSuccess = success;",
+      "kind": "data",
+      "text": "同时记录是否成功，预测只在连续成功时才敢用。"
+    },
+    {
+      "at": 25,
+      "quote": "if (success) {",
+      "kind": "branch",
+      "text": "只有成功才应用变更。"
+    },
+    {
+      "at": 26,
+      "quote": "applyCompositionStrategy(changes);",
+      "kind": "call",
+      "text": "把 changedTypes / requests 写回各 OutputLayer 与 client target 属性——这一步之后才真正知道谁走 GPU。"
+    },
+    {
+      "at": 27,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭应用分支；失败时保持 resetCompositionStrategy 留下的全 CLIENT。"
+    },
+    {
+      "at": 28,
+      "quote": "finishPrepareFrame();",
+      "kind": "call",
+      "text": "收尾：设置各层的 clientCompositionTimestamp 等，供 FrameTimeline 标记 FALLBACK_COMPOSITION。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。到这里「怎么合成」已经定死，接下来的 finishFrame 只是执行。"
+    }
+  ]
+}

@@ -1,0 +1,432 @@
+{
+  "id": "ps-handle",
+  "title": "ProcessState::getStrongProxyForHandle",
+  "file": "native/libs/binder/ProcessState.cpp",
+  "sig": "sp<IBinder> ProcessState::getStrongProxyForHandle(",
+  "span": [
+    339,
+    408
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "sp<IBinder> ProcessState::getStrongProxyForHandle(int32_t handle)",
+      "kind": "note",
+      "text": "句柄 → BpBinder。每次收到带 binder 对象的消息都会走这里，决定「复用还是新建代理」。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "sp<IBinder> result;",
+      "kind": "data",
+      "text": "结果。"
+    },
+    {
+      "at": 4,
+      "quote": "std::function<void()> postTask;",
+      "kind": "data",
+      "text": "需要在**出锁之后**执行的任务（构造时的回调）。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "std::unique_lock<std::mutex> _l(mLock);",
+      "kind": "lock",
+      "text": "取全局锁：handle 表是进程共享的。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "if (handle == 0 && the_context_object != nullptr) return the_context_object;",
+      "kind": "branch",
+      "text": "**handle 0 且已有 context object**：直接返回缓存。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "handle_entry* e = lookupHandleLocked(handle);",
+      "kind": "call",
+      "text": "查（或创建）该 handle 的条目。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "if (e != nullptr) {",
+      "kind": "branch",
+      "text": "条目存在。"
+    },
+    {
+      "at": 13,
+      "quote": "// We need to create a new BpBinder if there isn't currently one, OR we",
+      "kind": "note",
+      "text": "下面是关键注释：为什么不能直接用旧对象。"
+    },
+    {
+      "at": 14,
+      "quote": "// are unable to acquire a weak reference on this current one.  The",
+      "kind": "note",
+      "text": "续行：需要新建或在无法取弱引用时新建。"
+    },
+    {
+      "at": 15,
+      "quote": "// attemptIncWeak() is safe because we know the BpBinder destructor will always",
+      "kind": "note",
+      "text": "续行：attemptIncWeak 是安全的，因为析构会走同一把锁。"
+    },
+    {
+      "at": 16,
+      "quote": "// call expungeHandle(), which acquires the same lock we are holding now.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "// We need to do this because there is a race condition between someone",
+      "kind": "note",
+      "text": "续行：**释放引用与驱动送来新引用之间存在竞态**——这是本函数存在的根本原因。"
+    },
+    {
+      "at": 18,
+      "quote": "// releasing a reference on this BpBinder, and a new reference on its handle",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 19,
+      "quote": "// arriving from the driver.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 20,
+      "quote": "IBinder* b = e->binder;",
+      "kind": "data",
+      "text": "取当前 binder。"
+    },
+    {
+      "at": 21,
+      "quote": "if (b == nullptr || !e->refs->attemptIncWeak(this)) {",
+      "kind": "decision",
+      "text": "**没有对象，或取弱引用失败**。"
+    },
+    {
+      "at": 22,
+      "quote": "if (handle == 0) {",
+      "kind": "branch",
+      "text": "是 handle 0（ServiceManager）。"
+    },
+    {
+      "at": 23,
+      "quote": "// Special case for context manager...",
+      "kind": "note",
+      "text": "注释：context manager 是唯一「未持有引用就建代理」的对象。"
+    },
+    {
+      "at": 24,
+      "quote": "// The context manager is the only object for which we create",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "// a BpBinder proxy without already holding a reference.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "// Perform a dummy transaction to ensure the context manager",
+      "kind": "note",
+      "text": "注释：先做一次 dummy transaction 确保它已注册。"
+    },
+    {
+      "at": 27,
+      "quote": "// is registered before we create the first local reference",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 28,
+      "quote": "// to it (which will occur when creating the BpBinder).",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 29,
+      "quote": "// If a local reference is created for the BpBinder when the",
+      "kind": "note",
+      "text": "续行：否则驱动不会提供引用，而且**驱动 API 不返回状态**。"
+    },
+    {
+      "at": 30,
+      "quote": "// context manager is not present, the driver will fail to",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "// provide a reference to the context manager, but the",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 32,
+      "quote": "// driver API does not return status.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 33,
+      "quote": "//",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 34,
+      "quote": "// Note that this is not race-free if the context manager",
+      "kind": "note",
+      "text": "注释：如果 context manager 在这期间死掉，这段代码不是无竞态的。"
+    },
+    {
+      "at": 35,
+      "quote": "// dies while this code runs.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "IPCThreadState* ipc = IPCThreadState::self();",
+      "kind": "data",
+      "text": "取线程状态。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 39,
+      "quote": "CallRestriction originalCallRestriction = ipc->getCallRestriction();",
+      "kind": "data",
+      "text": "保存调用限制。"
+    },
+    {
+      "at": 40,
+      "quote": "ipc->setCallRestriction(CallRestriction::NONE);",
+      "kind": "call",
+      "text": "**临时解除限制**：否则在只许 oneway 的进程里这一步会崩。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 42,
+      "quote": "Parcel data;",
+      "kind": "data",
+      "text": "空 Parcel。"
+    },
+    {
+      "at": 43,
+      "quote": "status_t status = ipc->transact(",
+      "kind": "call",
+      "text": "**PING 一次**（handle 0，无回包）。"
+    },
+    {
+      "at": 44,
+      "quote": "0, IBinder::PING_TRANSACTION, data, nullptr, 0);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 46,
+      "quote": "ipc->setCallRestriction(originalCallRestriction);",
+      "kind": "call",
+      "text": "恢复限制。"
+    },
+    {
+      "at": 47,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 48,
+      "quote": "if (status == DEAD_OBJECT)",
+      "kind": "branch",
+      "text": "**ping 返回 DEAD_OBJECT**：ServiceManager 没起来。"
+    },
+    {
+      "at": 49,
+      "quote": "return nullptr;",
+      "kind": "note",
+      "text": "返回空——上层会得到 null 的 IServiceManager。"
+    },
+    {
+      "at": 50,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 51,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭 handle 0 分支。"
+    },
+    {
+      "at": 52,
+      "quote": "sp<BpBinder> bp = BpBinder::PrivateAccessor::create(handle, &postTask);",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 53,
+      "quote": "e->binder = bp.get();",
+      "kind": "call",
+      "text": "**新建 BpBinder**（postTask 用于出锁后回调）。"
+    },
+    {
+      "at": 54,
+      "quote": "if (bp) e->refs = bp->getWeakRefs();",
+      "kind": "state",
+      "text": "记录到条目。"
+    },
+    {
+      "at": 55,
+      "quote": "result = bp;",
+      "kind": "branch",
+      "text": "创建成功。"
+    },
+    {
+      "at": 56,
+      "quote": "} else {",
+      "kind": "state",
+      "text": "记录弱引用。"
+    },
+    {
+      "at": 57,
+      "quote": "// This little bit of nastyness is to allow us to add a primary",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 58,
+      "quote": "// reference to the remote proxy when this team doesn't have one",
+      "kind": "state",
+      "text": "作为结果。"
+    },
+    {
+      "at": 59,
+      "quote": "// but another team is sending the handle to us.",
+      "kind": "note",
+      "text": "否则（取弱引用成功）。"
+    },
+    {
+      "at": 60,
+      "quote": "result.force_set(b);",
+      "kind": "note",
+      "text": "注释：给「别的团队持有、这里没强引用」的代理补一个主引用。"
+    },
+    {
+      "at": 61,
+      "quote": "e->refs->decWeak(this);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "}",
+      "kind": "call",
+      "text": "**强行设置指针，不做额外引用计数**。"
+    },
+    {
+      "at": 63,
+      "quote": "}",
+      "kind": "call",
+      "text": "回退刚才尝试的弱引用。"
+    },
+    {
+      "at": 64,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 65,
+      "quote": "_l.unlock();",
+      "kind": "note",
+      "text": "关闭条目判断。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "if (postTask) postTask();",
+      "kind": "call",
+      "text": "**先出锁**。"
+    },
+    {
+      "at": 68,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 69,
+      "quote": "return result;",
+      "kind": "branch",
+      "text": "有延迟任务。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

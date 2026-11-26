@@ -1,0 +1,55 @@
+{
+  "step": "s17",
+  "title": "InputStage 责任链语义",
+  "tldr": "链序固定：NativePreIme→ViewPreIme→Ime→EarlyPostIme→NativePostIme→ViewPostIme→Synthetic。",
+  "why": "责任链的三种返回值（FORWARD / FINISH_HANDLED / FINISH_NOT_HANDLED）是这套设计的核心：每级都可以选择「继续传」「拦下并标记已处理」「拦下但标记未处理」。AsyncInputStage 更进一步允许乱序完成——IME 段靠它在等输入连接时先放行后续事件，这也解释了为什么某些按键会「后发先至」。而 shouldDropInputEvent 保证了窗口失效时不会把事件送进已经不可用的 View 树。",
+  "concepts": [
+    {
+      "term": "FORWARD / FINISH_HANDLED / FINISH_NOT_HANDLED",
+      "text": "责任链的三种返回值。"
+    },
+    {
+      "term": "AsyncInputStage",
+      "text": "允许暂存并乱序完成的责任链节点。"
+    },
+    {
+      "term": "shouldDropInputEvent",
+      "text": "进入链前的统一过滤。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "abstract static class InputStage implements InputEventReceiver {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:7889",
+      "what": "基类与三种结果的语义。"
+    },
+    {
+      "call": "protected boolean shouldDropInputEvent(QueuedInputEvent q) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:7998",
+      "what": "统一丢弃判定。"
+    },
+    {
+      "call": "abstract static class AsyncInputStage extends InputStage {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:8074",
+      "what": "异步节点。"
+    }
+  ],
+  "state": [
+    {
+      "field": "QueuedInputEvent.mFlags",
+      "before": "普通事件",
+      "after": "可能被标记 CANCEL",
+      "note": "terminal 事件会被改写为 ACTION_CANCEL。"
+    }
+  ],
+  "threads": "UI 线程；AsyncInputStage 的「乱序完成」仍发生在同一线程，只是完成时机推后。",
+  "pitfalls": [
+    "以为丢弃就是丢弃：terminal 事件会被改写成 CANCEL。",
+    "忽略 AsyncInputStage 的乱序：会误判「事件顺序异常」。"
+  ],
+  "debug": [
+    "atrace 里各级 stage 的切片名（例如 aq:ime）。",
+    "DEBUG_INPUT 或 InputLog 可打详细顺序。"
+  ],
+  "next": "最终如何进到 View 树？见第 18 步。"
+}

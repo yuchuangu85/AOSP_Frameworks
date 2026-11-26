@@ -1,0 +1,56 @@
+{
+  "step": "s18",
+  "title": "present 回调：OnComplete",
+  "tldr": "真正的 onComplete（含 release buffer）在 present 之后触发，此时 app 才知道 buffer 已可回收。",
+  "why": "OnComplete 是「buffer 生命周期」的终点。它必须等到 present 之后，因为在那之前 GPU/HWC 可能还在读这块 buffer。理解这条链路能解释一类典型现象：app 在 OnComplete 里释放资源是安全的，在 OnCommit 里释放则可能造成画面撕裂或花屏。另外 releasePendingBuffer 与回调派发的顺序也是在这条路径上确定的。",
+  "concepts": [
+    {
+      "term": "releasePendingBuffer",
+      "text": "把待释放 buffer 交给回调链。"
+    },
+    {
+      "term": "onCompositionPresented",
+      "text": "present 之后的回填点，回调在这里发。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "layer->onCompositionPresented(pacesetterDisplay.get(),",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3869",
+      "what": "present 后逐层回填。"
+    },
+    {
+      "call": "layer->releasePendingBuffer(presentTime.ns());",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3872",
+      "what": "归还 buffer。"
+    },
+    {
+      "call": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:211",
+      "what": "统一派发。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::addTransactionCallback(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1973",
+      "what": "客户端注册回调。"
+    }
+  ],
+  "state": [
+    {
+      "field": "buffer 所有权",
+      "before": "SF 持有",
+      "after": "归还给生产者",
+      "note": "回调里可安全复用。"
+    }
+  ],
+  "threads": "SF 主线程（present 之后）。",
+  "pitfalls": [
+    "在 OnCommit 里释放 buffer 相关资源：present 还没发生。",
+    "以为 OnComplete 一定来自本进程事务：也可能来自别的窗口。"
+  ],
+  "debug": [
+    "trace 里 releasePendingBuffer 与 sendCallbacks 相邻。",
+    "dumpsys SurfaceFlinger --latency 的 present 时间。"
+  ],
+  "next": "同步 apply 到底等什么？见第 19 步。"
+}

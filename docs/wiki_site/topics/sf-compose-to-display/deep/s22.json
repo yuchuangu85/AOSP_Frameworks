@@ -1,0 +1,29 @@
+{
+  "step": "s22",
+  "title": "分支：latch 没等到 fence",
+  "tldr": "acquire fence 未 signal 时该层本拍不出新内容，SF 重排下一拍，但别的层照常合成。",
+  "why": "这是「画面比预期晚一帧」最常见的成因，而且它很隐蔽：app 侧 queueBuffer 成功、SF 侧 setBuffer 也发生了，唯独 latch 没成。判断方法很直接——看 FrameTimeline 里该层的 latch time 是否晚于 acquire fence 的 signal time，或者看 trace 里 latchBuffer 的瞬时事件是否在连续几拍里重复同一个 frameNumber。理解这一点，能把「GPU 慢」与「SF 慢」清晰分开。",
+  "concepts": [
+    { "term": "fenceHasSignaled", "text": "检查 drawing state 的 acquire fence。" },
+    { "term": "newDataLatched", "text": "本拍是否有数据被 latch；即使 latchBufferImpl 返回 false 也会被置真。" },
+    { "term": "onLayerUpdate", "text": "请求下一拍继续处理该层。" }
+  ],
+  "walk": [
+    { "call": "if (mDrawingState.buffer && !fenceHasSignaled()) {", "ref": "native/services/surfaceflinger/Layer.cpp:1520", "what": "fence 未完成。" },
+    { "call": "mFlinger->onLayerUpdate();", "ref": "native/services/surfaceflinger/Layer.cpp:1522", "what": "重排下一拍。" },
+    { "call": "newDataLatched = true;", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2954", "what": "只要走到 latch 调用就置真。" }
+  ],
+  "state": [
+    { "field": "mBufferInfo.mBuffer", "before": "上一块", "after": "保持上一块（本拍未更新）", "note": "屏幕上是旧内容。" }
+  ],
+  "threads": "SF 主线程，持 mStateLock。",
+  "pitfalls": [
+    "以为 SF 会阻塞等 fence：它绝不阻塞。",
+    "把这种晚一帧归因到 app：要看 acquire fence 何时 signal。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --latency 对比 queue 与 present 时间。",
+    "trace 里 latchBuffer 的 frameNumber 若连续两拍相同，说明没 latch 成功。"
+  ],
+  "next": "还有一类降级发生在 HAL 交互上。见第 23 步。"
+}

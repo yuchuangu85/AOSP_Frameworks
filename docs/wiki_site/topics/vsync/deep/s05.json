@@ -1,0 +1,56 @@
+{
+  "step": "s05",
+  "title": "present fence 也能校准",
+  "tldr": "present fence 的信号时间走同一套模型；未 signal 时挂起（最多 20 个，超限丢最旧），被拒则重校准。",
+  "why": "为什么需要第二条通道？因为硬件 vsync 在预测稳定后会被关掉省电，此时模型靠 present fence 继续跟踪。这也带来一个副作用：present 延迟（HWC 排队、面板响应）会被计入模型，从而影响唤醒点。如果只看硬件 vsync 会误判「模型为什么偏了」。挂起队列的 20 个上限则是内存与新鲜度的折衷。",
+  "concepts": [
+    {
+      "term": "mUnfiredFences",
+      "text": "未 signal 的 fence 挂起队列。"
+    },
+    {
+      "term": "setIgnorePresentFencesInternal",
+      "text": "样本被拒时暂时忽略 fence。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void Scheduler::addPresentFence(std::shared_ptr<FenceTime> fence) {",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:999",
+      "what": "Scheduler 入口。"
+    },
+    {
+      "call": "bool VSyncReactor::addPresentFence(std::shared_ptr<FenceTime> fence) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:71",
+      "what": "Reactor 侧处理。"
+    },
+    {
+      "call": "if (mPendingLimit == mUnfiredFences.size()) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:92",
+      "what": "超限丢最旧。"
+    },
+    {
+      "call": "mPeriodConfirmationInProgress = true;",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:104",
+      "what": "样本被拒 → 重新确认周期。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mInternalIgnoreFences",
+      "before": "false",
+      "after": "样本被拒时 true",
+      "note": "期间 fence 不参与校准。"
+    }
+  ],
+  "threads": "SF 主线程或其他调用方；持 mMutex。",
+  "pitfalls": [
+    "以为硬件 vsync 永远在：稳定后会关。",
+    "忽略 present 延迟会进入模型。"
+  ],
+  "debug": [
+    "trace 里 mExternalIgnoreFences / mInternalIgnoreFences 打点。",
+    "VSYNC-predicted 与 HW_VSYNC 的偏差可反映模型质量。"
+  ],
+  "next": "模型如何给出下一拍？见第 6 步。"
+}

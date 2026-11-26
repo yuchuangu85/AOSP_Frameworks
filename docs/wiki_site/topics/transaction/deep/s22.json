@@ -1,0 +1,55 @@
+{
+  "step": "s22",
+  "title": "分支：允许 latch 未 signal",
+  "tldr": "简单 buffer 更新且条件允许时，acquire fence 未 signal 也可以应用，结果为 NotReadyUnsignaled。",
+  "why": "这个分支的存在是为了降低延迟：对于「只是换了一张图」这种简单更新，等 GPU 写完再应用会白白多等一段时间。允许未 signal latch 意味着 SF 先把事务应用下去，fence 由后续合成阶段继续等。关键是它与普通 NotReady 不同——NotReady 表示「不能用」，NotReadyUnsignaled 表示「可以用但数据还没就绪」。源码里还有 4s 的 stalled 阈值兜底。",
+  "concepts": [
+    {
+      "term": "shouldLatchUnsignaled",
+      "text": "判断是否允许未 signal latch。"
+    },
+    {
+      "term": "isSimpleBufferUpdate",
+      "text": "简单 buffer 更新的额外条件。"
+    },
+    {
+      "term": "NotReadyUnsignaled",
+      "text": "独立状态，处理方式与 NotReady 不同。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "const bool allowLatchUnsignaled =",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5450",
+      "what": "判定。"
+    },
+    {
+      "call": "ready = TransactionReadiness::NotReadyUnsignaled;",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5453",
+      "what": "允许但未就绪。"
+    },
+    {
+      "call": "ready = TransactionReadiness::NotReady;",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5455",
+      "what": "普通阻塞。"
+    }
+  ],
+  "state": [
+    {
+      "field": "事务状态",
+      "before": "待应用",
+      "after": "应用但 fence 待完成",
+      "note": "合成阶段继续等 fence。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "把 NotReadyUnsignaled 当 NotReady：会导致不必要的等待。",
+    "以为所有事务都允许未 signal latch：有额外条件。"
+  ],
+  "debug": [
+    "trace 里 fence unsignaled try allowLatchUnsignaled 标签。",
+    "对比普通 fence unsignaled。"
+  ],
+  "next": "权限不足时事务会怎样？见第 23 步。"
+}

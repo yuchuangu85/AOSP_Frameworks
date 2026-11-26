@@ -1,0 +1,51 @@
+{
+  "step": "s19",
+  "title": "回写 finishInputEvent",
+  "tldr": "链尾调 finishInputEvent，按 sequence 找回 seq 再发 finished 信号；seq 对不上只打日志不 ACK。",
+  "why": "这一步是闭环的另一半：dispatcher 只有收到 finished 才会清掉 AnrTracker 里的计时项。如果应用忘了回执（例如在 onTouchEvent 里阻塞），dispatcher 会在超时后判 ANR。而「seq 对不上」这种异常只打一条日志，不 ACK——这意味着它最终仍会以超时形式暴露，而不是静默丢事件。",
+  "concepts": [
+    {
+      "term": "sequence 映射",
+      "text": "InputEventReceiver 内部用 mSeqMap 把事件对象映射回 seq。"
+    },
+    {
+      "term": "sendFinishedSignal",
+      "text": "从应用侧回写 finished 消息给 dispatcher。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "private void finishInputEvent(QueuedInputEvent q) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11347",
+      "what": "链尾统一收口。"
+    },
+    {
+      "call": "public final void finishInputEvent(InputEvent event, boolean handled) {",
+      "ref": "base/core/java/android/view/InputEventReceiver.java:220",
+      "what": "按 sequence 找 seq。"
+    },
+    {
+      "call": "status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled,",
+      "ref": "native/libs/input/InputConsumer.cpp:746",
+      "what": "native 侧真正写回。"
+    }
+  ],
+  "state": [
+    {
+      "field": "dispatcher 的 AnrTracker",
+      "before": "含该 seq 的超时项",
+      "after": "被移除",
+      "note": "移除发生在 finishDispatchCycleLocked。"
+    }
+  ],
+  "threads": "UI 线程回写，dispatcher 线程接收。",
+  "pitfalls": [
+    "以为没回执只是「不准确」：会直接导致 ANR。",
+    "忽略 seq 不匹配日志：它意味着回执丢失，最终超时。"
+  ],
+  "debug": [
+    "grep 日志 Attempted to finish an input event that is not in progress.",
+    "dumpsys input 的 waitQueue 能看还有哪些未回执。"
+  ],
+  "next": "dispatcher 侧如何清计时？见第 20 步。"
+}

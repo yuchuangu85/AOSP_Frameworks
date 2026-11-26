@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>AOSP 源码级解剖 · 站点索引</title>
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('st-theme');
+      var sys = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      var forced = null;
+      try { forced = new URLSearchParams(location.search).get('theme'); } catch (e) {}
+      document.documentElement.dataset.theme =
+        (forced === 'light' || forced === 'dark') ? forced : (saved || sys);
+    } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+  })();
+</script>
+<style>
+  :root, [data-theme="dark"] {
+    --bg: #23262b; --bg-2: #2a2e34; --panel: #2d3138;
+    --line: rgba(255,255,255,0.16); --line-2: rgba(255,255,255,0.30);
+    --tx: #f5f8fc; --tx2: #c8d1dd; --tx3: #98a5b5;
+    --amber: #ffb454; --teal: #33d6c0; --card-shadow: 0 1px 0 rgba(0,0,0,.25);
+  }
+  [data-theme="light"] {
+    --bg: #f3efe5; --bg-2: #ece5d7; --panel: #fcf9f1;
+    --line: rgba(62,50,34,0.16); --line-2: rgba(62,50,34,0.30);
+    --tx: #2b2620; --tx2: #564f42; --tx3: #7d7362;
+    --amber: #8a5200; --teal: #0a6b5f; --card-shadow: 0 1px 2px rgba(62,50,34,.10);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 52px 40px 80px;
+    background: var(--bg);
+    color: var(--tx); min-height: 100vh;
+    font: 14px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Noto Sans CJK SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  [data-theme="light"] body {
+    background: radial-gradient(1100px 520px at 12% -10%, rgba(176,116,30,0.075), transparent 62%),
+                radial-gradient(900px 460px at 92% 0%, rgba(10,115,101,0.05), transparent 58%),
+                var(--bg);
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+  .kicker { font: 11px/1 ui-monospace, Menlo, monospace; letter-spacing: .16em; color: var(--amber); text-transform: uppercase; }
+  h1 { margin: 12px 0 8px; font-size: 32px; letter-spacing: -0.01em; }
+  .sub { margin: 0 0 26px; color: var(--tx2); max-width: 820px; }
+  .theme-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--tx2); cursor: pointer; font: 12px/1 inherit; white-space: nowrap; }
+  .theme-toggle:hover { border-color: var(--line-2); color: var(--tx); }
+  .theme-toggle svg { width: 15px; height: 15px; }
+  .theme-toggle .moon { display: block; } .theme-toggle .sun { display: none; }
+  [data-theme="light"] .theme-toggle .moon { display: none; } [data-theme="light"] .theme-toggle .sun { display: block; }
+  .theme-toggle svg path, .theme-toggle svg circle { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .theme-toggle .moon path { fill: currentColor; stroke: none; }
+  .totals { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 30px; }
+  .total { padding: 9px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .total b { display: block; font: 600 18px/1.2 ui-monospace, Menlo, monospace; }
+  .total span { font-size: 11px; color: var(--tx3); }
+  h3.section { margin: 34px 0 14px; font-size: 15px; color: var(--tx2); letter-spacing: .02em; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+  .card { display: block; padding: 22px 24px; border-radius: 14px; border: 1px solid var(--line);
+    background: var(--panel); box-shadow: var(--card-shadow); color: inherit;
+    transition: border-color .18s, transform .18s; }
+  .card:hover { border-color: var(--amber); transform: translateY(-2px); }
+  .card a.ttl { text-decoration: none; color: inherit; }
+  .card a.ttl:hover h2 { color: var(--amber); }
+  .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .card h2 { margin: 0 0 6px; font-size: 17px; }
+  .ver { font: 10px/1 ui-monospace, Menlo, monospace; color: var(--tx3); white-space: nowrap; }
+  .card p { margin: 0 0 14px; color: var(--tx2); font-size: 12.5px; }
+  .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill { font: 10.5px/1.8 ui-monospace, Menlo, monospace; padding: 0 8px; border-radius: 5px;
+    border: 1px solid var(--line); color: var(--tx3); }
+  .pill.hot { color: var(--amber); border-color: rgba(255,180,84,.35); background: rgba(255,180,84,.06); }
+  .pill.ok { color: var(--teal); border-color: rgba(51,214,192,.30); background: rgba(51,214,192,.05); }
+  [data-theme="light"] .pill.hot { border-color: rgba(138,82,0,.35); background: rgba(138,82,0,.06); }
+  [data-theme="light"] .pill.ok { border-color: rgba(10,107,95,.30); background: rgba(10,107,95,.05); }
+  .views { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 11.5px; color: var(--tx3); }
+  .views a { color: var(--tx2); text-decoration: none; border-bottom: 1px dotted var(--line-2); }
+  .views a:hover { color: var(--amber); border-color: var(--amber); }
+  ul.models { list-style: none; margin: 0; padding: 0; display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+  ul.models li { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  ul.models a { display: block; padding: 9px 12px; color: var(--tx2); text-decoration: none;
+    font: 11.5px/1.5 ui-monospace, Menlo, monospace; }
+  ul.models a:hover { color: var(--amber); }
+  footer { margin-top: 40px; color: var(--tx3); font-size: 11.5px; line-height: 1.9; }
+  code { font-family: ui-monospace, Menlo, monospace; color: var(--tx2); }
+  @media (max-width: 720px) { body { padding: 32px 20px 60px; } .top { flex-direction: column; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <div class="kicker">AOSP · android17-release · 源码级解剖</div>
+      <h1>站点索引：9 条链路</h1>
+      <p class="sub">每个主题都是单文件、离线、可交互：精读 + 逐行注释 + 方法清单 + 文件结构 + 四类图，支持亮/暗色与深链。
+        本页在构建时扫描 <code>dist/*.html</code>、<code>anr/*.html</code> 与 <code>docs/Model/*/index.html</code> 自动生成，新增主题后不需要手改。</p>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" title="切换亮/暗色">
+      <svg class="moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span id="theme-label">亮色</span>
+    </button>
+  </div>
+
+  <div class="totals"><div class="total"><b>9</b><span>主题</span></div><div class="total"><b>246</b><span>链路步骤</span></div><div class="total"><b>102</b><span>逐行函数</span></div><div class="total"><b>6824</b><span>行注释</span></div><div class="total"><b>246</b><span>精读文章</span></div><div class="total"><b>1533</b><span>方法清单</span></div></div>
+
+  <h3 class="section">主题页</h3>
+  <div class="cards">      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="shell-transition.html"><h2>Shell Transition 全链路解剖</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>一次 Activity 转场，从 WMS 建 Transition 到 Shell 播完动画、泄漏零事务</p>
+        <div class="meta">
+          <span class="pill hot">42 步</span>
+          <span class="pill hot">13 函数逐行</span>
+          <span class="pill">732 条行注释</span>
+          <span class="pill">933 行代码</span>
+          <span class="pill ok">42 篇精读</span>
+          <span class="pill">496 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="shell-transition.html#deep">精读</a>
+          <a href="shell-transition.html#code">代码逐行</a>
+          <a href="shell-transition.html#seq">时序</a>
+          <a href="shell-transition.html#files">文件结构</a>
+          <a href="shell-transition.html#methods">方法清单</a>
+          <a href="shell-transition.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="render-thread-to-sf.html"><h2>RenderThread 回放 → 交给 SurfaceFlinger</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>UI 线程把一帧的数据交给 RenderThread，RT 回放、提交 GPU、queueBuffer，BLAST 把 buffer 交给 SurfaceFlinger 合成上屏</p>
+        <div class="meta">
+          <span class="pill hot">36 步</span>
+          <span class="pill hot">10 函数逐行</span>
+          <span class="pill">561 条行注释</span>
+          <span class="pill">728 行代码</span>
+          <span class="pill ok">36 篇精读</span>
+          <span class="pill">869 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="render-thread-to-sf.html#deep">精读</a>
+          <a href="render-thread-to-sf.html#code">代码逐行</a>
+          <a href="render-thread-to-sf.html#seq">时序</a>
+          <a href="render-thread-to-sf.html#files">文件结构</a>
+          <a href="render-thread-to-sf.html#methods">方法清单</a>
+          <a href="render-thread-to-sf.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="view-traversal.html"><h2>View 请求刷新 → 绘制 → 交棒 RenderThread</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 invalidate()/requestLayout() 冒泡到一次 traversal，经过同步屏障与 vsync 唤醒、measure/layout、录制 display list，最后把任务推进 RenderThread 队列并在 mSignal 上停住</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">10 函数逐行</span>
+          <span class="pill">544 条行注释</span>
+          <span class="pill">622 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">62 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="view-traversal.html#deep">精读</a>
+          <a href="view-traversal.html#code">代码逐行</a>
+          <a href="view-traversal.html#seq">时序</a>
+          <a href="view-traversal.html#files">文件结构</a>
+          <a href="view-traversal.html#methods">方法清单</a>
+          <a href="view-traversal.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="wms.html"><h2>WMS：容器层次 → 加窗口 → 布局 → 上屏</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 Session.addToDisplayAsUser 进入 WindowManagerService.addWindow 开始：权限校验、WindowToken 归属、WindowState 创建与 InputChannel 配对，再到 RootWindowContainer 的 DisplayContent/Task/ActivityRecord 层次、performLayout 的测量与层级排序、DisplayContent.applySurfaceChangesTransaction 把 frame/position 写进 SurfaceControl，最后经 SurfaceFlinger 的 Transaction 提交；含焦点、Insets、动画与转场</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">12 函数逐行</span>
+          <span class="pill">864 条行注释</span>
+          <span class="pill">939 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">12 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="wms.html#deep">精读</a>
+          <a href="wms.html#code">代码逐行</a>
+          <a href="wms.html#seq">时序</a>
+          <a href="wms.html#files">文件结构</a>
+          <a href="wms.html#methods">方法清单</a>
+          <a href="wms.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="transaction.html"><h2>Transaction：客户端提交 → SF 排队 → 按序应用</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 app 侧 SurfaceComposerClient::Transaction 收集 layer 状态，merge 与 buffer 缓存，到 SF 侧 setTransactionState 做权限净化、入无锁队列，TransactionHandler 用 ready 过滤器与 barrier 保证顺序，最后 applyTransactionState 写入 drawing state</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">12 函数逐行</span>
+          <span class="pill">615 条行注释</span>
+          <span class="pill">675 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">12 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="transaction.html#deep">精读</a>
+          <a href="transaction.html#code">代码逐行</a>
+          <a href="transaction.html#seq">时序</a>
+          <a href="transaction.html#files">文件结构</a>
+          <a href="transaction.html#methods">方法清单</a>
+          <a href="transaction.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="sf-compose-to-display.html"><h2>RenderThread 交棒 → SurfaceFlinger 合成 → 上屏</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 RT 把 buffer 交给 SF 之后开始：Scheduler 帧信号驱动 commit/latch 收下 buffer、CompositionEngine 决定叠加还是 GPU 合成、HWComposer 交给 HWC present，直到 present fence 与 release fence 回流</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">10 函数逐行</span>
+          <span class="pill">1043 条行注释</span>
+          <span class="pill">1210 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">20 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="sf-compose-to-display.html#deep">精读</a>
+          <a href="sf-compose-to-display.html#code">代码逐行</a>
+          <a href="sf-compose-to-display.html#seq">时序</a>
+          <a href="sf-compose-to-display.html#files">文件结构</a>
+          <a href="sf-compose-to-display.html#methods">方法清单</a>
+          <a href="sf-compose-to-display.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="vsync.html"><h2>VSYNC：HWC 上报 → 预测 → 两相分发 → Choreographer</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 composer HAL 上报硬件 vsync 开始：VSyncReactor 校准、VSyncPredictor 预测网格、VSyncDispatchTimerQueue 武装 timerfd，把 app 与 sf 两相唤醒算成两个 workDuration，最后落到 EventThread/MessageQueue 与 Choreographer 的 doFrame</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">12 函数逐行</span>
+          <span class="pill">406 条行注释</span>
+          <span class="pill">461 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">16 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="vsync.html#deep">精读</a>
+          <a href="vsync.html#code">代码逐行</a>
+          <a href="vsync.html#seq">时序</a>
+          <a href="vsync.html#files">文件结构</a>
+          <a href="vsync.html#methods">方法清单</a>
+          <a href="vsync.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="input-dispatch.html"><h2>Input：evdev → InputReader → InputDispatcher → View</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从内核 evdev 读出原始事件，经 InputReader 的 mapper 解析成 NotifyArgs、InputDispatcher 找到目标窗口并通过 InputChannel 投递，到应用 UI 线程的 InputStage 责任链与 View 分发，最后回写 finishInputEvent 闭环；含超时与 ANR 的落地路径</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">11 函数逐行</span>
+          <span class="pill">1248 条行注释</span>
+          <span class="pill">1382 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">29 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="input-dispatch.html#deep">精读</a>
+          <a href="input-dispatch.html#code">代码逐行</a>
+          <a href="input-dispatch.html#seq">时序</a>
+          <a href="input-dispatch.html#files">文件结构</a>
+          <a href="input-dispatch.html#methods">方法清单</a>
+          <a href="input-dispatch.html#risk">降级与坑</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-top">
+          <a class="ttl" href="binder-ipc.html"><h2>Binder：调用 → 驱动 → 对端执行 → 回包</h2></a>
+          <span class="ver">android17-release</span>
+        </div>
+        <p>从 Java 侧 transact 与 Parcel 编组开始：经 JNI 落到 BpBinder/IPCThreadState，用 BC_TRANSACTION 写进 /dev/binder，由内核完成一次拷贝与线程唤醒，对端 joinThreadPool 取出 BR_TRANSACTION 并分发到 onTransact，回包再用 BR_REPLY 走完同步语义；含 oneway、死亡通知与 RPC 分支</p>
+        <div class="meta">
+          <span class="pill hot">24 步</span>
+          <span class="pill hot">12 函数逐行</span>
+          <span class="pill">811 条行注释</span>
+          <span class="pill">933 行代码</span>
+          <span class="pill ok">24 篇精读</span>
+          <span class="pill">17 方法清单</span>
+        </div>
+        <div class="views">
+          <span>视图：</span>
+          <a href="binder-ipc.html#deep">精读</a>
+          <a href="binder-ipc.html#code">代码逐行</a>
+          <a href="binder-ipc.html#seq">时序</a>
+          <a href="binder-ipc.html#files">文件结构</a>
+          <a href="binder-ipc.html#methods">方法清单</a>
+          <a href="binder-ipc.html#risk">降级与坑</a>
+        </div>
+      </div></div>
+
+  <h3 class="section">模型页（docs/Model）</h3>
+  <ul class="models"><li><a href="../../Model/app-renderthread-gpu-blast/index.html">app-renderthread-gpu-blast</a></li><li><a href="../../Model/app-vsync-animation/index.html">app-vsync-animation</a></li><li><a href="../../Model/app-vsync-commit/index.html">app-vsync-commit</a></li><li><a href="../../Model/app-vsync-input/index.html">app-vsync-input</a></li><li><a href="../../Model/app-vsync-insets-animation/index.html">app-vsync-insets-animation</a></li><li><a href="../../Model/app-vsync-traversal/index.html">app-vsync-traversal</a></li><li><a href="../../Model/input-dispatch-timeout-anr/index.html">input-dispatch-timeout-anr</a></li><li><a href="../../Model/no-focused-window-anr/index.html">no-focused-window-anr</a></li><li><a href="../../Model/refresh-to-renderthread/index.html">refresh-to-renderthread</a></li><li><a href="../../Model/remoteviews-widget-launcher/index.html">remoteviews-widget-launcher</a></li><li><a href="../../Model/renderthread-pipeline/index.html">renderthread-pipeline</a></li><li><a href="../../Model/surfaceflinger-pipeline/index.html">surfaceflinger-pipeline</a></li><li><a href="../../Model/surfaceflinger-selection-composition/index.html">surfaceflinger-selection-composition</a></li><li><a href="../../Model/view-frame-to-display/index.html">view-frame-to-display</a></li><li><a href="../../Model/vsync-pipeline/index.html">vsync-pipeline</a></li></ul>
+
+  <h3 class="section">ANR 文档（anr/）</h3>
+  <ul class="models"><li><a href="../anr/index.html">ANR 索引（9 篇）</a></li><li><a href="../anr/ANRAnalysis.html">Android ANR（Application Not Responding）流程分析</a></li><li><a href="../anr/ANR原理及渲染流程中的ANR风险点全面分析.html">Android ANR原理及渲染流程中的ANR风险点全面分析</a></li><li><a href="../anr/ANR日志分析完整实战指南.html">Android ANR日志分析完整实战指南</a></li><li><a href="../anr/ANR问题完整分析指南.html">Android ANR问题完整分析指南</a></li><li><a href="../anr/Broadcast-ANR放炸弹与拆炸弹机制源码深度解析.html">Broadcast ANR「放炸弹 / 拆炸弹」机制源码深度解析</a></li><li><a href="../anr/Input-ANR放炸弹与拆炸弹机制源码深度解析.html">Input ANR「放炸弹 / 拆炸弹」机制源码深度解析</a></li><li><a href="../anr/Input-ANR放炸弹拆炸弹机制详解.html">Input ANR 放炸弹 / 拆炸弹机制与完整 ANR 流程源码解析</a></li><li><a href="../anr/Provider-ANR放炸弹与拆炸弹机制源码深度解析.html">ContentProvider ANR「放炸弹 / 拆炸弹」机制源码深度解析</a></li><li><a href="../anr/Service-ANR放炸弹与拆炸弹机制源码深度解析.html">Service ANR「放炸弹 / 拆炸弹」机制源码深度解析</a></li></ul>
+
+  <footer>
+    构建：<code>python3 docs/wiki_site/build.py --topic &lt;slug&gt;</code> · 校验：<code>python3 docs/wiki_site/verify.py --topic &lt;slug&gt;</code><br>
+    主题数据：<code>docs/wiki_site/topics/&lt;slug&gt;/</code> · 索引由 <code>docs/wiki_site/make_index.py</code> 生成
+  </footer>
+</div>
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('theme-toggle');
+    var label = document.getElementById('theme-label');
+    function apply() {
+      var light = root.dataset.theme === 'light';
+      label.textContent = light ? '暗色' : '亮色';
+      btn.title = light ? '切换到暗色' : '切换到亮色';
+      btn.setAttribute('aria-pressed', String(light));
+    }
+    btn.addEventListener('click', function () {
+      root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('st-theme', root.dataset.theme); } catch (e) {}
+      try {
+        var u = new URL(location.href);
+        if (u.searchParams.has('theme')) {
+          u.searchParams.delete('theme');
+          history.replaceState(null, '', u.pathname + (u.searchParams.toString() ? '?' + u.searchParams : '') + u.hash);
+        }
+      } catch (e) {}
+      apply();
+    });
+    apply();
+  })();
+</script>
+</body>
+</html>

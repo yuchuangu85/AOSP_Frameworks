@@ -1,0 +1,31 @@
+{
+  "step": "s09",
+  "title": "CompositionEngine::present：三拍结构",
+  "tldr": "preComposition → 每个 output 的 prepare/present（可并发）→ 等 future → postComposition 兜底。",
+  "why": "这三段的分工很清楚：pre 让每层有机会在合成前做事（例如动画推进），prepare+present 是真正的工作并可以按 output 并行（多屏设备上收益明显），post 负责兜底兑现所有未完成的 release fence promise——如果漏了这段，某些被遮挡或没参与合成的层会让 app 永久阻塞。CompositionEngine 也会在这里等待所有 present future，所以「HWC 慢」会直接体现为这个函数的耗时。",
+  "concepts": [
+    { "term": "LayerFE::onPreComposition", "text": "每层在合成前的准备钩子，返回 true 表示还需要再更新一帧。" },
+    { "term": "presentFutures", "text": "每个 output 的 present 完成信号，统一在这里等待。" },
+    { "term": "postComposition", "text": "把仍未兑现的 release fence promise 统一填掉，避免泄漏。" }
+  ],
+  "walk": [
+    { "call": "void CompositionEngine::present(CompositionRefreshArgs& args)", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:131", "what": "入口。" },
+    { "call": "preComposition(args);", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:135", "what": "合成前钩子。" },
+    { "call": "output->prepare(args, latchedLayers);", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:144", "what": "按输出准备可见层。" },
+    { "call": "presentFutures.push_back(output->present(args));", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:155", "what": "发起每个输出的合成与上屏。" },
+    { "call": "postComposition(args);", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:204", "what": "兜底兑现 release fence。" }
+  ],
+  "state": [
+    { "field": "mNeedsAnotherUpdate", "before": "false", "after": "任一层的 onPreComposition 返回 true 时为 true", "note": "SF 据此决定是否再排一拍。" }
+  ],
+  "threads": "SF 主线程；present 可能被 offload 到 HwcAsyncWorker，future 等待点仍在主线程。",
+  "pitfalls": [
+    "忽略 postComposition：漏了它，被遮挡层的 release fence 永远不兑现。",
+    "以为多屏是串行的：present 返回 future，实际是并发发起的。"
+  ],
+  "debug": [
+    "trace 里 CompositionEngine::present 下面能看到每个 output 的 present 子切片。",
+    "「Waiting on HWC」切片单独标出了等待耗时。"
+  ],
+  "next": "第一个 output 步骤里，可见层是怎么算出来的？见第 10 步。"
+}

@@ -1,0 +1,51 @@
+{
+  "step": "s21",
+  "title": "分支：desiredPresentTime 未到",
+  "tldr": "非自动时间戳且未到点（差距 <1s）时 NotReady；超过 1s 的未来时间戳被忽略，按当前帧应用。",
+  "why": "「期望上屏时间」让生产者能精确控制上屏时机（例如音画同步），但也带来风险：如果时钟源异常给出一个很远的未来时间，事务会永远等下去。源码用「1s 上限」解决这个问题——超过 1s 的时间戳被视为不可信而忽略。这条规则是纯工程性的：它牺牲了一点精确性，换来队列不会被单个坏时间戳卡死。",
+  "concepts": [
+    {
+      "term": "isAutoTimestamp",
+      "text": "未指定时间时由 SF 用自己的 vsync 决定。"
+    },
+    {
+      "term": "1s 上限",
+      "text": "超过 1s 的未来时间戳被忽略。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (!transaction.isAutoTimestamp && desiredPresentTime >= expectedPresentTime &&",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5328",
+      "what": "未到点判定。"
+    },
+    {
+      "call": "return TransactionReadiness::NotReady;",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5332",
+      "what": "留队等待。"
+    },
+    {
+      "call": "if (transaction.isAutoTimestamp && frameIsEarly(expectedPresentTime, vsyncId)) {",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5350",
+      "what": "另一条：帧太早。"
+    }
+  ],
+  "state": [
+    {
+      "field": "队首事务",
+      "before": "待应用",
+      "after": "等到时间点后才应用",
+      "note": "期间同 token 阻塞。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为时间戳一定被尊重：超过 1s 会被忽略。",
+    "设了很远的未来时间后疑惑不生效。"
+  ],
+  "debug": [
+    "trace 里 not current desiredPresentTime 标签。",
+    "对比 desiredPresentTime 与 expectedPresentTime 两个数值。"
+  ],
+  "next": "buffer 维度上还有哪些分支？见第 22 步。"
+}

@@ -1,0 +1,55 @@
+{
+  "step": "s24",
+  "title": "诊断：tracing 与 dumpsys",
+  "tldr": "事务有三层可观测性：TransactionTracing 记录入队与提交、trace 切片、dumpsys 的 pending 与 stalled 队列。",
+  "why": "事务是「不可见」的：它没有对应的 UI，出问题时只表现为画面不对或延迟。因此可观测性尤其重要。实践中的顺序是：先用 atrace 看 setTransactionState 与 flush 之间隔了多久（判断是提交慢还是应用慢），再用 dumpsys 看 pending 队列积压（判断是不是卡在某笔），最后用 transaction tracing 回放具体那笔事务的内容。",
+  "concepts": [
+    {
+      "term": "TransactionTracing",
+      "text": "事务记录与回放。"
+    },
+    {
+      "term": "hasPendingTransactions",
+      "text": "是否有待处理事务的标志。"
+    },
+    {
+      "term": "stalled 段",
+      "text": "dumpsys 里的卡住事务清单。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mTransactionTracing->addQueuedTransaction(state);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5705",
+      "what": "入队时记录。"
+    },
+    {
+      "call": "mTransactionTracing->addCommittedTransactions(ftl::to_underlying(vsyncId), frameTimeNs,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2820",
+      "what": "提交时记录。"
+    },
+    {
+      "call": "bool TransactionHandler::hasPendingTransactions() {",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:234",
+      "what": "判断是否还有积压。"
+    }
+  ],
+  "state": [
+    {
+      "field": "pending 队列",
+      "before": "N 笔",
+      "after": "0 笔",
+      "note": "稳定态下应为 0。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "只看 apply 返回就认为没问题：它不代表已应用。",
+    "忽略 trace 里 setTransactionState 与 flush 的间隔。"
+  ],
+  "debug": [
+    "atrace 抓 TransactionHandler 与 setTransactionState。",
+    "dumpsys SurfaceFlinger 的 pending / stalled 段。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 sf-compose-to-display 看「flush 之后如何合成」。"
+}

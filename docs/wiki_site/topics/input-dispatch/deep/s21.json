@@ -1,0 +1,60 @@
+{
+  "step": "s21",
+  "title": "processAnrsLocked：超时判定",
+  "tldr": "先查「等焦点窗口」，再取 AnrTracker 最早超时；到期则标 unresponsive、移出 tracker、调 onAnrLocked。",
+  "why": "ANR 的判定完全在这 38 行里。它的返回值参与了 dispatchOnce 的 poll 超时计算，所以「ANR 什么时候被发现」取决于这里返回的 nextAnrCheck 是否准确。基线的 5000ms 来自 IInputConstants（乘硬件倍率），窗口可以通过 WindowInfo.dispatchingTimeout 覆盖——这也是为什么某些系统窗口的 ANR 阈值看起来更高。",
+  "concepts": [
+    {
+      "term": "AnrTracker",
+      "text": "按超时时间排序的 token 表。"
+    },
+    {
+      "term": "UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS",
+      "text": "5000ms 基线。"
+    },
+    {
+      "term": "getDispatchingTimeoutLocked",
+      "text": "取某连接的实际超时（含倍率与窗口覆盖）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "nsecs_t InputDispatcher::processAnrsLocked() {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1143",
+      "what": "判定入口。"
+    },
+    {
+      "call": "nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1160",
+      "what": "取最早超时。"
+    },
+    {
+      "call": "connection->responsive = false;",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1175",
+      "what": "关键副作用：之后不再给它投递触摸。"
+    },
+    {
+      "call": "onAnrLocked(connection);",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1178",
+      "what": "触发 ANR。"
+    }
+  ],
+  "state": [
+    {
+      "field": "connection->responsive",
+      "before": "true",
+      "after": "false",
+      "note": "canWindowReceiveMotion 会据此拒发。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "以为 ANR 由独立定时器线程检测：就在 dispatcher 的 poll 超时里。",
+    "忽略 dispatchingTimeout 可被窗口覆盖：不同窗口阈值不同。"
+  ],
+  "debug": [
+    "dumpsys input 的 AnrTracker 段列出所有待超时项。",
+    "--frametimeline 与 input 延迟统计可交叉验证。"
+  ],
+  "next": "ANR 如何真正落地到 AMS？见第 22 步。"
+}

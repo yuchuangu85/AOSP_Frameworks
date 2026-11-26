@@ -1,0 +1,33 @@
+{
+  "step": "s15",
+  "title": "CLIENT 路径：RenderEngine 画进 client target",
+  "tldr": "取一块 client target，RenderEngine::drawLayers 把可见层画进去，再用 queueBuffer 交给显示端。",
+  "why": "CLIENT 合成是「必须兜底」的路径：HWC 无法直接叠加时（缩放、混合模式、受保护内容、模糊等），只能由 GPU 把若干层合成到一张 client target 上，然后让 HWC 把这**一张**贴上屏。它的成本比 DEVICE 高得多：多一次 dequeue/queue、多一块 buffer 带宽、多一次 GPU 往返。因此排查「同样内容为什么这帧更耗电」时，先看有几层被迫走了 CLIENT——这也是 TimeStats 里 client composition 比例的用途。",
+  "concepts": [
+    { "term": "client target", "text": "GPU 合成的目标 buffer，本质是 RenderSurface 的生产者端。" },
+    { "term": "dequeueRenderBuffer", "text": "从 RenderSurface 取一块可写的 client target。" },
+    { "term": "drawLayers", "text": "RenderEngine 的批量绘制入口，接收 LayerSettings 列表。" },
+    { "term": "queueBuffer", "text": "把画好的 client target 交回显示端，带上 GPU fence。" }
+  ],
+  "walk": [
+    { "call": "if (!dequeueRenderBuffer(&bufferFence, &buffer)) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1331", "what": "取 client target。" },
+    { "call": "optReadyFence = composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1337", "what": "执行 GPU 合成。" },
+    { "call": "auto fenceResult = renderEngine", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1471", "what": "RenderEngine 调用。" },
+    { "call": ".drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1472", "what": "批量绘制，返回完成 fence。" },
+    { "call": "mRenderSurface->queueBuffer(std::move(*optReadyFence), getHdrSdrRatio(buffer));", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1348", "what": "交回显示端。" }
+  ],
+  "state": [
+    { "field": "outputState.reusedClientComposition", "before": "上一拍", "after": "本拍是否直接复用上一张 client target", "note": "复用能省掉整次 GPU 合成。" },
+    { "field": "layer->lastClientCompositionFence", "before": "上一拍", "after": "本拍 GPU 完成 fence", "note": "release 时要 merge 它，否则会提前释放 buffer。" }
+  ],
+  "threads": "SF 主线程发起；RenderEngine 可能在自己的线程池里执行，drawLayers 返回 future。",
+  "pitfalls": [
+    "把 drawLayers 当成同步函数：它返回 future，实际完成时间由 fence 决定。",
+    "忘记 merge client target 的 acquire fence：buffer 可能在上屏前就被归还。"
+  ],
+  "debug": [
+    "trace 里找 RenderEngine 的 drawLayers 与 GPU 完成 fence。",
+    "dumpsys SurfaceFlinger 的 RenderEngine 统计能看到每帧 GPU 合成耗时。"
+  ],
+  "next": "画完之后，present 是怎么发生的？见第 16 步。"
+}

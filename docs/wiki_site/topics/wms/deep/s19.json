@@ -1,0 +1,51 @@
+{
+  "step": "s19",
+  "title": "生命周期：ATMS 与 WMS 的分工",
+  "tldr": "Activity 启动与生命周期归 ATMS，窗口创建与布局归 WMS；ClientLifecycleManager 用 ClientTransaction 驱动客户端。",
+  "why": "这两个服务在同进程里，很容易混淆。清晰的边界是：ATMS 决定「哪个 Activity 该处于什么状态」，WMS 决定「它的窗口在哪里、多大、可见吗」。resume 是 ATMS 下发的 ClientTransaction，客户端在 resume 之后才 addWindow——所以「resumed 但没窗口」是正常的中间态，不是 bug。",
+  "concepts": [
+    {
+      "term": "ClientTransaction",
+      "text": "一批生命周期回调的载体。"
+    },
+    {
+      "term": "IApplicationThread",
+      "text": "system_server 调客户端的接口。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public int startActivityAsUser(IApplicationThread caller, String callingPackage,",
+      "ref": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java:1289",
+      "what": "启动入口。"
+    },
+    {
+      "call": "boolean scheduleTransaction(@NonNull ClientTransaction transaction) {",
+      "ref": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java:73",
+      "what": "下发事务。"
+    },
+    {
+      "call": "final RemoteException e = transaction.schedule();",
+      "ref": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java:74",
+      "what": "跨进程调用。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Activity 状态机",
+      "before": "current",
+      "after": "resumed",
+      "note": "窗口随后才创建。"
+    }
+  ],
+  "threads": "system_server → binder → 客户端主线程。",
+  "pitfalls": [
+    "以为 resumed 一定有窗口。",
+    "把生命周期问题当窗口问题排查。"
+  ],
+  "debug": [
+    "Failed to deliver transaction 日志说明客户端已死。",
+    "dumpsys activity 与 dumpsys window 对照看状态。"
+  ],
+  "next": "resume 之后做什么？见第 20 步。"
+}

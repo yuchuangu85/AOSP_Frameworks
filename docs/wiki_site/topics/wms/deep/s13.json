@@ -1,0 +1,55 @@
+{
+  "step": "s13",
+  "title": "焦点窗口的确定",
+  "tldr": "焦点要求可见、可聚焦、所属 Activity 不是 paused；焦点变化会触发输入目标更新与 Insets 调整。",
+  "why": "「有窗口但收不到按键」几乎都是焦点问题。焦点不是「最上层可见窗口」这么简单：不可聚焦的窗口（FLAG_NOT_FOCUSABLE）会被跳过；paused 的 Activity 即使窗口还在也拿不到焦点；还有一层是 WindowToken 是否已就绪。理解这三层约束，才能正确排查。",
+  "concepts": [
+    {
+      "term": "canReceiveKeys",
+      "text": "窗口能否接收按键。"
+    },
+    {
+      "term": "updateFocusedWindowLocked",
+      "text": "重新计算焦点。"
+    },
+    {
+      "term": "mCurrentFocus",
+      "text": "当前焦点窗口。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (win.canReceiveKeys()) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2117",
+      "what": "只有可接收按键的窗口才参与焦点竞争。"
+    },
+    {
+      "call": "focusChanged = updateFocusedWindowLocked(UPDATE_FOCUS_WILL_ASSIGN_LAYERS,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2118",
+      "what": "更新焦点。"
+    },
+    {
+      "call": "displayContent.getInputMonitor().setInputFocusLw(displayContent.mCurrentFocus,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2157",
+      "what": "把焦点同步给输入系统。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mCurrentFocus",
+      "before": "旧窗口",
+      "after": "新窗口",
+      "note": "变化会同步给 InputDispatcher。"
+    }
+  ],
+  "threads": "WMS 主线程 / binder。",
+  "pitfalls": [
+    "不可聚焦窗口期待收到按键。",
+    "paused 的 Activity 拿不到焦点。"
+  ],
+  "debug": [
+    "dumpsys window 的 mCurrentFocus / mFocusedApp。",
+    "输入事件不投递时先看焦点。"
+  ],
+  "next": "surface 何时写入？见第 14 步。"
+}

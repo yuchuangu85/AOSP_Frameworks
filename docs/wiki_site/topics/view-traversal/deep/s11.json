@@ -1,0 +1,37 @@
+{
+  "step": "s11",
+  "title": "ThreadedRenderer.draw：先录制，再交棒",
+  "tldr": "两件事：updateRootDisplayList 录完，syncAndDrawFrame 交棒；中间没有任何等待。",
+  "why": "这个方法是理解「UI 线程视角的绘制完成」的钥匙。它把一帧拆成前后两半：前半是录入，全部在 UI 线程内存里完成，没有任何 GPU 参与；后半是交棒，调用 syncAndDrawFrame 后 UI 线程会阻塞，但阻塞只持续到 RT 把 staging 同步成 display list 为止。返回之后 UI 线程拿到的 syncResult 是一个位掩码，用来处理两种失败：surface 丢了就强制 relayout，要求重画就 invalidate。把这层语义搞反（以为要等上屏），就会把 jank 归因到错误的位置。",
+  "concepts": [
+    { "term": "updateRootDisplayList", "text": "录制阶段：更新内容树 + 决定根节点要不要重录。" },
+    { "term": "syncAndDrawFrame", "text": "交棒阶段：同步调用，返回时 RT 的 sync 已完成，但绘制与 swap 还没开始。" },
+    { "term": "SYNC_LOST_SURFACE_REWARD_IF_FOUND", "text": "位掩码之一：surface 丢失，下一帧要强制 relayout。" },
+    { "term": "SYNC_REDRAW_REQUESTED", "text": "位掩码之一：RT 要求再画一帧，用 invalidate 触发。" }
+  ],
+  "walk": [
+    { "call": "void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks)", "ref": "base/core/java/android/view/ThreadedRenderer.java:827", "what": "入口，先 markDrawStart 再录制。" },
+    { "call": "updateRootDisplayList(view, callbacks);", "ref": "base/core/java/android/view/ThreadedRenderer.java:830", "what": "第一步录制：脏子树重建 staging display list。" },
+    { "call": "final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();", "ref": "base/core/java/android/view/ThreadedRenderer.java:846", "what": "取本帧 FrameInfo，随后以 long[] 形式过 JNI。" },
+    { "call": "int syncResult = syncAndDrawFrame(frameInfo);", "ref": "base/core/java/android/view/ThreadedRenderer.java:848", "what": "第二步交棒；返回时 UI 已被 RT 放行。" },
+    { "call": "if ((syncResult & SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {", "ref": "base/core/java/android/view/ThreadedRenderer.java:849", "what": "surface 丢失的处理分支。" },
+    { "call": "attachInfo.mViewRootImpl.mForceNextWindowRelayout = true;", "ref": "base/core/java/android/view/ThreadedRenderer.java:853", "what": "置强制 relayout，下一帧向 WM 要新 surface。" }
+  ],
+  "state": [
+    { "field": "mNextRtFrameCallbacks", "before": "可能持有待下发回调", "after": "null（已包装并下发）", "note": "一次性消费，避免重复执行。" },
+    { "field": "mRootNodeNeedsUpdate", "before": "可能为 true", "after": "录制后置 false", "note": "置位来源是 ViewRootImpl.invalidateRoot。" },
+    { "field": "mForceNextWindowRelayout", "before": "false", "after": "丢 surface 时 true", "note": "下一帧一定会走窗口重排。" }
+  ],
+  "threads": "UI 线程；阻塞发生在 syncAndDrawFrame → DrawFrameTask::postAndWait 的 mSignal.wait 上，且只在「同步阶段」内。",
+  "pitfalls": [
+    "以为 draw 返回就等于上屏：返回只代表 RT 已完成同步，回放与 swap 还在 RT 上跑。",
+    "在帧回调里直接改 View：回调可能在 RT 线程执行，必须切回 UI 线程。",
+    "忽略 syncResult：不处理 LostSurface 会导致丢 surface 后长时间白屏。"
+  ],
+  "debug": [
+    "trace 里 Record View#draw() 的宽度是录制耗时，DrawFrames 起点到 mSignal 释放是同步耗时。",
+    "看 Log W HWUI Surface lost, forcing relayout 判断是否走到了丢 surface 分支。",
+    "在 848 行下断点，看 syncResult 的二进制位组合。"
+  ],
+  "next": "录制阶段「脏才重录」的判定在哪里？见第 12 步。"
+}

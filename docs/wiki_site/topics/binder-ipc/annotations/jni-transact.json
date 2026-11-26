@@ -1,0 +1,276 @@
+{
+  "id": "jni-transact",
+  "title": "android_os_BinderProxy_transact",
+  "file": "base/core/jni/android_util_Binder.cpp",
+  "sig": "static jboolean android_os_BinderProxy_transact(",
+  "span": [
+    1644,
+    1687
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,",
+      "kind": "note",
+      "text": "Java 与 native 的接缝。它几乎把「Java 语义」翻译成「native 语义」的全部工作集中在一处。"
+    },
+    {
+      "at": 2,
+      "quote": "jint code, jobject dataObj, jobject replyObj, jint flags) // throws RemoteException",
+      "kind": "note",
+      "text": "续行：code/data/reply/flags，注释标明可能抛 RemoteException。"
+    },
+    {
+      "at": 3,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 4,
+      "quote": "if (dataObj == NULL) {",
+      "kind": "branch",
+      "text": "data 为空。"
+    },
+    {
+      "at": 5,
+      "quote": "jniThrowNullPointerException(env, NULL);",
+      "kind": "call",
+      "text": "抛 NPE（与 Java 侧契约一致）。"
+    },
+    {
+      "at": 6,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 7,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "Parcel* data = parcelForJavaObject(env, dataObj);",
+      "kind": "call",
+      "text": "**Java Parcel → native Parcel**：本质是取 Java 对象里保存的 native 指针。"
+    },
+    {
+      "at": 10,
+      "quote": "if (data == NULL) {",
+      "kind": "branch",
+      "text": "转换失败。"
+    },
+    {
+      "at": 11,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 13,
+      "quote": "Parcel* reply = parcelForJavaObject(env, replyObj);",
+      "kind": "call",
+      "text": "转换 reply Parcel。"
+    },
+    {
+      "at": 14,
+      "quote": "if (reply == NULL && replyObj != NULL) {",
+      "kind": "branch",
+      "text": "replyObj 非空但转换失败。"
+    },
+    {
+      "at": 15,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 16,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 17,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 18,
+      "quote": "IBinder* target = getBPNativeData(env, obj)->mObject.get();",
+      "kind": "call",
+      "text": "**取 native 目标对象**（BpBinder 或本地 BBinder）。"
+    },
+    {
+      "at": 19,
+      "quote": "if (target == NULL) {",
+      "kind": "branch",
+      "text": "目标已失效。"
+    },
+    {
+      "at": 20,
+      "quote": "jniThrowException(env, \"java/lang/IllegalStateException\", \"Binder has been finalized!\");",
+      "kind": "call",
+      "text": "抛 IllegalStateException: Binder has been finalized。"
+    },
+    {
+      "at": 21,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 23,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 24,
+      "quote": "ALOGV(\"Java code calling transact on %p in Java object %p with code %\" PRId32 \"\\n\",",
+      "kind": "trace",
+      "text": "VERBOSE 日志：记录调用。"
+    },
+    {
+      "at": 25,
+      "quote": "target, obj, code);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "//printf(\"Transact from Java code to %p sending: \", target); data->print();",
+      "kind": "note",
+      "text": "注释掉的打印。"
+    },
+    {
+      "at": 28,
+      "quote": "status_t err = target->transact(code, *data, reply, flags);",
+      "kind": "call",
+      "text": "**真正的 native 调用**：从这里进入 BpBinder/BBinder。"
+    },
+    {
+      "at": 29,
+      "quote": "//if (reply) printf(\"Transact from Java code to %p received: \", target); reply->print();",
+      "kind": "note",
+      "text": "注释掉的打印。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "if (err == NO_ERROR) {",
+      "kind": "branch",
+      "text": "成功。"
+    },
+    {
+      "at": 32,
+      "quote": "return JNI_TRUE;",
+      "kind": "note",
+      "text": "返回 true。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 34,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 35,
+      "quote": "env->CallStaticVoidMethod(gBinderOffsets.mClass, gBinderOffsets.mTransactionCallback, getpid(),",
+      "kind": "call",
+      "text": "**统计回调**：把 pid/code/flags/err 报告给 Java 侧（binder 事务统计）。"
+    },
+    {
+      "at": 36,
+      "quote": "code, flags, err);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "if (err == UNKNOWN_TRANSACTION) {",
+      "kind": "branch",
+      "text": "UNKNOWN_TRANSACTION 特例。"
+    },
+    {
+      "at": 39,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "只返回 false，不抛异常——这对应「对端没实现这个 code」的常规语义。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 42,
+      "quote": "signalExceptionForError(env, obj, err, true /*canThrowRemoteException*/, data->dataSize());",
+      "kind": "call",
+      "text": "**把 status 翻译成 Java 异常**（DeadObjectException / SecurityException 等）。"
+    },
+    {
+      "at": 43,
+      "quote": "return JNI_FALSE;",
+      "kind": "note",
+      "text": "返回 false。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

@@ -1,0 +1,864 @@
+{
+  "id": "id-notifymotion",
+  "title": "InputDispatcher::notifyMotion",
+  "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+  "sig": "void InputDispatcher::notifyMotion(",
+  "span": [
+    4679,
+    4820
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void InputDispatcher::notifyMotion(const NotifyMotionArgs& args) {",
+      "kind": "note",
+      "text": "进入 dispatcher 的入口之一（按键是 notifyKey）。注意它运行在 **InputReader 线程**上，不是 dispatcher 线程——这里只入队，不做分发。"
+    },
+    {
+      "at": 2,
+      "quote": "if (debugInboundEventDetails()) {",
+      "kind": "branch",
+      "text": "调试开关：打印完整事件内容。"
+    },
+    {
+      "at": 3,
+      "quote": "ALOGD(\"notifyMotion - id=%\" PRIx32 \" eventTime=%\" PRId64 \"ns, deviceId=%d, source=%s, \"",
+      "kind": "note",
+      "text": "一条日志里有 id、eventTime、deviceId、source、displayId、policyFlags 等关键字段。"
+    },
+    {
+      "at": 4,
+      "quote": "\"displayId=%s, policyFlags=0x%x, \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 5,
+      "quote": "\"action=%s, actionButton=0x%x, flags=0x%x, metaState=0x%x, buttonState=0x%x, \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "\"xCursorPosition=%f, yCursorPosition=%f, downTime=%\" PRId64 \"ns\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 7,
+      "quote": "args.id, args.eventTime, args.deviceId, inputEventSourceToString(args.source).c_str(),",
+      "kind": "data",
+      "text": "实际参数：id 是跨模块对账用的唯一编号。"
+    },
+    {
+      "at": 8,
+      "quote": "args.displayId.toString().c_str(), args.policyFlags,",
+      "kind": "data",
+      "text": "displayId 决定后续在哪个显示上做命中测试。"
+    },
+    {
+      "at": 9,
+      "quote": "MotionEvent::actionToString(args.action).c_str(), args.actionButton, args.flags,",
+      "kind": "data",
+      "text": "action 是 DOWN/MOVE/UP 等语义动作。"
+    },
+    {
+      "at": 10,
+      "quote": "args.metaState, args.buttonState, args.xCursorPosition, args.yCursorPosition,",
+      "kind": "data",
+      "text": "metaState / buttonState 描述修饰键与按键状态。"
+    },
+    {
+      "at": 11,
+      "quote": "args.downTime);",
+      "kind": "data",
+      "text": "downTime 是手势起始时间，用于判定长按等。"
+    },
+    {
+      "at": 12,
+      "quote": "for (uint32_t i = 0; i < args.getPointerCount(); i++) {",
+      "kind": "note",
+      "text": "多指时逐指打印。"
+    },
+    {
+      "at": 13,
+      "quote": "ALOGD(\"  Pointer %d: id=%d, toolType=%s, x=%f, y=%f, pressure=%f, size=%f, \"",
+      "kind": "note",
+      "text": "指针级日志头。"
+    },
+    {
+      "at": 14,
+      "quote": "\"touchMajor=%f, touchMinor=%f, toolMajor=%f, toolMinor=%f, orientation=%f\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 15,
+      "quote": "i, args.pointerProperties[i].id,",
+      "kind": "data",
+      "text": "toolType 区分手指/手写笔/鼠标。"
+    },
+    {
+      "at": 16,
+      "quote": "ftl::enum_string(args.pointerProperties[i].toolType).c_str(),",
+      "kind": "data",
+      "text": "X 轴坐标。"
+    },
+    {
+      "at": 17,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_X),",
+      "kind": "data",
+      "text": "Y 轴坐标。"
+    },
+    {
+      "at": 18,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_Y),",
+      "kind": "data",
+      "text": "压力。"
+    },
+    {
+      "at": 19,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_PRESSURE),",
+      "kind": "data",
+      "text": "接触面积。"
+    },
+    {
+      "at": 20,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_SIZE),",
+      "kind": "data",
+      "text": "触摸长轴。"
+    },
+    {
+      "at": 21,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_TOUCH_MAJOR),",
+      "kind": "data",
+      "text": "触摸短轴。"
+    },
+    {
+      "at": 22,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_TOUCH_MINOR),",
+      "kind": "data",
+      "text": "工具长轴。"
+    },
+    {
+      "at": 23,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_TOOL_MAJOR),",
+      "kind": "data",
+      "text": "工具短轴。"
+    },
+    {
+      "at": 24,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_TOOL_MINOR),",
+      "kind": "data",
+      "text": "朝向角。"
+    },
+    {
+      "at": 25,
+      "quote": "args.pointerCoords[i].getAxisValue(AMOTION_EVENT_AXIS_ORIENTATION));",
+      "kind": "note",
+      "text": "闭合打印调用。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭多指循环。"
+    },
+    {
+      "at": 27,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试分支。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 29,
+      "quote": "Result<void> motionCheck =",
+      "kind": "call",
+      "text": "事件合法性校验：action 与指针数量是否自洽。"
+    },
+    {
+      "at": 30,
+      "quote": "validateMotionEvent(args.action, args.actionButton, args.getPointerCount(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "args.pointerProperties.data());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 32,
+      "quote": "if (!motionCheck.ok()) {",
+      "kind": "branch",
+      "text": "校验失败。"
+    },
+    {
+      "at": 33,
+      "quote": "std::scoped_lock _l(mLock);",
+      "kind": "lock",
+      "text": "失败时也要拿锁打印完整分发状态，便于定位。"
+    },
+    {
+      "at": 34,
+      "quote": "logDispatchStateLocked();",
+      "kind": "call",
+      "text": "把 dispatcher 当前状态 dump 到日志。"
+    },
+    {
+      "at": 35,
+      "quote": "LOG(FATAL) << \"Invalid event: \" << args.dump() << \"; reason: \" << motionCheck.error();",
+      "kind": "note",
+      "text": "直接 FATAL：非法事件说明上游契约被破坏，宁可崩溃也不要污染状态机。"
+    },
+    {
+      "at": 36,
+      "quote": "return;",
+      "kind": "note",
+      "text": "理论上不可达。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭校验分支。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 39,
+      "quote": "if (DEBUG_VERIFY_EVENTS) {",
+      "kind": "branch",
+      "text": "调试用的事件流校验器（DEBUG_VERIFY_EVENTS 编译开关）。"
+    },
+    {
+      "at": 40,
+      "quote": "std::scoped_lock _l(mLock);",
+      "kind": "lock",
+      "text": "校验器内部有状态，需要加锁。"
+    },
+    {
+      "at": 41,
+      "quote": "ui::LogicalDisplayId resolvedDisplayId = args.displayId;",
+      "kind": "data",
+      "text": "把鼠标/触摸板事件解析到主显示上做校验。"
+    },
+    {
+      "at": 42,
+      "quote": "if (isMouseOrTouchpad(args.source)) {",
+      "kind": "branch",
+      "text": "鼠标或触摸板来源。"
+    },
+    {
+      "at": 43,
+      "quote": "resolvedDisplayId = mWindowInfos.getPrimaryDisplayId(args.displayId);",
+      "kind": "call",
+      "text": "取主显示 id。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 45,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 46,
+      "quote": "auto [it, _] =",
+      "kind": "data",
+      "text": "按显示维护校验器实例。"
+    },
+    {
+      "at": 47,
+      "quote": "mVerifiersByDisplay.try_emplace(resolvedDisplayId,",
+      "kind": "call",
+      "text": "不存在就创建，名字里带 display。"
+    },
+    {
+      "at": 48,
+      "quote": "StringPrintf(\"display %s\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 49,
+      "quote": "resolvedDisplayId.toString().c_str()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 50,
+      "quote": "Result<bool> result =",
+      "kind": "call",
+      "text": "把本次移动喂给校验器。"
+    },
+    {
+      "at": 51,
+      "quote": "it->second.processMovement(args.deviceId, args.eventTime, args.source, args.action,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": "args.actionButton, args.getPointerCount(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 53,
+      "quote": "args.pointerProperties.data(), args.pointerCoords.data(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 54,
+      "quote": "args.flags, args.buttonState, args.downTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 55,
+      "quote": "if (!result.ok()) {",
+      "kind": "branch",
+      "text": "校验器报错。"
+    },
+    {
+      "at": 56,
+      "quote": "logDispatchStateLocked();",
+      "kind": "call",
+      "text": "打印状态。"
+    },
+    {
+      "at": 57,
+      "quote": "LOG(FATAL) << \"Bad stream: \" << result.error() << \" caused by \" << args.dump();",
+      "kind": "note",
+      "text": "FATAL：事件流违反契约。"
+    },
+    {
+      "at": 58,
+      "quote": "} else if (*result) {",
+      "kind": "note",
+      "text": "校验器认为可以清理。"
+    },
+    {
+      "at": 59,
+      "quote": "// The verifier is empty. Remove it if the display is gone.",
+      "kind": "note",
+      "text": "注释：校验器已空，显示若已消失就移除。"
+    },
+    {
+      "at": 60,
+      "quote": "// Unfortunately, we can't erase this unconditionally, because InputReader may still",
+      "kind": "note",
+      "text": "不能无条件移除：断开显示时 reader 可能还会发 ACTION_CANCEL。"
+    },
+    {
+      "at": 61,
+      "quote": "// generate an ACTION_CANCEL in response to a disconnected display. This ACTION_CANCEL",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "// would need to be verified against the previous events from this display.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 63,
+      "quote": "if (!mWindowInfos.hasDisplay(resolvedDisplayId)) {",
+      "kind": "branch",
+      "text": "该显示已不存在。"
+    },
+    {
+      "at": 64,
+      "quote": "mVerifiersByDisplay.erase(it);",
+      "kind": "call",
+      "text": "移除校验器。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 66,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭清理分支。"
+    },
+    {
+      "at": 67,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 DEBUG_VERIFY_EVENTS。"
+    },
+    {
+      "at": 68,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 69,
+      "quote": "uint32_t policyFlags = args.policyFlags;",
+      "kind": "data",
+      "text": "本事件的策略位。"
+    },
+    {
+      "at": 70,
+      "quote": "policyFlags |= POLICY_FLAG_TRUSTED;",
+      "kind": "state",
+      "text": "标记为可信来源——注入的事件不会带这个位。"
+    },
+    {
+      "at": 71,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 72,
+      "quote": "android::base::Timer t;",
+      "kind": "data",
+      "text": "用来量拦截耗时。"
+    },
+    {
+      "at": 73,
+      "quote": "mPolicy.interceptMotionBeforeQueueing(args.displayId, args.source, args.action, args.eventTime,",
+      "kind": "call",
+      "text": "**跨模块**：让 policy（system_server）在入队前拦截，可改写 policyFlags。"
+    },
+    {
+      "at": 74,
+      "quote": "policyFlags);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 75,
+      "quote": "if (t.duration() > SLOW_INTERCEPTION_THRESHOLD) {",
+      "kind": "branch",
+      "text": "拦截耗时超过阈值。"
+    },
+    {
+      "at": 76,
+      "quote": "ALOGW(\"Excessive delay in interceptMotionBeforeQueueing; took %s ms\",",
+      "kind": "note",
+      "text": "W 级告警：「Excessive delay in interceptMotionBeforeQueueing」，排查卡顿时的重要线索。"
+    },
+    {
+      "at": 77,
+      "quote": "std::to_string(t.duration().count()).c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 78,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭耗时判断。"
+    },
+    {
+      "at": 79,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 80,
+      "quote": "bool needWake = false;",
+      "kind": "data",
+      "text": "是否需要唤醒 dispatcher。"
+    },
+    {
+      "at": 81,
+      "quote": "{ // acquire lock",
+      "kind": "lock",
+      "text": "第二段锁开始：真正入队。"
+    },
+    {
+      "at": 82,
+      "quote": "mLock.lock();",
+      "kind": "lock",
+      "text": "手动加锁（因为中间要放锁给 filter）。"
+    },
+    {
+      "at": 83,
+      "quote": "if (!(policyFlags & POLICY_FLAG_PASS_TO_USER)) {",
+      "kind": "branch",
+      "text": "policy 没允许送给用户。"
+    },
+    {
+      "at": 84,
+      "quote": "// Set the flag anyway if we already have an ongoing gesture. That would allow us to",
+      "kind": "note",
+      "text": "例外：如果当前已经有手势在进行，仍然要放行。"
+    },
+    {
+      "at": 85,
+      "quote": "// complete the processing of the current stroke.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 86,
+      "quote": "if (mTouchStates.hasTouchingOrHoveringPointers(args.displayId, args.deviceId)) {",
+      "kind": "decision",
+      "text": "该显示该设备是否正有触摸/悬停指针。"
+    },
+    {
+      "at": 87,
+      "quote": "policyFlags |= POLICY_FLAG_PASS_TO_USER;",
+      "kind": "state",
+      "text": "强制加回 PASS_TO_USER，保证手势能走完。"
+    },
+    {
+      "at": 88,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭例外。"
+    },
+    {
+      "at": 89,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 PASS_TO_USER 判断。"
+    },
+    {
+      "at": 90,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 91,
+      "quote": "if (shouldSendMotionToInputFilterLocked(args)) {",
+      "kind": "branch",
+      "text": "是否需要过 accessibility/Rust 输入过滤器。"
+    },
+    {
+      "at": 92,
+      "quote": "ui::Transform displayTransform = mWindowInfos.getDisplayTransform(args.displayId);",
+      "kind": "data",
+      "text": "取显示变换（触摸坐标需要按显示旋转/缩放换算）。"
+    },
+    {
+      "at": 93,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "mLock.unlock();",
+      "kind": "lock",
+      "text": "**放锁**再调 filter：filter 可能回调或阻塞，持锁会死锁。"
+    },
+    {
+      "at": 95,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 96,
+      "quote": "MotionEvent event;",
+      "kind": "data",
+      "text": "构造一个 MotionEvent 交给 filter。"
+    },
+    {
+      "at": 97,
+      "quote": "event.initialize(args.id, args.deviceId, args.source, args.displayId, INVALID_HMAC,",
+      "kind": "call",
+      "text": "initialize 带完整指针数据与变换。"
+    },
+    {
+      "at": 98,
+      "quote": "args.action, args.actionButton, ftl::Flags<MotionFlag>(args.flags),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 99,
+      "quote": "AMOTION_EVENT_EDGE_FLAG_NONE, args.metaState, args.buttonState,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 100,
+      "quote": "args.classification, displayTransform, args.xPrecision,",
+      "kind": "data",
+      "text": "精度与光标位置。"
+    },
+    {
+      "at": 101,
+      "quote": "args.yPrecision, args.xCursorPosition, args.yCursorPosition,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 102,
+      "quote": "displayTransform, args.downTime, args.eventTime,",
+      "kind": "data",
+      "text": "时间戳。"
+    },
+    {
+      "at": 103,
+      "quote": "args.getPointerCount(), args.pointerProperties.data(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "args.pointerCoords.data());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 105,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 106,
+      "quote": "policyFlags |= POLICY_FLAG_FILTERED;",
+      "kind": "state",
+      "text": "标记已过 filter。"
+    },
+    {
+      "at": 107,
+      "quote": "if (!mPolicy.filterInputEvent(event, policyFlags)) {",
+      "kind": "branch",
+      "text": "filterInputEvent 返回 false 表示事件被吞。"
+    },
+    {
+      "at": 108,
+      "quote": "return; // event was consumed by the filter",
+      "kind": "note",
+      "text": "**直接 return**：被无障碍过滤器消费的事件不会进入队列，也不会产生 ANR。"
+    },
+    {
+      "at": 109,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 filter 判断。"
+    },
+    {
+      "at": 110,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 111,
+      "quote": "mLock.lock();",
+      "kind": "lock",
+      "text": "重新加锁。"
+    },
+    {
+      "at": 112,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 filter 分支。"
+    },
+    {
+      "at": 113,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 114,
+      "quote": "// Just enqueue a new motion event.",
+      "kind": "note",
+      "text": "注释：接下来只是入队。"
+    },
+    {
+      "at": 115,
+      "quote": "std::unique_ptr<MotionEntry> newEntry =",
+      "kind": "data",
+      "text": "构造 MotionEntry：把 NotifyMotionArgs 转成 dispatcher 内部的队列元素。"
+    },
+    {
+      "at": 116,
+      "quote": "std::make_unique<MotionEntry>(args.id, /*injectionState=*/nullptr, args.eventTime,",
+      "kind": "call",
+      "text": "带 id、eventTime、deviceId、source、displayId、policyFlags 等。"
+    },
+    {
+      "at": 117,
+      "quote": "args.deviceId, args.source, args.displayId,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 118,
+      "quote": "policyFlags, args.action, args.actionButton,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 119,
+      "quote": "ftl::Flags<MotionFlag>(args.flags), args.metaState,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 120,
+      "quote": "args.buttonState, args.classification,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 121,
+      "quote": "args.xPrecision, args.yPrecision,",
+      "kind": "data",
+      "text": "坐标精度与光标位置。"
+    },
+    {
+      "at": 122,
+      "quote": "args.xCursorPosition, args.yCursorPosition,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 123,
+      "quote": "args.downTime, args.pointerProperties,",
+      "kind": "data",
+      "text": "downTime 与指针数据直接拷入。"
+    },
+    {
+      "at": 124,
+      "quote": "args.pointerCoords);",
+      "kind": "note",
+      "text": "关闭构造。"
+    },
+    {
+      "at": 125,
+      "quote": "if (mTracer) {",
+      "kind": "branch",
+      "text": "有 tracer（Perfetto 输入轨道）。"
+    },
+    {
+      "at": 126,
+      "quote": "newEntry->traceTracker = mTracer->traceInboundEvent(*newEntry);",
+      "kind": "call",
+      "text": "为这条 entry 建立 trace 跟踪，后续能画出端到端延迟。"
+    },
+    {
+      "at": 127,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracer 分支。"
+    },
+    {
+      "at": 128,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 129,
+      "quote": "if (args.id != android::os::IInputConstants::INVALID_INPUT_EVENT_ID &&",
+      "kind": "branch",
+      "text": "只看原生生成的事件（非注入、非 filter 场景）。"
+    },
+    {
+      "at": 130,
+      "quote": "IdGenerator::getSource(args.id) == IdGenerator::Source::INPUT_READER &&",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 131,
+      "quote": "!mInputFilterEnabled) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 132,
+      "quote": "mLatencyTracker.trackListener(args);",
+      "kind": "call",
+      "text": "记录延迟统计。"
+    },
+    {
+      "at": 133,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭统计分支。"
+    },
+    {
+      "at": 134,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 135,
+      "quote": "needWake = enqueueInboundEventLocked(std::move(newEntry));",
+      "kind": "call",
+      "text": "**核心**：入队；返回是否需要唤醒 dispatcher。"
+    },
+    {
+      "at": 136,
+      "quote": "mLock.unlock();",
+      "kind": "lock",
+      "text": "释放锁。"
+    },
+    {
+      "at": 137,
+      "quote": "} // release lock",
+      "kind": "lock",
+      "text": "作用域结束。"
+    },
+    {
+      "at": 138,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 139,
+      "quote": "if (needWake) {",
+      "kind": "branch",
+      "text": "需要唤醒。"
+    },
+    {
+      "at": 140,
+      "quote": "mLooper->wake();",
+      "kind": "call",
+      "text": "唤醒 dispatcher 线程（它可能正阻塞在 pollOnce）。"
+    },
+    {
+      "at": 141,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭唤醒分支。"
+    },
+    {
+      "at": 142,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意这里没有任何命中测试——那是 dispatcher 线程的活。"
+    }
+  ]
+}

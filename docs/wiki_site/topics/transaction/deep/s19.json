@@ -1,0 +1,51 @@
+{
+  "step": "s19",
+  "title": "synchronous apply 的等待",
+  "tldr": "apply(synchronous=true) 注册一个 commit 回调再 wait()：只保证事务已被应用，不保证上屏。",
+  "why": "这是 API 语义上最容易被误读的一处。synchronous apply 常用于「改完立刻读回状态」的场景（例如截图前确保布局已提交），它等的是 SF 的 commit 回调。如果写成「等它上屏」，就必须等一整个 vsync 甚至更久，代价很大——所以 Android 没这么做。需要等真正显示时应该用 TransactionCompletedCallback 或 FrameTimeline。",
+  "concepts": [
+    {
+      "term": "SyncCallback",
+      "text": "内部条件变量，由 commit 回调唤醒。"
+    },
+    {
+      "term": "TransactionCompletedCallback",
+      "text": "上屏级别完成回调。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "syncCallback->init();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1153",
+      "what": "初始化等待用的条件变量。"
+    },
+    {
+      "call": "addTransactionCommittedCallback(SyncCallback::getCallback(syncCallback),",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1154",
+      "what": "注册 **commit** 回调。"
+    },
+    {
+      "call": "syncCallback->wait();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1220",
+      "what": "阻塞等待。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mStatus",
+      "before": "OK",
+      "after": "OK（等待完成）",
+      "note": "仅表示提交链路无错。"
+    }
+  ],
+  "threads": "调用线程被阻塞（若在 UI 线程会卡住这一帧）。",
+  "pitfalls": [
+    "在 UI 线程上做 synchronous apply：直接造成卡顿。",
+    "以为等到了就代表用户看到：差一整个 vsync。"
+  ],
+  "debug": [
+    "atrace 里 apply 段会跨到 SF 的 commit 段。",
+    "对比 synchronous 与普通 apply 的耗时差异。"
+  ],
+  "next": "事务卡住时怎么发现？见第 20 步。"
+}

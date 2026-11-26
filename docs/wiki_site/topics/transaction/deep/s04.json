@@ -1,0 +1,66 @@
+{
+  "step": "s04",
+  "title": "cacheBuffers：把 GraphicBuffer 送进客户端缓存",
+  "tldr": "提交前把 GraphicBuffer 换成 client_cache_t 句柄，binder 消息里只传 id；命中缓存时连 buffer 都不带。",
+  "why": "图形 buffer 动辄几 MB，如果每帧都通过 binder 传句柄加 fd，开销不可接受。BufferCache 的做法是「同一进程内复用」：第一次遇到的 buffer 缓存起来并生成 id，之后只传 id。这里还埋了一个细节——缓存有上限（BUFFER_CACHE_MAX_SIZE），超过就停止缓存本次事务剩余的 buffer，否则会把其它 buffer 挤出去，反而降低命中率。",
+  "concepts": [
+    {
+      "term": "client_cache_t",
+      "text": "缓存句柄：token（进程命名空间）+ id。"
+    },
+    {
+      "term": "cachedBufferChanged",
+      "text": "已缓存标记，避免 writeToParcel 与 apply 重复缓存。"
+    },
+    {
+      "term": "mUncacheBuffers",
+      "text": "本事务需要服务端回收的旧句柄列表。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void SurfaceComposerClient::Transaction::cacheBuffers() {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1055",
+      "what": "入口，先走 mMayContainBuffer 快路径。"
+    },
+    {
+      "call": "status_t ret = BufferCache::getInstance().getCacheId(s->bufferData->buffer, &cacheId);",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1080",
+      "what": "查缓存。"
+    },
+    {
+      "call": "s->bufferData->buffer = nullptr;",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1083",
+      "what": "命中就**把 buffer 摘掉**，消息里只剩 id。"
+    },
+    {
+      "call": "cacheId = BufferCache::getInstance().cache(s->bufferData->buffer, uncacheBuffer);",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1087",
+      "what": "未命中则真正缓存。"
+    }
+  ],
+  "state": [
+    {
+      "field": "layer_state_t.bufferData.buffer",
+      "before": "GraphicBuffer 指针",
+      "after": "nullptr（命中时）",
+      "note": "未命中仍保留。"
+    },
+    {
+      "field": "cachedBuffer.id",
+      "before": "0",
+      "after": "缓存 id",
+      "note": "服务端据此取回 buffer。"
+    }
+  ],
+  "threads": "调用线程（apply 里同步执行）。",
+  "pitfalls": [
+    "以为每次提交都传 buffer：命中缓存时只传 id。",
+    "忽略缓存上限：大事务里后面的 buffer 可能没被缓存。"
+  ],
+  "debug": [
+    "BufferCache 的统计可从 dumpsys SurfaceFlinger 与 sysprop 观察。",
+    "atrace 里 cacheBuffers 与 binder 调用相邻。"
+  ],
+  "next": "apply 如何把这一切发出去？见第 5 步。"
+}

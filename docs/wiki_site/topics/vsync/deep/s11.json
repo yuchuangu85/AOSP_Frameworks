@@ -1,0 +1,55 @@
+{
+  "step": "s11",
+  "title": "timerCallback：一次唤醒服务多条回调",
+  "tldr": "TimerDispatch 线程醒来后在锁内收集所有同期 entry、出锁逐个回调；回调阻塞会拖住所有注册者。",
+  "why": "这是整条链路里最容易出并发问题的地方。设计上有两个折衷：一是在同一唤醒窗口内服务多个 entry（减少 timerfd 唤醒次数），二是先持锁收集、出锁回调（避免回调里再取锁死锁）。代价是——所有回调串行执行，任何一个慢都会被其他注册者感知。所以「某应用拖慢了整机 vsync」在这个结构下是真实可能的，排查时看谁在 EventThread 回调里做了重活。",
+  "concepts": [
+    {
+      "term": "Invocation",
+      "text": "本轮要执行的一条：(callback, vsync, wakeup, deadline)。"
+    },
+    {
+      "term": "lagAllowance",
+      "text": "本次唤醒比计划晚多少，决定是否仍算同期。"
+    },
+    {
+      "term": "executing()",
+      "text": "取走目标并 disarm，防止同一拍二次分发。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void VSyncDispatchTimerQueue::timerCallback() {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:334",
+      "what": "timer 线程入口。"
+    },
+    {
+      "call": "if (*wakeupTime < mIntendedWakeupTime + mTimerSlack + lagAllowance) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:362",
+      "what": "判定是否属于本次唤醒窗口。"
+    },
+    {
+      "call": "invocation.callback->callback(invocation.vsyncTimestamp, invocation.wakeupTimestamp,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:376",
+      "what": "**出锁回调**。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mArmedInfo",
+      "before": "已武装",
+      "after": "executing 后清空",
+      "note": "同一拍不会重复执行。"
+    }
+  ],
+  "threads": "TimerDispatch 线程（SCHED_FIFO 2）。",
+  "pitfalls": [
+    "在 EventThread::onVsync 里做重活：会拖慢所有注册者。",
+    "以为回调在各自线程执行：都在 timer 线程。"
+  ],
+  "debug": [
+    "trace 里 timerCallback 下的各 entry 切片。",
+    "Perfetto 里 TimerDispatch 线程的唤醒密度。"
+  ],
+  "next": "app 侧分发线程怎么工作？见第 12 步。"
+}

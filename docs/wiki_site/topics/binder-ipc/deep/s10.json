@@ -1,0 +1,60 @@
+{
+  "step": "s10",
+  "title": "executeCommand：分发 BR_TRANSACTION",
+  "tldr": "287 行 switch：引用计数命令（ACQUIRE/RELEASE/INCREFS…）、BR_TRANSACTION、死亡与冻结通知全在这里处理。",
+  "why": "这是 binder 里最长也最容易被低估的函数。它不只处理「调用」：超过一半的分支是**引用计数命令**——远端持有本地对象时，驱动会投 BR_ACQUIRE / BR_RELEFS 这类命令，本地必须原子提升/释放引用并回报驱动。理解了这一层，才知道 binder 跨进程的对象生命周期是靠这些命令维持的，而不是 GC。",
+  "concepts": [
+    {
+      "term": "BR_ACQUIRE / BR_RELEASE",
+      "text": "远端加/减强引用。"
+    },
+    {
+      "term": "BR_INCREFS / BR_DECREFS",
+      "text": "远端加/减弱引用。"
+    },
+    {
+      "term": "BR_SPAWN_LOOPER",
+      "text": "驱动要求扩容线程池。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t IPCThreadState::executeCommand(int32_t cmd)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1408",
+      "what": "入口。"
+    },
+    {
+      "call": "obj->incStrong(mProcess.get());",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1428",
+      "what": "远端强引用落地。"
+    },
+    {
+      "call": "case BR_DEAD_BINDER:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1631",
+      "what": "死亡通知。"
+    },
+    {
+      "call": "mProcess->spawnPooledThread(false);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1680",
+      "what": "线程池扩容。"
+    }
+  ],
+  "state": [
+    {
+      "field": "本地对象的引用计数",
+      "before": "未含远端引用",
+      "after": "含远端引用",
+      "note": "由这些命令维持。"
+    }
+  ],
+  "threads": "接收线程。",
+  "pitfalls": [
+    "以为 binder 对象寿命靠 GC：靠这些引用命令。",
+    "忽略 FATAL 分支：BAD COMMAND 说明版本不匹配。"
+  ],
+  "debug": [
+    "IF_LOG_REMOTEREFS 可打印每次引用变化。",
+    "BR_* 命令名日志能看出流量构成。"
+  ],
+  "next": "Java 服务端接到什么？见第 11 步。"
+}

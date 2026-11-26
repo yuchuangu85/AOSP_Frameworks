@@ -1,0 +1,51 @@
+{
+  "step": "s15",
+  "title": "oneway：不等回包",
+  "tldr": "TF_ONE_WAY 调用在写命令后只等 BR_TRANSACTION_COMPLETE 就返回，不代表对端已执行。",
+  "why": "oneway 的语义常被误读成「异步执行完了」。准确说法是「已交给驱动接收，之后什么都不保证」：对端可能还在排队、可能被冻结、可能崩溃，发送方都不会知道。所以 oneway 适合的状态更新必须能容忍丢失与乱序（例如只报告最新值）。如果要确认，就必须用同步调用或额外的回传通道。",
+  "concepts": [
+    {
+      "term": "BR_TRANSACTION_COMPLETE",
+      "text": "驱动已收下本次写。"
+    },
+    {
+      "term": "oneway 无回包",
+      "text": "executeCommand 里 oneway 分支只打日志。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "err = waitForResponse(nullptr, nullptr);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:992",
+      "what": "oneway 的等待。"
+    },
+    {
+      "call": "case BR_TRANSACTION_COMPLETE:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1179",
+      "what": "收到它即返回。"
+    },
+    {
+      "call": "LOG_ONEWAY(\"NOT sending reply to %d!\", mCallingPid);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1657",
+      "what": "对端不回包。"
+    }
+  ],
+  "state": [
+    {
+      "field": "发送方的认知",
+      "before": "无",
+      "after": "「已提交」",
+      "note": "不等于已执行。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "把 oneway 当「已执行」：只保证已提交。",
+    "用 oneway 传必须可靠的状态。"
+  ],
+  "debug": [
+    "LOG_ONEWAY 开关能看到 oneway 轨迹。",
+    "BR_ONEWAY_SPAM_SUSPECT 提示发送过量。"
+  ],
+  "next": "死亡通知怎么工作？见第 16 步。"
+}

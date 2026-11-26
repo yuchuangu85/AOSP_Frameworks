@@ -1,0 +1,34 @@
+{
+  "step": "s07",
+  "title": "performMeasure：把 spec 压到 View 树",
+  "tldr": "一次 mView.measure，加上缓存结果与清 deferred 标志；真正的递归在 View.measure 里。",
+  "why": "测量是布局性能的两大来源之一。performMeasure 本身很薄，但它决定了「本帧要不要重新量整棵树」：调用一次 mView.measure，如果 spec 与上次相同且 View 自身未脏，View.measure 会直接复用缓存值，整棵子树都不再重算——这是嵌套布局优化能被感知的原因。反过来，如果上游每次给出的 spec 都不同（例如父容器用 UNSPECIFIED 反复试探），缓存就失效，测量成本会按树深放大。",
+  "concepts": [
+    { "term": "MeasureSpec", "text": "32 位打包的「mode + size」，mode 是 EXACTLY/AT_MOST/UNSPECIFIED。" },
+    { "term": "测量缓存", "text": "View.measure 内部比较 spec 与 PFLAG_MEASURED_DIMENSION_SET，命中则不调 onMeasure。" },
+    { "term": "mViewMeasureDeferred", "text": "上一帧因故没测，本帧必须补上；测完即清。" }
+  ],
+  "walk": [
+    { "call": "private void performMeasure(int childWidthMeasureSpec, int childHeightMeasureSpec)", "ref": "base/core/java/android/view/ViewRootImpl.java:5472", "what": "接收已算好的宽高 spec，不再推导。" },
+    { "call": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"measure\");", "ref": "base/core/java/android/view/ViewRootImpl.java:5476", "what": "atrace 名 measure，与 layout/draw 三段对齐。" },
+    { "call": "mView.measure(childWidthMeasureSpec, childHeightMeasureSpec);", "ref": "base/core/java/android/view/ViewRootImpl.java:5478", "what": "进入 View 树递归；缓存命中时子树不动。" },
+    { "call": "mMeasuredWidth = mView.getMeasuredWidth();", "ref": "base/core/java/android/view/ViewRootImpl.java:5482", "what": "把根节点测量结果缓存在 ViewRootImpl。" },
+    { "call": "mViewMeasureDeferred = false;", "ref": "base/core/java/android/view/ViewRootImpl.java:5484", "what": "清 deferred，避免下一帧重复测量。" }
+  ],
+  "state": [
+    { "field": "mMeasuredWidth / mMeasuredHeight", "before": "上一次的测量值", "after": "本次测量值", "note": "供后续 relayout、layout 与窗口尺寸同步使用。" },
+    { "field": "mViewMeasureDeferred", "before": "true", "after": "false", "note": "清掉后才允许下一帧跳过测量。" }
+  ],
+  "threads": "UI 线程；measure 的递归全部在这一条线程上完成，没有并行。",
+  "pitfalls": [
+    "在 onMeasure 里用 UNSPECIFIED 反复试探子 View：会持续击穿测量缓存，成本急剧上升。",
+    "以为 mMeasuredWidth 就是最终显示宽度：relayout 与 layout 之后还可能被钳制。",
+    "把 measure 与 layout 混为一谈：measure 只算尺寸，位置由 layout 决定。"
+  ],
+  "debug": [
+    "trace 里的 measure 切片宽度即整棵树本轮测量的总耗时。",
+    "Layout Inspector 的「Measure 次数」可以确认是否发生了重复测量。",
+    "在 View.measure 的缓存命中分支下断点，可确认本帧是否真的重算了。"
+  ],
+  "next": "尺寸有了，位置怎么排、以及 requestLayout 为什么能把一帧拖成两帧？见第 8 步。"
+}

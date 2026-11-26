@@ -1,0 +1,35 @@
+{
+  "step": "s02",
+  "title": "invalidateChildInParent → invalidateRectOnScreen",
+  "tldr": "冒泡到树根后，脏区被并进 mDirty 并与窗口求交，intersected 决定这次请求是否作废。",
+  "why": "脏区是所有后续优化的基础：RT 的 damage、HWUI 的跳过空帧判定、甚至 SF 的合成区域都建立在它之上。如果这一步把脏区算错（少算），屏幕上就会出现「某些像素没刷新」的诡异残影；如果多算（并进整窗），性能会悄悄掉一档而没人报警。另外 mWillDrawSoon 的合并语义也在这里，它解释了「同一帧内多次 invalidate 只产生一次 traversal」这一被广泛依赖的行为。",
+  "concepts": [
+    { "term": "mDirty", "type": "field", "text": "ViewRootImpl 的窗口级脏区，是「本帧要重画多大范围」的唯一依据。" },
+    { "term": "intersected", "text": "脏区与窗口 bounds 求交的结果；false 表示完全在窗口外，请求作废。" },
+    { "term": "mTranslator / mCurScrollY", "text": "多显示器缩放与滚动偏移，冒泡过程中要先修正脏区坐标系。" }
+  ],
+  "walk": [
+    { "call": "public ViewParent invalidateChildInParent(int[] location, Rect dirty)", "ref": "base/core/java/android/view/ViewRootImpl.java:2887", "what": "树根接收冒泡，第一件事是 checkThread。" },
+    { "call": "dirty.offset(0, -mCurScrollY);", "ref": "base/core/java/android/view/ViewRootImpl.java:2902", "what": "滚动状态下修正脏区的坐标系。" },
+    { "call": "mTranslator.translateRectInAppWindowToScreen(dirty);", "ref": "base/core/java/android/view/ViewRootImpl.java:2905", "what": "多显示器缩放场景下的坐标转换。" },
+    { "call": "invalidateRectOnScreen(dirty);", "ref": "base/core/java/android/view/ViewRootImpl.java:2912", "what": "进入真正的收口逻辑。" },
+    { "call": "localDirty.union(dirty.left, dirty.top, dirty.right, dirty.bottom);", "ref": "base/core/java/android/view/ViewRootImpl.java:2922", "what": "并集而不是替换：一帧内多处变化都会被累积。" },
+    { "call": "if (!mWillDrawSoon && (intersected || mIsAnimating)) {", "ref": "base/core/java/android/view/ViewRootImpl.java:2931", "what": "合并闸门：本帧已排队就丢弃，脏区被裁掉且不在动画也丢弃。" }
+  ],
+  "state": [
+    { "field": "mDirty", "before": "上一次 draw 后被 setEmpty", "after": "并入本次脏区并裁剪到窗口内", "note": "硬件路径在 draw() 里会再次 setEmpty 交给 RT 的 damage 接管。" },
+    { "field": "mWillDrawSoon / mTraversalScheduled", "before": "false", "after": "由 scheduleTraversals 置真", "note": "两者配合构成「一帧一次 traversal」的幂等。" }
+  ],
+  "threads": "UI 线程。checkThread 在方法第一行，冒泡链上任何一层越线程都会立刻抛异常。",
+  "pitfalls": [
+    "把脏区理解成「某个 View 的范围」：它到树根后是窗口坐标系的并集，可能远大于单个 View。",
+    "以为 mWillDrawSoon 会阻塞绘制：它只抑制重复排队，vync 到达后照样会走完整遍历。",
+    "忽略 mTranslator：多屏缩放设备上，脏区未换算会画到错误位置。"
+  ],
+  "debug": [
+    "在 ViewRootImpl.java:2931 断点，观察 intersected 与 mWillDrawSoon 的取值组合。",
+    "打开 debug.hwui.show_dirty_regions，脏区会被高亮，能直接看到并集是否过大。",
+    "对比 dumpsys gfxinfo 里每帧的 draw 区域与预期区域，判断是否存在过度并集。"
+  ],
+  "next": "脏区确认后，ViewRootImpl 怎样把「要遍历」这件事排到下一次 vsync？见第 3 步。"
+}

@@ -1,0 +1,720 @@
+{
+  "id": "sf-buffercheck",
+  "title": "transactionReadyBufferCheck",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyBufferCheck(",
+  "span": [
+    5359,
+    5476
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyBufferCheck(",
+      "kind": "note",
+      "text": "buffer 维度的就绪判定：barrier frame、背压、acquire fence 三件事，遍历所有带 buffer 的层后给出结论。"
+    },
+    {
+      "at": 2,
+      "quote": "const TransactionHandler::TransactionFlushState& flushState) {",
+      "kind": "note",
+      "text": "参数是本轮刷写状态。"
+    },
+    {
+      "at": 3,
+      "quote": "using TransactionReadiness = TransactionHandler::TransactionReadiness;",
+      "kind": "note",
+      "text": "局部别名。"
+    },
+    {
+      "at": 4,
+      "quote": "auto ready = TransactionReadiness::Ready;",
+      "kind": "data",
+      "text": "默认可以应用。"
+    },
+    {
+      "at": 5,
+      "quote": "flushState.transaction->traverseStatesWithBuffersWhileTrue(",
+      "kind": "call",
+      "text": "遍历本事务里带 buffer 的层；回调返回 STOP 会提前结束。"
+    },
+    {
+      "at": 6,
+      "quote": "[&](const ResolvedComposerState& resolvedState) FTL_FAKE_GUARD(",
+      "kind": "note",
+      "text": "回调带主线程断言。"
+    },
+    {
+      "at": 7,
+      "quote": "kMainThreadContext) -> bool {",
+      "kind": "note",
+      "text": "续行：返回 bool 表示是否继续遍历。"
+    },
+    {
+      "at": 8,
+      "quote": "const frontend::RequestedLayerState* layer =",
+      "kind": "data",
+      "text": "取该层在 LayerLifecycleManager 里的请求状态。"
+    },
+    {
+      "at": 9,
+      "quote": "mLayerLifecycleManager.getLayerFromId(resolvedState.layerId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "const auto& transaction = *flushState.transaction;",
+      "kind": "data",
+      "text": "取事务。"
+    },
+    {
+      "at": 11,
+      "quote": "const auto& s = resolvedState.state;",
+      "kind": "data",
+      "text": "取本层状态。"
+    },
+    {
+      "at": 12,
+      "quote": "// check for barrier frames",
+      "kind": "note",
+      "text": "注释：检查 barrier frame。"
+    },
+    {
+      "at": 13,
+      "quote": "if (s.bufferData->hasBarrier) {",
+      "kind": "branch",
+      "text": "该 buffer 带 barrier。"
+    },
+    {
+      "at": 14,
+      "quote": "// The current producerId is already a newer producer than the buffer that has a",
+      "kind": "note",
+      "text": "注释：如果当前 barrierProducerId 更新，说明进来的 buffer 更旧，可以直接丢掉。"
+    },
+    {
+      "at": 15,
+      "quote": "// barrier. This means the incoming buffer is older and we can release it here.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 16,
+      "quote": "// We don't wait on the barrier since we know that's stale information.",
+      "kind": "note",
+      "text": "注释：不要等这个 barrier，它已是陈旧信息。"
+    },
+    {
+      "at": 17,
+      "quote": "if (layer->barrierProducerId > s.bufferData->producerId) {",
+      "kind": "decision",
+      "text": "**陈旧 buffer 判定**：已有更新的生产者。"
+    },
+    {
+      "at": 18,
+      "quote": "if (s.bufferData->releaseBufferListener) {",
+      "kind": "branch",
+      "text": "有 release 监听器。"
+    },
+    {
+      "at": 19,
+      "quote": "uint32_t currentMaxAcquiredBufferCount =",
+      "kind": "data",
+      "text": "取当前刷新率下的最大可持有 buffer 数。"
+    },
+    {
+      "at": 20,
+      "quote": "getMaxAcquiredBufferCountForCurrentRefreshRate(",
+      "kind": "call",
+      "text": "查询。"
+    },
+    {
+      "at": 21,
+      "quote": "layer->ownerUid.val());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 22,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"callReleaseBufferCallback %s - %\" PRIu64,",
+      "kind": "note",
+      "text": "打 trace 记录这次释放。"
+    },
+    {
+      "at": 23,
+      "quote": "layer->name.c_str(), s.bufferData->frameNumber);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 24,
+      "quote": "s.bufferData->releaseBufferListener",
+      "kind": "call",
+      "text": "**主动回调释放**：告诉生产者这块 buffer 可以回收了。"
+    },
+    {
+      "at": 25,
+      "quote": "->onReleaseBuffer({resolvedState.externalTexture->getBuffer()",
+      "kind": "call",
+      "text": "用 buffer id + 帧号作为回调 id。"
+    },
+    {
+      "at": 26,
+      "quote": "->getId(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "s.bufferData->frameNumber},",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 28,
+      "quote": "s.bufferData->acquireFence",
+      "kind": "data",
+      "text": "有 acquire fence 就带上。"
+    },
+    {
+      "at": 29,
+      "quote": "? s.bufferData->acquireFence",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": ": Fence::NO_FENCE,",
+      "kind": "note",
+      "text": "否则用 NO_FENCE。"
+    },
+    {
+      "at": 31,
+      "quote": "currentMaxAcquiredBufferCount,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 32,
+      "quote": "false /* removeFromCache */);",
+      "kind": "note",
+      "text": "removeFromCache=false：只释放不摘缓存。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭监听器判断。"
+    },
+    {
+      "at": 34,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 35,
+      "quote": "// Delete the entire state at this point and not just release the buffer",
+      "kind": "note",
+      "text": "注释：整条状态都过时，删掉它而不只是释放 buffer。"
+    },
+    {
+      "at": 36,
+      "quote": "// because everything associated with the Layer in this Transaction is now",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 37,
+      "quote": "// out of date.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 38,
+      "quote": "SFTRACE_FORMAT(\"DeleteStaleBuffer %s barrierProducerId:%d > %d\",",
+      "kind": "note",
+      "text": "打 trace 记录删除原因。"
+    },
+    {
+      "at": 39,
+      "quote": "layer->name.c_str(), layer->barrierProducerId,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 40,
+      "quote": "s.bufferData->producerId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "return TraverseBuffersReturnValues::DELETE_AND_CONTINUE_TRAVERSAL;",
+      "kind": "note",
+      "text": "**删除该层状态并继续**遍历其它层。"
+    },
+    {
+      "at": 42,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭陈旧判断。"
+    },
+    {
+      "at": 43,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 44,
+      "quote": "if (layer->barrierFrameNumber < s.bufferData->barrierFrameNumber) {",
+      "kind": "decision",
+      "text": "**barrier frame 判定**：本事务的 barrierFrameNumber 是否高于已应用的。"
+    },
+    {
+      "at": 45,
+      "quote": "const bool willApplyBarrierFrame =",
+      "kind": "data",
+      "text": "判断这一帧是否会在本批里被应用。"
+    },
+    {
+      "at": 46,
+      "quote": "flushState.bufferLayersReadyToPresent.contains(s.surface.get()) &&",
+      "kind": "call",
+      "text": "查已就绪集合里该 surface 的帧号。"
+    },
+    {
+      "at": 47,
+      "quote": "((flushState.bufferLayersReadyToPresent.get(s.surface.get()) >=",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 48,
+      "quote": "s.bufferData->barrierFrameNumber));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 49,
+      "quote": "if (!willApplyBarrierFrame) {",
+      "kind": "branch",
+      "text": "本帧不该被应用。"
+    },
+    {
+      "at": 50,
+      "quote": "SFTRACE_FORMAT(\"NotReadyBarrier %s barrierFrameNumber:%\" PRId64",
+      "kind": "note",
+      "text": "打 trace 记录 NotReadyBarrier。"
+    },
+    {
+      "at": 51,
+      "quote": "\" < %\" PRId64,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": "layer->name.c_str(), layer->barrierFrameNumber,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 53,
+      "quote": "s.bufferData->barrierFrameNumber);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 54,
+      "quote": "bool timeout = std::chrono::nanoseconds(flushState.queueProcessTime -",
+      "kind": "data",
+      "text": "是否已等待超过 4 秒。"
+    },
+    {
+      "at": 55,
+      "quote": "transaction.postTime) >",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 56,
+      "quote": "std::chrono::seconds(4);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 57,
+      "quote": "if (timeout) {",
+      "kind": "branch",
+      "text": "超时了。"
+    },
+    {
+      "at": 58,
+      "quote": "TransactionTraceWriter::getInstance()",
+      "kind": "call",
+      "text": "记录「因超时忽略 barrier」。"
+    },
+    {
+      "at": 59,
+      "quote": ".invoke(\"IgnoreBarrierDueToTimeout\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 60,
+      "quote": "/* overwrite= */ false);",
+      "kind": "note",
+      "text": "不覆盖已有 trace 文件。"
+    },
+    {
+      "at": 61,
+      "quote": "SFTRACE_FORMAT(\"IgnoreBarrierDueToTimeout %s\", layer->name.c_str());",
+      "kind": "note",
+      "text": "打 trace。"
+    },
+    {
+      "at": 62,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 63,
+      "quote": "ready = TransactionReadiness::NotReadyBarrier;",
+      "kind": "state",
+      "text": "**NotReadyBarrier**：独立状态，等待 barrier。"
+    },
+    {
+      "at": 64,
+      "quote": "return TraverseBuffersReturnValues::STOP_TRAVERSAL;",
+      "kind": "note",
+      "text": "停止遍历。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 66,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 67,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 barrierFrameNumber 判断。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hasBarrier 分支。"
+    },
+    {
+      "at": 69,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 70,
+      "quote": "// If backpressure is enabled and we already have a buffer to commit, keep",
+      "kind": "note",
+      "text": "注释：背压启用且已有待提交 buffer 时，事务继续留在队列。"
+    },
+    {
+      "at": 71,
+      "quote": "// the transaction in the queue.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 72,
+      "quote": "const bool hasPendingBuffer =",
+      "kind": "data",
+      "text": "该 surface 是否已有就绪 buffer。"
+    },
+    {
+      "at": 73,
+      "quote": "flushState.bufferLayersReadyToPresent.contains(s.surface.get());",
+      "kind": "call",
+      "text": "查集合。"
+    },
+    {
+      "at": 74,
+      "quote": "if (layer->backpressureEnabled() && hasPendingBuffer &&",
+      "kind": "decision",
+      "text": "背压开启 + 已有待提交 buffer + 自动时间戳。"
+    },
+    {
+      "at": 75,
+      "quote": "transaction.isAutoTimestamp) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 76,
+      "quote": "SFTRACE_FORMAT(\"hasPendingBuffer %s\", layer->name.c_str());",
+      "kind": "note",
+      "text": "打 trace。"
+    },
+    {
+      "at": 77,
+      "quote": "ready = TransactionReadiness::NotReady;",
+      "kind": "state",
+      "text": "**NotReady**：主动背压。"
+    },
+    {
+      "at": 78,
+      "quote": "return TraverseBuffersReturnValues::STOP_TRAVERSAL;",
+      "kind": "note",
+      "text": "停止遍历。"
+    },
+    {
+      "at": 79,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭背压判断。"
+    },
+    {
+      "at": 80,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 81,
+      "quote": "const bool acquireFenceAvailable = s.bufferData &&",
+      "kind": "data",
+      "text": "是否有可用的 acquire fence。"
+    },
+    {
+      "at": 82,
+      "quote": "s.bufferData->flags.test(BufferData::BufferDataChange::fenceChanged) &&",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 83,
+      "quote": "s.bufferData->acquireFence;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 84,
+      "quote": "const bool fenceSignaled = !acquireFenceAvailable ||",
+      "kind": "data",
+      "text": "fence 是否已 signal（没有 fence 视作已 signal）。"
+    },
+    {
+      "at": 85,
+      "quote": "s.bufferData->acquireFence->getStatus() != Fence::Status::Unsignaled;",
+      "kind": "call",
+      "text": "查 fence 状态。"
+    },
+    {
+      "at": 86,
+      "quote": "if (!fenceSignaled) {",
+      "kind": "branch",
+      "text": "fence 未 signal。"
+    },
+    {
+      "at": 87,
+      "quote": "// check fence status",
+      "kind": "note",
+      "text": "注释：检查 fence 状态。"
+    },
+    {
+      "at": 88,
+      "quote": "const bool allowLatchUnsignaled =",
+      "kind": "data",
+      "text": "判断能否「未 signal 就 latch」。"
+    },
+    {
+      "at": 89,
+      "quote": "shouldLatchUnsignaled(s, transaction.states.size(),",
+      "kind": "call",
+      "text": "需要同时满足：简单 buffer 更新且允许 latch。"
+    },
+    {
+      "at": 90,
+      "quote": "flushState.firstTransaction) &&",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 91,
+      "quote": "layer->isSimpleBufferUpdate(s);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 92,
+      "quote": "if (allowLatchUnsignaled) {",
+      "kind": "branch",
+      "text": "允许。"
+    },
+    {
+      "at": 93,
+      "quote": "SFTRACE_FORMAT(\"fence unsignaled try allowLatchUnsignaled %s\",",
+      "kind": "note",
+      "text": "打 trace。"
+    },
+    {
+      "at": 94,
+      "quote": "layer->name.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 95,
+      "quote": "ready = TransactionReadiness::NotReadyUnsignaled;",
+      "kind": "state",
+      "text": "**NotReadyUnsignaled**：可应用但 buffer 未写完，与普通 NotReady 处理不同。"
+    },
+    {
+      "at": 96,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 97,
+      "quote": "ready = TransactionReadiness::NotReady;",
+      "kind": "state",
+      "text": "**NotReady**：不能应用。"
+    },
+    {
+      "at": 98,
+      "quote": "auto& listener = s.bufferData->releaseBufferListener;",
+      "kind": "data",
+      "text": "取 release 监听器。"
+    },
+    {
+      "at": 99,
+      "quote": "if (listener &&",
+      "kind": "decision",
+      "text": "有监听器且已等待超过 4s。"
+    },
+    {
+      "at": 100,
+      "quote": "(flushState.queueProcessTime - transaction.postTime) >",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 101,
+      "quote": "std::chrono::nanoseconds(4s).count()) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 102,
+      "quote": "mTransactionHandler",
+      "kind": "call",
+      "text": "**登记 stalled transaction**：dumpsys 里能看到谁卡住了队列。"
+    },
+    {
+      "at": 103,
+      "quote": ".onTransactionQueueStalled(transaction.id,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "{.pid = layer->ownerPid.val(),",
+      "kind": "data",
+      "text": "带上 pid/layerId/bufferId。"
+    },
+    {
+      "at": 105,
+      "quote": ".layerId = layer->id,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 106,
+      "quote": ".layerName = layer->name,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 107,
+      "quote": ".bufferId = s.bufferData->getId(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 108,
+      "quote": ".frameNumber =",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 109,
+      "quote": "s.bufferData->frameNumber});",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 110,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 111,
+      "quote": "SFTRACE_FORMAT(\"fence unsignaled %s\", layer->name.c_str());",
+      "kind": "note",
+      "text": "打 trace 记录 fence 未 signal。"
+    },
+    {
+      "at": 112,
+      "quote": "return TraverseBuffersReturnValues::STOP_TRAVERSAL;",
+      "kind": "note",
+      "text": "停止遍历。"
+    },
+    {
+      "at": 113,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 114,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 fence 判断。"
+    },
+    {
+      "at": 115,
+      "quote": "return TraverseBuffersReturnValues::CONTINUE_TRAVERSAL;",
+      "kind": "note",
+      "text": "继续看下一层。"
+    },
+    {
+      "at": 116,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合 lambda 与遍历。"
+    },
+    {
+      "at": 117,
+      "quote": "return ready;",
+      "kind": "note",
+      "text": "返回最终结论。"
+    },
+    {
+      "at": 118,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

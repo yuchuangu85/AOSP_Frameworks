@@ -1,0 +1,462 @@
+{
+  "id": "dc-surface",
+  "title": "DisplayContent.applySurfaceChangesTransaction",
+  "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+  "sig": "void applySurfaceChangesTransaction() {",
+  "span": [
+    5594,
+    5668
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void applySurfaceChangesTransaction() {",
+      "kind": "note",
+      "text": "一次 traversal 里「应用 surface 变更」的阶段。它在布局与后布局策略之后，是 WMS 真正接触图形的起点。"
+    },
+    {
+      "at": 2,
+      "quote": "final WindowSurfacePlacer surfacePlacer = mWmService.mWindowPlacerLocked;",
+      "kind": "data",
+      "text": "取全局的 surface placer（负责整轮 traversal 的节流与重复）。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 4,
+      "quote": "beginHoldScreenUpdate();",
+      "kind": "call",
+      "text": "开始「保持屏幕开启」的记账。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "mTmpUpdateAllDrawn.clear();",
+      "kind": "call",
+      "text": "清空本轮待更新 drawn 的集合。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "if (DEBUG_LAYOUT_REPEATS) surfacePlacer.debugLayoutRepeats(\"On entry to LockedInner\",",
+      "kind": "branch",
+      "text": "布局重复调试开关。"
+    },
+    {
+      "at": 9,
+      "quote": "pendingLayoutChanges);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 11,
+      "quote": "if ((pendingLayoutChanges & FINISH_LAYOUT_REDO_WALLPAPER) != 0) {",
+      "kind": "branch",
+      "text": "**需要重做壁纸布局**。"
+    },
+    {
+      "at": 12,
+      "quote": "mWallpaperController.adjustWallpaperWindows();",
+      "kind": "call",
+      "text": "调整壁纸窗口。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "if ((pendingLayoutChanges & FINISH_LAYOUT_REDO_LAYOUT) != 0) {",
+      "kind": "branch",
+      "text": "**需要重做布局**。"
+    },
+    {
+      "at": 16,
+      "quote": "setLayoutNeeded();",
+      "kind": "call",
+      "text": "标记 layoutNeeded——这就是布局会被重复触发的原因。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "if (android.view.inputmethod.Flags.setServerVisibilityOnprelayout()) {",
+      "kind": "branch",
+      "text": "IME 前置布局开关。"
+    },
+    {
+      "at": 20,
+      "quote": "mInsetsStateController.onPreLayout();",
+      "kind": "call",
+      "text": "布局前先刷新 Insets 状态。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "// Perform a layout, if needed.",
+      "kind": "note",
+      "text": "注释：需要就执行布局。"
+    },
+    {
+      "at": 24,
+      "quote": "performLayout(true /* initial */, false /* updateInputWindows */);",
+      "kind": "call",
+      "text": "**真正的布局**：initial=true，本阶段暂不更新 input windows。"
+    },
+    {
+      "at": 25,
+      "quote": "pendingLayoutChanges = 0;",
+      "kind": "state",
+      "text": "**清空布局变更标记**（布局已完成）。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"applyPostLayoutPolicy\");",
+      "kind": "trace",
+      "text": "切片：后布局策略。"
+    },
+    {
+      "at": 28,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 开始。"
+    },
+    {
+      "at": 29,
+      "quote": "mDisplayPolicy.beginPostLayoutPolicyLw();",
+      "kind": "call",
+      "text": "策略开始（重置统计）。"
+    },
+    {
+      "at": 30,
+      "quote": "forAllWindows(mApplyPostLayoutPolicy, true /* traverseTopToBottom */);",
+      "kind": "call",
+      "text": "**自上而下遍历所有窗口**应用后布局策略：决定可见性、焦点、状态栏配色等。"
+    },
+    {
+      "at": 31,
+      "quote": "mDisplayPolicy.finishPostLayoutPolicyLw();",
+      "kind": "call",
+      "text": "策略结束（提交统计）。"
+    },
+    {
+      "at": 32,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 33,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "结束切片。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 try。"
+    },
+    {
+      "at": 35,
+      "quote": "mInsetsStateController.onPostLayout();",
+      "kind": "call",
+      "text": "布局后刷新 Insets。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "mTmpApplySurfaceChangesTransactionState.reset();",
+      "kind": "call",
+      "text": "重置本轮的应用状态（统计可见窗口数等）。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 39,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"applyWindowSurfaceChanges\");",
+      "kind": "trace",
+      "text": "切片：应用窗口 surface 变更。"
+    },
+    {
+      "at": 40,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 开始。"
+    },
+    {
+      "at": 41,
+      "quote": "forAllWindows(mApplySurfaceChangesTransaction, true /* traverseTopToBottom */);",
+      "kind": "call",
+      "text": "**逐窗口应用 surface 变更**（自上而下）——frame/crop/alpha 在这里写进 SurfaceControl。"
+    },
+    {
+      "at": 42,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 43,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "结束切片。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 try。"
+    },
+    {
+      "at": 45,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 46,
+      "quote": "mLastHasContent = mTmpApplySurfaceChangesTransactionState.displayHasContent;",
+      "kind": "state",
+      "text": "记录本屏是否还有内容（用于熄灭/空屏判定）。"
+    },
+    {
+      "at": 47,
+      "quote": "if (!inTransition()) {",
+      "kind": "branch",
+      "text": "**不在转场中**。"
+    },
+    {
+      "at": 48,
+      "quote": "mWmService.mDisplayManagerInternal.setDisplayProperties(mDisplayId,",
+      "kind": "call",
+      "text": "把显示属性同步给 DisplayManager：是否有内容、刷新率、模式、HDR 转换等。"
+    },
+    {
+      "at": 49,
+      "quote": "mLastHasContent,",
+      "kind": "note",
+      "text": "续行：displayHasContent。"
+    },
+    {
+      "at": 50,
+      "quote": "mTmpApplySurfaceChangesTransactionState.preferredRefreshRate,",
+      "kind": "data",
+      "text": "首选刷新率。"
+    },
+    {
+      "at": 51,
+      "quote": "mTmpApplySurfaceChangesTransactionState.preferredModeId,",
+      "kind": "data",
+      "text": "首选模式。"
+    },
+    {
+      "at": 52,
+      "quote": "mTmpApplySurfaceChangesTransactionState.preferredMinRefreshRate,",
+      "kind": "data",
+      "text": "刷新率下限。"
+    },
+    {
+      "at": 53,
+      "quote": "mTmpApplySurfaceChangesTransactionState.preferredMaxRefreshRate,",
+      "kind": "data",
+      "text": "刷新率上限。"
+    },
+    {
+      "at": 54,
+      "quote": "mTmpApplySurfaceChangesTransactionState.preferMinimalPostProcessing,",
+      "kind": "data",
+      "text": "最小后处理偏好。"
+    },
+    {
+      "at": 55,
+      "quote": "mTmpApplySurfaceChangesTransactionState.disableHdrConversion,",
+      "kind": "data",
+      "text": "是否禁用 HDR 转换。"
+    },
+    {
+      "at": 56,
+      "quote": "true /* inTraversal, must call performTraversalInTrans... below */);",
+      "kind": "note",
+      "text": "inTraversal=true：说明这次是遍历内同步。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 58,
+      "quote": "// If the display now has content, or no longer has content, update recording.",
+      "kind": "note",
+      "text": "注释：内容从无到有或有到无时，需要更新录制状态。"
+    },
+    {
+      "at": 59,
+      "quote": "updateRecording();",
+      "kind": "call",
+      "text": "更新录屏/截屏相关的录制状态。"
+    },
+    {
+      "at": 60,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 61,
+      "quote": "final boolean wallpaperVisible = mWallpaperController.isWallpaperVisible();",
+      "kind": "data",
+      "text": "壁纸是否可见。"
+    },
+    {
+      "at": 62,
+      "quote": "if (wallpaperVisible != mLastWallpaperVisible) {",
+      "kind": "branch",
+      "text": "**壁纸可见性发生变化**。"
+    },
+    {
+      "at": 63,
+      "quote": "mLastWallpaperVisible = wallpaperVisible;",
+      "kind": "state",
+      "text": "记住新状态。"
+    },
+    {
+      "at": 64,
+      "quote": "mWmService.mWallpaperVisibilityListeners.notifyWallpaperVisibilityChanged(this);",
+      "kind": "call",
+      "text": "通知所有监听者。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "while (!mTmpUpdateAllDrawn.isEmpty()) {",
+      "kind": "note",
+      "text": "遍历本轮所有「有新帧」的 Activity。"
+    },
+    {
+      "at": 68,
+      "quote": "final ActivityRecord activity = mTmpUpdateAllDrawn.removeLast();",
+      "kind": "data",
+      "text": "取一个。"
+    },
+    {
+      "at": 69,
+      "quote": "// See if any windows have been drawn, so they (and others associated with them)",
+      "kind": "note",
+      "text": "注释：看看哪些窗口已经画完，可以显示出来。"
+    },
+    {
+      "at": 70,
+      "quote": "// can now be shown.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 71,
+      "quote": "activity.updateAllDrawn();",
+      "kind": "call",
+      "text": "**更新 allDrawn 状态**：所有窗口都画完才允许移除启动窗口等。"
+    },
+    {
+      "at": 72,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭循环。"
+    },
+    {
+      "at": 73,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 74,
+      "quote": "finishHoldScreenUpdate();",
+      "kind": "call",
+      "text": "结束「保持屏幕开启」的记账。"
+    },
+    {
+      "at": 75,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

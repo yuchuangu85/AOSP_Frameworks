@@ -1,0 +1,162 @@
+{
+  "id": "rwc-resume",
+  "title": "RootWindowContainer.resumeFocusedTasksTopActivities",
+  "file": "base/services/core/java/com/android/server/wm/RootWindowContainer.java",
+  "sig": "boolean resumeFocusedTasksTopActivities(",
+  "span": [
+    2546,
+    2570
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "boolean resumeFocusedTasksTopActivities(",
+      "kind": "note",
+      "text": "顶层恢复的实际实现。两个重载：第一个是便捷委托。"
+    },
+    {
+      "at": 2,
+      "quote": "Task targetRootTask, ActivityRecord target) {",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 3,
+      "quote": "return resumeFocusedTasksTopActivities(targetRootTask, target, null /* targetOptions */,",
+      "kind": "call",
+      "text": "委托给四参版本，targetOptions 为空、不延迟 pause。"
+    },
+    {
+      "at": 4,
+      "quote": "false /* deferPause */);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 5,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "boolean resumeFocusedTasksTopActivities(",
+      "kind": "note",
+      "text": "**四参版本**：真正干活的地方。"
+    },
+    {
+      "at": 8,
+      "quote": "Task targetRootTask, ActivityRecord target, ActivityOptions targetOptions,",
+      "kind": "note",
+      "text": "续行：目标 root task / Activity / 动画选项 / 是否延迟 pause。"
+    },
+    {
+      "at": 9,
+      "quote": "boolean deferPause) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "if (!mTaskSupervisor.readyToResume()) {",
+      "kind": "branch",
+      "text": "**任务监督者还没准备好 resume**（例如正在做睡眠/唤醒转场）。"
+    },
+    {
+      "at": 11,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "直接返回 false。"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "boolean result = false;",
+      "kind": "data",
+      "text": "结果。"
+    },
+    {
+      "at": 15,
+      "quote": "if (targetRootTask != null && (targetRootTask.isTopRootTaskInDisplayArea()",
+      "kind": "branch",
+      "text": "**指定了目标 root task 且它在顶层**。"
+    },
+    {
+      "at": 16,
+      "quote": "|| getTopDisplayFocusedRootTask() == targetRootTask)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "result = targetRootTask.resumeTopActivityUncheckedLocked(target, targetOptions,",
+      "kind": "call",
+      "text": "**直接恢复它的栈顶 Activity**。"
+    },
+    {
+      "at": 18,
+      "quote": "deferPause);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "for (int displayNdx = getChildCount() - 1; displayNdx >= 0; --displayNdx) {",
+      "kind": "note",
+      "text": "**从最顶层 display 往下遍历**。"
+    },
+    {
+      "at": 22,
+      "quote": "final DisplayContent display = getChildAt(displayNdx);",
+      "kind": "data",
+      "text": "取当前 display。"
+    },
+    {
+      "at": 23,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 24,
+      "quote": "// Don't resume the activities on the display:",
+      "kind": "note",
+      "text": "注释：以下情况不要恢复该 display 上的 Activity。"
+    },
+    {
+      "at": 25,
+      "quote": "// 1. The system is removing the display",
+      "kind": "note",
+      "text": "续行：第 1 条——系统正在移除该 display。"
+    }
+  ]
+}

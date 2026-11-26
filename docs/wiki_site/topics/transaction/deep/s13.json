@@ -1,0 +1,60 @@
+{
+  "step": "s13",
+  "title": "barrier：显式排序原语",
+  "tldr": "KIND_SIGNAL 方发出信号，KIND_WAIT 方等待；barrier 有 TTL（默认 5s），过期后不再阻塞。",
+  "why": "barrier 解决的是「跨 applyToken 的依赖」问题：例如 SystemUI 要先让某个动画层就绪，再让另一个进程的层显示。用 barrier 可以表达「等我」，而不需要把两者塞进同一个事务。TTL 是这套机制的安全阀——如果发信号的一方崩溃或忘记发，等待方最多等 5s 就会被放行，否则整条队列会永久卡死。这是「宁可偶尔顺序不完美，也不能永久卡住」的工程取舍。",
+  "concepts": [
+    {
+      "term": "KIND_SIGNAL / KIND_WAIT",
+      "text": "barrier 的两种角色。"
+    },
+    {
+      "term": "mTransactionBarrierTtl",
+      "text": "TTL，SF 构造里设为 5s。"
+    },
+    {
+      "term": "addTransactionBarrier",
+      "text": "客户端把 barrier 加进事务。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "TransactionHandler::TransactionReadiness TransactionHandler::isBarrierSignalledOrExpired(",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:92",
+      "what": "三态判定。"
+    },
+    {
+      "call": "return TransactionReadiness::NotReadyBarrier;",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:111",
+      "what": "未 signal 则等待。"
+    },
+    {
+      "call": "mTransactionHandler.setTransactionBarrierTtl(std::chrono::seconds(5));",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:943",
+      "what": "TTL 设为 5s。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::addTransactionBarrier(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:2414",
+      "what": "客户端入口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mSignalledTransactionBarriers",
+      "before": "空",
+      "after": "记录已 signal 的 token",
+      "note": "过期由 erase_if 清理。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为 barrier 永久有效：5s 后过期。",
+    "把 barrier 当锁用：它只保证顺序，不保证互斥。"
+  ],
+  "debug": [
+    "trace 里的 Transaction id=N is waiting on barrier。",
+    "IgnoreBarrierDueToTimeout 标签说明发生过期。"
+  ],
+  "next": "可应用之后怎么写状态？见第 14 步。"
+}

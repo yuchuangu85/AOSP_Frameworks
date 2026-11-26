@@ -1,0 +1,1602 @@
+{
+  "id": "sf-composite",
+  "title": "SurfaceFlinger::composite",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "CompositeResultsPerDisplay SurfaceFlinger::composite(",
+  "span": [
+    3330,
+    3594
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "CompositeResultsPerDisplay SurfaceFlinger::composite(",
+      "kind": "note",
+      "text": "SF 一拍的第二个函数。commit 决定「做不做」，composite 决定「怎么做」：把所有输入组装成 refreshArgs，再交给 CompositionEngine。"
+    },
+    {
+      "at": 2,
+      "quote": "PhysicalDisplayId pacesetterId, const scheduler::FrameTargeters& frameTargeters) {",
+      "kind": "note",
+      "text": "返回每个物理显示的合成覆盖结果，Scheduler 用它做 endFrame 统计。"
+    },
+    {
+      "at": 3,
+      "quote": "SFTRACE_ASYNC_FOR_TRACK_BEGIN(WorkloadTracer::TRACK_NAME, \"Composition\",",
+      "kind": "trace",
+      "text": "开一个异步 trace 段 Composition，cookie 让 Perfetto 能跨线程串起整段合成功。"
+    },
+    {
+      "at": 4,
+      "quote": "WorkloadTracer::COMPOSITION_TRACE_COOKIE);",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "const auto& displays = FTL_FAKE_GUARD(mStateLock, mDisplays);",
+      "kind": "data",
+      "text": "FTL_FAKE_GUARD 保证读 mDisplays 时持 mStateLock；这里只拿引用，不再延长锁生命周期。"
+    },
+    {
+      "at": 7,
+      "quote": "panopticon::SliceTokens compositeTokens =",
+      "kind": "trace",
+      "text": "panopticon 的 Composite 切片。"
+    },
+    {
+      "at": 8,
+      "quote": "panopticon::slice(panopticon::SliceType::CG_Sf_Composite);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 9,
+      "quote": "const scheduler::FrameTarget& pacesetterTarget =",
+      "kind": "data",
+      "text": "pacesetter 的 frame target：expectedPresentTime、vsyncId、present fence 都在它身上。"
+    },
+    {
+      "at": 10,
+      "quote": "frameTargeters.get(pacesetterId)->get()->target();",
+      "kind": "note",
+      "text": "frameTargeters.get(...) 是 Scheduler 传进来的本拍目标集合。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "const VsyncId vsyncId = pacesetterTarget.vsyncId();",
+      "kind": "data",
+      "text": "取 vsyncId 用于 trace 与 FrameTimeline。"
+    },
+    {
+      "at": 13,
+      "quote": "SFTRACE_NAME(ftl::Concat(__func__, ' ', ftl::to_underlying(vsyncId)).c_str());",
+      "kind": "trace",
+      "text": "atrace 名 = composite <vsyncId>，与 commit 的切片名成对。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 15,
+      "quote": "compositionengine::CompositionRefreshArgs refreshArgs;",
+      "kind": "data",
+      "text": "本拍传给 CompositionEngine 的全部参数。"
+    },
+    {
+      "at": 16,
+      "quote": "// adpf load up hint",
+      "kind": "note",
+      "text": "ADPF 负载提示回调，注册给合成阶段回吐 GPU 工作量。"
+    },
+    {
+      "at": 17,
+      "quote": "refreshArgs.powerCallback = this;",
+      "kind": "data",
+      "text": "powerCallback 指向 SF 自己。"
+    },
+    {
+      "at": 18,
+      "quote": "refreshArgs.outputs.reserve(displays.size());",
+      "kind": "call",
+      "text": "预留 outputs 容量，避免 push_back 反复扩容。"
+    },
+    {
+      "at": 19,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 20,
+      "quote": "std::vector<DisplayId> displayIds;",
+      "kind": "data",
+      "text": "收集显示 id 列表给 PowerAdvisor。"
+    },
+    {
+      "at": 21,
+      "quote": "for (const auto& [_, display] : displays) {",
+      "kind": "note",
+      "text": "遍历所有显示。"
+    },
+    {
+      "at": 22,
+      "quote": "displayIds.push_back(display->getId());",
+      "kind": "call",
+      "text": "记录 id。"
+    },
+    {
+      "at": 23,
+      "quote": "display->tracePowerMode();",
+      "kind": "trace",
+      "text": "打一条电源模式 trace，便于把功耗曲线与合成帧对齐。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 25,
+      "quote": "mPowerAdvisor->setDisplays(displayIds);",
+      "kind": "call",
+      "text": "告诉 PowerAdvisor 本拍涉及哪些显示。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "refreshArgs.bufferIdsToUncache = std::move(mBufferIdsToUncache);",
+      "kind": "data",
+      "text": "把上一帧累积的「待回收 buffer」交接出去（move，避免重复处理）。"
+    },
+    {
+      "at": 28,
+      "quote": "refreshArgs.outputColorSetting = mDisplayColorSetting;",
+      "kind": "data",
+      "text": "全局显示颜色设置。"
+    },
+    {
+      "at": 29,
+      "quote": "refreshArgs.forceOutputColorMode = mForceColorMode;",
+      "kind": "data",
+      "text": "强制色彩模式（调试用）。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "refreshArgs.updatingOutputGeometryThisFrame = mVisibleRegionsDirty;",
+      "kind": "data",
+      "text": "可见区域是否变化：决定 Output 要不要重算几何。"
+    },
+    {
+      "at": 32,
+      "quote": "refreshArgs.updatingGeometryThisFrame = mGeometryDirty.exchange(false) ||",
+      "kind": "data",
+      "text": "几何是否变化（exchange(false) 取走并清零一次性的 mGeometryDirty）。"
+    },
+    {
+      "at": 33,
+      "quote": "mVisibleRegionsDirty || mDrawingState.colorMatrixChanged;",
+      "kind": "data",
+      "text": "再加上可见区域与色彩矩阵变化两个来源。"
+    },
+    {
+      "at": 34,
+      "quote": "refreshArgs.internalDisplayRotationFlags = getFrontInternalDisplayRotationFlags();",
+      "kind": "data",
+      "text": "内屏旋转标志，决定合成时的显示空间。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "if (CC_UNLIKELY(mDrawingState.colorMatrixChanged)) {",
+      "kind": "branch",
+      "text": "色彩矩阵变了（例如色彩校正/夜间模式切换）。"
+    },
+    {
+      "at": 37,
+      "quote": "refreshArgs.colorTransformMatrix = mDrawingState.colorMatrix;",
+      "kind": "data",
+      "text": "把矩阵透传给合成引擎。"
+    },
+    {
+      "at": 38,
+      "quote": "mDrawingState.colorMatrixChanged = false;",
+      "kind": "state",
+      "text": "取走即清，避免每帧重复应用。"
+    },
+    {
+      "at": 39,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭色彩矩阵分支。"
+    },
+    {
+      "at": 40,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "setForcedClientCompositionLayerStacks(refreshArgs);",
+      "kind": "call",
+      "text": "把「强制 CLIENT 合成的 layerStack」写进 refreshArgs（调试/录屏场景）。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "// TODO(b/255601557) Update frameInterval per display",
+      "kind": "note",
+      "text": "TODO：多显示器时 frameInterval 尚未按显示分别计算，目前统一取 pacesetter 的。"
+    },
+    {
+      "at": 44,
+      "quote": "refreshArgs.frameInterval =",
+      "kind": "data",
+      "text": "本拍帧间隔。"
+    },
+    {
+      "at": 45,
+      "quote": "mScheduler->getNextFrameInterval(pacesetterId, pacesetterTarget.expectedPresentTime());",
+      "kind": "call",
+      "text": "按 pacesetter 的 expectedPresentTime 推算下一次帧间隔。"
+    },
+    {
+      "at": 46,
+      "quote": "const auto scheduledFrameResultOpt = mScheduler->getScheduledFrameResult();",
+      "kind": "data",
+      "text": "取 Scheduler 记录的「计划帧」结果。"
+    },
+    {
+      "at": 47,
+      "quote": "const auto scheduledFrameTimeOpt = scheduledFrameResultOpt",
+      "kind": "data",
+      "text": "有结果就取 callbackTime 作为计划时间点。"
+    },
+    {
+      "at": 48,
+      "quote": "? std::optional{scheduledFrameResultOpt->callbackTime}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 49,
+      "quote": ": std::nullopt;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 50,
+      "quote": "refreshArgs.scheduledFrameTime = scheduledFrameTimeOpt;",
+      "kind": "data",
+      "text": "写进 refreshArgs，供 planner 做预取决策。"
+    },
+    {
+      "at": 51,
+      "quote": "refreshArgs.hasTrustedPresentationListener = mNumTrustedPresentationListeners > 0;",
+      "kind": "data",
+      "text": "是否有可信上屏监听器：影响是否要提前算可信呈现状态。"
+    },
+    {
+      "at": 52,
+      "quote": "// Store the present time just before calling to the composition engine so we could notify",
+      "kind": "note",
+      "text": "presentTime 要在调用合成引擎之前取：它代表「SF 开始为本拍干活」的时刻。"
+    },
+    {
+      "at": 53,
+      "quote": "// the scheduler.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 54,
+      "quote": "const auto presentTime = systemTime();",
+      "kind": "data",
+      "text": "取当前时间作为本拍基准。"
+    },
+    {
+      "at": 55,
+      "quote": "refreshArgs.refreshStartTime = presentTime;",
+      "kind": "data",
+      "text": "写进 refreshArgs，CompositionEngine 用它记录每帧耗时。"
+    },
+    {
+      "at": 56,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 57,
+      "quote": "auto optionalOffloadedRefreshArgs =",
+      "kind": "call",
+      "text": "把物理显示加入 mainThread outputs，并返回「GPU 合成卸载」用的第二份 args（若有）。"
+    },
+    {
+      "at": 58,
+      "quote": "addOutputsToRefreshArgs(pacesetterId, refreshArgs, frameTargeters);",
+      "kind": "data",
+      "text": "frameTargeters 一并转入。"
+    },
+    {
+      "at": 59,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 60,
+      "quote": "constexpr bool kCursorOnly = false;",
+      "kind": "data",
+      "text": "kCursorOnly=false：这次要处理全部图层，不只是光标。"
+    },
+    {
+      "at": 61,
+      "quote": "const auto layers = mLayerSnapshotBuilder.hasMergedSnapshots()",
+      "kind": "data",
+      "text": "取本拍参与合成的层：merged snapshot 模式下直接拷贝，否则从快照构建。"
+    },
+    {
+      "at": 62,
+      "quote": "? copyMergedSnapshots(refreshArgs)",
+      "kind": "note",
+      "text": "两种取法互斥，flag frontend_caching_v0 决定走哪条。"
+    },
+    {
+      "at": 63,
+      "quote": ": addLayerSnapshotsToCompositionArgs(refreshArgs, kCursorOnly);",
+      "kind": "call",
+      "text": "准备每层的合成参数，并按 output 过滤到各自的 layer 列表。"
+    },
+    {
+      "at": 64,
+      "quote": "prepareLayersForComposition(refreshArgs, kCursorOnly, layers);",
+      "kind": "call",
+      "text": "同上。"
+    },
+    {
+      "at": 65,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 66,
+      "quote": "for (auto& [layer, layerFE] : layers) {",
+      "kind": "note",
+      "text": "遍历参与合成的层。"
+    },
+    {
+      "at": 67,
+      "quote": "validateForReadback(layerFE);",
+      "kind": "call",
+      "text": "读回（readback）场景下的校验，确保 buffer 可读。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 69,
+      "quote": "setupOutputsForReadback(refreshArgs.outputs);",
+      "kind": "call",
+      "text": "为 readback 的输出做额外准备。"
+    },
+    {
+      "at": 70,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 71,
+      "quote": "std::vector<std::pair<Layer*, LayerFE*>> offloadedLayers;",
+      "kind": "data",
+      "text": "被卸载到异步 worker 的层集合。"
+    },
+    {
+      "at": 72,
+      "quote": "if (optionalOffloadedRefreshArgs) {",
+      "kind": "branch",
+      "text": "存在 GPU 合成卸载路径。"
+    },
+    {
+      "at": 73,
+      "quote": "offloadedLayers =",
+      "kind": "call",
+      "text": "为卸载路径单独收集层快照。"
+    },
+    {
+      "at": 74,
+      "quote": "addLayerSnapshotsToCompositionArgs(*optionalOffloadedRefreshArgs, kCursorOnly);",
+      "kind": "data",
+      "text": "kCursorOnly=false 同上。"
+    },
+    {
+      "at": 75,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 76,
+      "quote": "prepareLayersForComposition(*optionalOffloadedRefreshArgs, kCursorOnly, offloadedLayers);",
+      "kind": "call",
+      "text": "为卸载路径准备合成参数。"
+    },
+    {
+      "at": 77,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭卸载分支。"
+    },
+    {
+      "at": 78,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 79,
+      "quote": "std::unordered_set<uint32_t> mainThreadLayerStacks;",
+      "kind": "data",
+      "text": "主线程负责的 layerStack 集合，用于把层分流到主线程或异步 worker。"
+    },
+    {
+      "at": 80,
+      "quote": "for (auto& output : refreshArgs.outputs) {",
+      "kind": "note",
+      "text": "遍历主线程 outputs。"
+    },
+    {
+      "at": 81,
+      "quote": "mainThreadLayerStacks.insert(output->getState().layerFilter.layerStack.id);",
+      "kind": "call",
+      "text": "记录该 output 的 layerStack id。"
+    },
+    {
+      "at": 82,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 83,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 84,
+      "quote": "refreshArgs.layersWithQueuedFrames.reserve(mLayersWithQueuedFrames.size());",
+      "kind": "data",
+      "text": "本拍有新 buffer 的层（commit 时由 updateLayerSnapshots 填好）。"
+    },
+    {
+      "at": 85,
+      "quote": "if (optionalOffloadedRefreshArgs) {",
+      "kind": "branch",
+      "text": "卸载路径也要各自维护一份。"
+    },
+    {
+      "at": 86,
+      "quote": "optionalOffloadedRefreshArgs->layersWithQueuedFrames.reserve(",
+      "kind": "call",
+      "text": "预留容量。"
+    },
+    {
+      "at": 87,
+      "quote": "mLayersWithQueuedFrames.size());",
+      "kind": "data",
+      "text": "同上。"
+    },
+    {
+      "at": 88,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 89,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 90,
+      "quote": "for (auto& [layer, _] : mLayersWithQueuedFrames) {",
+      "kind": "note",
+      "text": "逐层决定归属：主线程还是卸载 worker。"
+    },
+    {
+      "at": 91,
+      "quote": "if (const auto& layerFE =",
+      "kind": "data",
+      "text": "取该层在 CompositionEngine 里的 FE 对象。"
+    },
+    {
+      "at": 92,
+      "quote": "layer->getCompositionEngineLayerFE({static_cast<uint32_t>(layer->sequence)})) {",
+      "kind": "note",
+      "text": "sequence 保证同一层每拍有独立的 FE。"
+    },
+    {
+      "at": 93,
+      "quote": "if (!optionalOffloadedRefreshArgs ||",
+      "kind": "branch",
+      "text": "没有卸载路径，或该层确实属于主线程的 layerStack。"
+    },
+    {
+      "at": 94,
+      "quote": "(layerFE->mSnapshot != nullptr &&",
+      "kind": "note",
+      "text": "快照存在且 layerStack 已分配。"
+    },
+    {
+      "at": 95,
+      "quote": "layerFE->mSnapshot->outputFilter.layerStack != ui::UNASSIGNED_LAYER_STACK &&",
+      "kind": "note",
+      "text": "layerStack 未分配表示该层不在任何显示上。"
+    },
+    {
+      "at": 96,
+      "quote": "mainThreadLayerStacks.count(layerFE->mSnapshot->outputFilter.layerStack.id))) {",
+      "kind": "note",
+      "text": "用 mainThreadLayerStacks 判断归属。"
+    },
+    {
+      "at": 97,
+      "quote": "refreshArgs.layersWithQueuedFrames.push_back(layerFE);",
+      "kind": "call",
+      "text": "主线程负责。"
+    },
+    {
+      "at": 98,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 99,
+      "quote": "optionalOffloadedRefreshArgs->layersWithQueuedFrames.push_back(layerFE);",
+      "kind": "call",
+      "text": "交给卸载 worker。"
+    },
+    {
+      "at": 100,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分流 if。"
+    },
+    {
+      "at": 101,
+      "quote": "// Some layers are not displayed and do not yet have a future release fence",
+      "kind": "note",
+      "text": "关键补充：有些层本帧不显示、也还没有 release fence future，必须在这里补建。"
+    },
+    {
+      "at": 102,
+      "quote": "if (layerFE->getReleaseFencePromiseStatus() ==",
+      "kind": "call",
+      "text": "查 release fence promise 的状态。"
+    },
+    {
+      "at": 103,
+      "quote": "LayerFE::ReleaseFencePromiseStatus::UNINITIALIZED ||",
+      "kind": "note",
+      "text": "状态机第一部分。"
+    },
+    {
+      "at": 104,
+      "quote": "layerFE->getReleaseFencePromiseStatus() ==",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 105,
+      "quote": "LayerFE::ReleaseFencePromiseStatus::FULFILLED) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 106,
+      "quote": "// layerStack is unassigned because layer is not on a display",
+      "kind": "note",
+      "text": "不在显示上，因此 layerStack 是 unassigned。"
+    },
+    {
+      "at": 107,
+      "quote": "attachReleaseFenceFutureToLayer(layer.get(), layerFE.get(),",
+      "kind": "call",
+      "text": "为本层挂一个 release fence future，保证 promise 一定会被兑现。"
+    },
+    {
+      "at": 108,
+      "quote": "ui::UNASSIGNED_LAYER_STACK);",
+      "kind": "data",
+      "text": "UNASSIGNED_LAYER_STACK 表示「不属于任何输出」。"
+    },
+    {
+      "at": 109,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 promise 判断。"
+    },
+    {
+      "at": 110,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 FE 判断。"
+    },
+    {
+      "at": 111,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 112,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 113,
+      "quote": "std::optional<std::future<void>> offloadedCompositionFuture;",
+      "kind": "data",
+      "text": "卸载路径的完成 future。"
+    },
+    {
+      "at": 114,
+      "quote": "if (optionalOffloadedRefreshArgs) {",
+      "kind": "branch",
+      "text": "有卸载路径。"
+    },
+    {
+      "at": 115,
+      "quote": "offloadedCompositionFuture =",
+      "kind": "call",
+      "text": "把卸载的显示提交到 worker 线程合成，返回 future。"
+    },
+    {
+      "at": 116,
+      "quote": "offloadGpuCompositedDisplays(std::move(*optionalOffloadedRefreshArgs));",
+      "kind": "data",
+      "text": "args 被 move 进去。"
+    },
+    {
+      "at": 117,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭卸载分支。"
+    },
+    {
+      "at": 118,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 119,
+      "quote": "mCompositionEngine->present(refreshArgs);",
+      "kind": "call",
+      "text": "核心调用：CompositionEngine 逐输出 prepare → present，内部会调 HWC。"
+    },
+    {
+      "at": 120,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 121,
+      "quote": "finalizeReadback(refreshArgs.outputs);",
+      "kind": "call",
+      "text": "readback 收尾（截图/录屏内容回读）。"
+    },
+    {
+      "at": 122,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 123,
+      "quote": "ftl::Flags<adpf::Workload> compositedWorkload;",
+      "kind": "data",
+      "text": "本拍 GPU 承担了哪些工作量，用于 ADPf 上报。"
+    },
+    {
+      "at": 124,
+      "quote": "if (refreshArgs.updatingGeometryThisFrame || refreshArgs.updatingOutputGeometryThisFrame) {",
+      "kind": "branch",
+      "text": "几何有变化。"
+    },
+    {
+      "at": 125,
+      "quote": "compositedWorkload |= adpf::Workload::VISIBLE_REGION;",
+      "kind": "data",
+      "text": "记 VISIBLE_REGION 负载。"
+    },
+    {
+      "at": 126,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭几何判断。"
+    },
+    {
+      "at": 127,
+      "quote": "if (mFrontEndDisplayInfosChanged) {",
+      "kind": "branch",
+      "text": "显示配置变了。"
+    },
+    {
+      "at": 128,
+      "quote": "compositedWorkload |= adpf::Workload::DISPLAY_CHANGES;",
+      "kind": "data",
+      "text": "记 DISPLAY_CHANGES 负载。"
+    },
+    {
+      "at": 129,
+      "quote": "SFTRACE_INSTANT_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Display Changes\");",
+      "kind": "trace",
+      "text": "打点让 Perfetto 能看到显示变化发生在本拍。"
+    },
+    {
+      "at": 130,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭显示变化分支。"
+    },
+    {
+      "at": 131,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 132,
+      "quote": "traceCompositionSummary(layers);",
+      "kind": "call",
+      "text": "生成合成摘要 trace（参与层数、合成方式分布）。"
+    },
+    {
+      "at": 133,
+      "quote": "for (auto& [layer, layerFE] : layers) {",
+      "kind": "note",
+      "text": "遍历参与合成的层。"
+    },
+    {
+      "at": 134,
+      "quote": "CompositionResult compositionResult{layerFE->stealCompositionResult()};",
+      "kind": "data",
+      "text": "取走本层的合成结果（含 lastClientCompositionFence）。"
+    },
+    {
+      "at": 135,
+      "quote": "if (layerFE->mSnapshot->hasEffect()) {",
+      "kind": "branch",
+      "text": "该层带效果（模糊、圆角、阴影等）。"
+    },
+    {
+      "at": 136,
+      "quote": "compositedWorkload |= adpf::Workload::EFFECTS;",
+      "kind": "data",
+      "text": "记 EFFECTS 负载。"
+    },
+    {
+      "at": 137,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭效果判断。"
+    },
+    {
+      "at": 138,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 139,
+      "quote": "if (compositionResult.lastClientCompositionFence) {",
+      "kind": "branch",
+      "text": "本层这一拍走过 GPU 合成。"
+    },
+    {
+      "at": 140,
+      "quote": "layer->setWasClientComposed(compositionResult.lastClientCompositionFence);",
+      "kind": "call",
+      "text": "把 client composition fence 记到层上：后续 release 时要 merge 它，否则会提前释放 buffer。"
+    },
+    {
+      "at": 141,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 client composition 分支。"
+    },
+    {
+      "at": 142,
+      "quote": "if (com_android_graphics_libgui_flags_apply_picture_profiles()) {",
+      "kind": "branch",
+      "text": "picture profile flag 打开时。"
+    },
+    {
+      "at": 143,
+      "quote": "mActivePictureTracker.onLayerComposed(*layer, *layerFE, compositionResult);",
+      "kind": "call",
+      "text": "把合成结果喂给 ActivePictureTracker，供 HDR 与画质分析使用。"
+    },
+    {
+      "at": 144,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 picture profile 分支。"
+    },
+    {
+      "at": 145,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 146,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 147,
+      "quote": "mPowerAdvisor->setCompositedWorkload(compositedWorkload);",
+      "kind": "call",
+      "text": "上报本拍的合成负载，功耗模型据此调频。"
+    },
+    {
+      "at": 148,
+      "quote": "SFTRACE_ASYNC_FOR_TRACK_END(WorkloadTracer::TRACK_NAME,",
+      "kind": "trace",
+      "text": "结束 Composition 异步段。"
+    },
+    {
+      "at": 149,
+      "quote": "WorkloadTracer::COMPOSITION_TRACE_COOKIE);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 150,
+      "quote": "compositeTokens.clear();",
+      "kind": "trace",
+      "text": "结束 panopticon Composite 切片。"
+    },
+    {
+      "at": 151,
+      "quote": "panopticon::terminate();",
+      "kind": "trace",
+      "text": "关闭本拍上下文的 panopticon。"
+    },
+    {
+      "at": 152,
+      "quote": "SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Post Composition\");",
+      "kind": "trace",
+      "text": "切到「Post Composition」轨道：这一段是上屏之后的收尾。"
+    },
+    {
+      "at": 153,
+      "quote": "SFTRACE_NAME(\"postComposition\");",
+      "kind": "trace",
+      "text": "atrace 名 postComposition。"
+    },
+    {
+      "at": 154,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 155,
+      "quote": "for (const auto& [id, _] : frameTargeters) {",
+      "kind": "note",
+      "text": "遍历本拍涉及的显示。"
+    },
+    {
+      "at": 156,
+      "quote": "ftl::FakeGuard guard(mStateLock);",
+      "kind": "lock",
+      "text": "取 mStateLock 读取 display 状态。"
+    },
+    {
+      "at": 157,
+      "quote": "if (const auto display = getCompositionDisplayLocked(id)) {",
+      "kind": "call",
+      "text": "取该显示的 CompositionDisplay。"
+    },
+    {
+      "at": 158,
+      "quote": "if (!display->isSecure() && display->hasSecureLayers()) {",
+      "kind": "branch",
+      "text": "显示本身不 secure，但有 secure 层。"
+    },
+    {
+      "at": 159,
+      "quote": "mDisplayModeController.startHdcpNegotiation(id);",
+      "kind": "call",
+      "text": "发起 HDCP 协商，否则受保护内容会黑屏。"
+    },
+    {
+      "at": 160,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 secure 判断。"
+    },
+    {
+      "at": 161,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 display 判断。"
+    },
+    {
+      "at": 162,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 163,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 164,
+      "quote": "if (!mLayerSnapshotBuilder.hasMergedSnapshots()) {",
+      "kind": "branch",
+      "text": "非 merged 模式需要把快照搬回去。"
+    },
+    {
+      "at": 165,
+      "quote": "moveSnapshotsFromCompositionArgs(layers);",
+      "kind": "call",
+      "text": "把本拍用的快照写回 LayerSnapshotBuilder 的「上一帧」槽位。"
+    },
+    {
+      "at": 166,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 167,
+      "quote": "if (optionalOffloadedRefreshArgs) {",
+      "kind": "branch",
+      "text": "有卸载路径。"
+    },
+    {
+      "at": 168,
+      "quote": "offloadedCompositionFuture->wait();",
+      "kind": "lock",
+      "text": "等 worker 线程完成合成；这一步会阻塞 SF 主线程。"
+    },
+    {
+      "at": 169,
+      "quote": "moveSnapshotsFromCompositionArgs(offloadedLayers);",
+      "kind": "call",
+      "text": "搬回卸载层的快照。"
+    },
+    {
+      "at": 170,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭卸载分支。"
+    },
+    {
+      "at": 171,
+      "quote": "mTimeStats->recordFrameDuration(pacesetterTarget.frameBeginTime().ns(), systemTime());",
+      "kind": "call",
+      "text": "记录本帧总耗时（frameBeginTime → now）。"
+    },
+    {
+      "at": 172,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 173,
+      "quote": "// Send a power hint after presentation is finished.",
+      "kind": "note",
+      "text": "ADPF：present 结束后才上报，因为需要上一帧的 present fence。"
+    },
+    {
+      "at": 174,
+      "quote": "if (mPowerHintSessionEnabled) {",
+      "kind": "branch",
+      "text": "ADPF 开着。"
+    },
+    {
+      "at": 175,
+      "quote": "// Now that the current frame has been presented above, PowerAdvisor needs the present time",
+      "kind": "note",
+      "text": "注释解释为什么要用「上一帧」的 present fence。"
+    },
+    {
+      "at": 176,
+      "quote": "// of the previous frame (whose fence is signaled by now) to determine how long the HWC had",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 177,
+      "quote": "// waited on that fence to retire before presenting.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 178,
+      "quote": "// TODO(b/355238809) `presentFenceForPreviousFrame` might not always be signaled (e.g. on",
+      "kind": "note",
+      "text": "TODO 提醒：不是所有设备都在上一帧 present fence 上阻塞，这个假设可能不成立。"
+    },
+    {
+      "at": 179,
+      "quote": "// devices",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 180,
+      "quote": "//  where HWC does not block on the previous present fence). Revise this assumtion.",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 181,
+      "quote": "const auto& previousPresentFence = pacesetterTarget.presentFenceForPreviousFrame();",
+      "kind": "data",
+      "text": "取上一拍的 present fence。"
+    },
+    {
+      "at": 182,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 183,
+      "quote": "mPowerAdvisor->setSfPresentTiming(TimePoint::fromNs(previousPresentFence->getSignalTime()),",
+      "kind": "call",
+      "text": "上报 SF present 时序（fence signal → now 就是 HWC 等待时长）。"
+    },
+    {
+      "at": 184,
+      "quote": "TimePoint::now());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 185,
+      "quote": "mPowerAdvisor->reportActualWorkDuration();",
+      "kind": "call",
+      "text": "上报实际工作时长。"
+    },
+    {
+      "at": 186,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 ADPF 分支。"
+    },
+    {
+      "at": 187,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 188,
+      "quote": "if (mScheduler->onCompositionPresented(presentTime)) {",
+      "kind": "call",
+      "text": "通知 Scheduler 本拍已经 present 完成；返回 true 表示还要再排一拍。"
+    },
+    {
+      "at": 189,
+      "quote": "scheduleComposite(FrameHint::kNone);",
+      "kind": "call",
+      "text": "需要时立刻安排下一次合成。"
+    },
+    {
+      "at": 190,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 Scheduler 反馈。"
+    },
+    {
+      "at": 191,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 192,
+      "quote": "mNotifyExpectedPresentMap[pacesetterId].hintStatus = NotifyExpectedPresentHintStatus::Start;",
+      "kind": "state",
+      "text": "把 NotifyExpectedPresent 的状态复位为 Start，准备下一拍。"
+    },
+    {
+      "at": 193,
+      "quote": "onCompositionPresented(pacesetterId, frameTargeters, presentTime);",
+      "kind": "call",
+      "text": "本拍最关键的后处理：读 present fence、写 FrameTimeline、逐层 release buffer。"
+    },
+    {
+      "at": 194,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 195,
+      "quote": "const bool hadGpuComposited =",
+      "kind": "data",
+      "text": "上一拍是否用过 GPU 合成。"
+    },
+    {
+      "at": 196,
+      "quote": "multiDisplayUnion(mCompositionCoverage).test(CompositionCoverage::Gpu);",
+      "kind": "call",
+      "text": "判断多显示并集里是否含 Gpu。"
+    },
+    {
+      "at": 197,
+      "quote": "mCompositionCoverage.clear();",
+      "kind": "call",
+      "text": "清空覆盖统计，下面重新算。"
+    },
+    {
+      "at": 198,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 199,
+      "quote": "TimeStats::ClientCompositionRecord clientCompositionRecord;",
+      "kind": "data",
+      "text": "本拍的 client composition 记录，最后进 TimeStats。"
+    },
+    {
+      "at": 200,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 201,
+      "quote": "for (const auto& [_, display] : displays) {",
+      "kind": "note",
+      "text": "遍历所有显示。"
+    },
+    {
+      "at": 202,
+      "quote": "const auto& state = display->getCompositionDisplay()->getState();",
+      "kind": "data",
+      "text": "取该显示的合成状态。"
+    },
+    {
+      "at": 203,
+      "quote": "CompositionCoverageFlags& flags =",
+      "kind": "data",
+      "text": "按显示 id 拿（或新建）覆盖标志位。"
+    },
+    {
+      "at": 204,
+      "quote": "mCompositionCoverage.try_emplace(display->getDisplayIdVariant()).first->second;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 205,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 206,
+      "quote": "if (state.usesDeviceComposition) {",
+      "kind": "branch",
+      "text": "本拍用了 HWC 硬件叠加。"
+    },
+    {
+      "at": 207,
+      "quote": "flags |= CompositionCoverage::Hwc;",
+      "kind": "data",
+      "text": "记 Hwc 覆盖。"
+    },
+    {
+      "at": 208,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 209,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 210,
+      "quote": "if (state.reusedClientComposition) {",
+      "kind": "branch",
+      "text": "复用了上一拍的 client target。"
+    },
+    {
+      "at": 211,
+      "quote": "flags |= CompositionCoverage::GpuReuse;",
+      "kind": "data",
+      "text": "记 GpuReuse 覆盖——复用比重新画省很多。"
+    },
+    {
+      "at": 212,
+      "quote": "} else if (state.usesClientComposition) {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 213,
+      "quote": "flags |= CompositionCoverage::Gpu;",
+      "kind": "data",
+      "text": "记 Gpu 覆盖（真正重画）。"
+    },
+    {
+      "at": 214,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭复用分支。"
+    },
+    {
+      "at": 215,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 216,
+      "quote": "clientCompositionRecord.predicted |=",
+      "kind": "data",
+      "text": "统计是否做过策略预测。"
+    },
+    {
+      "at": 217,
+      "quote": "(state.strategyPrediction != CompositionStrategyPredictionState::DISABLED);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 218,
+      "quote": "clientCompositionRecord.predictionSucceeded |=",
+      "kind": "data",
+      "text": "统计预测是否命中。"
+    },
+    {
+      "at": 219,
+      "quote": "(state.strategyPrediction == CompositionStrategyPredictionState::SUCCESS);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 220,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 221,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 222,
+      "quote": "const auto coverage = multiDisplayUnion(mCompositionCoverage);",
+      "kind": "data",
+      "text": "多显示覆盖并集。"
+    },
+    {
+      "at": 223,
+      "quote": "const bool hasGpuComposited = coverage.test(CompositionCoverage::Gpu);",
+      "kind": "data",
+      "text": "本拍是否有 GPU 合成。"
+    },
+    {
+      "at": 224,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 225,
+      "quote": "clientCompositionRecord.hadClientComposition = hasGpuComposited;",
+      "kind": "data",
+      "text": "记录到 clientCompositionRecord。"
+    },
+    {
+      "at": 226,
+      "quote": "clientCompositionRecord.reused = coverage.test(CompositionCoverage::GpuReuse);",
+      "kind": "data",
+      "text": "是否只是复用。"
+    },
+    {
+      "at": 227,
+      "quote": "clientCompositionRecord.changed = hadGpuComposited != hasGpuComposited;",
+      "kind": "data",
+      "text": "合成方式是否相对上一拍发生切换——频繁切换本身就是性能问题。"
+    },
+    {
+      "at": 228,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 229,
+      "quote": "mTimeStats->pushCompositionStrategyState(clientCompositionRecord);",
+      "kind": "call",
+      "text": "推进 TimeStats 的合成策略统计。"
+    },
+    {
+      "at": 230,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 231,
+      "quote": "using namespace ftl::flag_operators;",
+      "kind": "note",
+      "text": "引入 flag 运算符，便于下面组合 Coverage 位。"
+    },
+    {
+      "at": 232,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 233,
+      "quote": "// TODO(b/160583065): Enable skip validation when SF caches all client composition layers.",
+      "kind": "note",
+      "text": "TODO：等 SF 缓存全部 client 合成层后可以进一步跳过 validate。"
+    },
+    {
+      "at": 234,
+      "quote": "const bool hasGpuUseOrReuse =",
+      "kind": "data",
+      "text": "本拍是否用过 GPU（无论重画还是复用）。"
+    },
+    {
+      "at": 235,
+      "quote": "coverage.any(CompositionCoverage::Gpu | CompositionCoverage::GpuReuse);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 236,
+      "quote": "mScheduler->modulateVsync({}, &VsyncModulator::onDisplayRefresh, hasGpuUseOrReuse);",
+      "kind": "call",
+      "text": "告诉 VsyncModulator 本拍是否走 GPU：直接影响 App/SF 的 workDuration 与相位。"
+    },
+    {
+      "at": 237,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 238,
+      "quote": "mLayersWithQueuedFrames.clear();",
+      "kind": "call",
+      "text": "清空本拍已处理的层集合。"
+    },
+    {
+      "at": 239,
+      "quote": "doActiveLayersTracingIfNeeded(true, mVisibleRegionsDirty, pacesetterTarget.frameBeginTime(),",
+      "kind": "call",
+      "text": "Perfetto 的 ActiveLayers 轨道（present 之后的版本）。"
+    },
+    {
+      "at": 240,
+      "quote": "vsyncId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 241,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 242,
+      "quote": "updateInputFlinger(vsyncId, pacesetterTarget.frameBeginTime());",
+      "kind": "call",
+      "text": "把窗口信息同步给输入系统。"
+    },
+    {
+      "at": 243,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 244,
+      "quote": "if (mVisibleRegionsDirty) mHdrLayerInfoChanged = true;",
+      "kind": "branch",
+      "text": "可见区域变过：标记 HDR 层信息需要重算。"
+    },
+    {
+      "at": 245,
+      "quote": "mVisibleRegionsDirty = false;",
+      "kind": "state",
+      "text": "清标志，本拍处理完毕。"
+    },
+    {
+      "at": 246,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 247,
+      "quote": "if (mCompositionEngine->needsAnotherUpdate()) {",
+      "kind": "branch",
+      "text": "合成引擎认为还需要一次更新。"
+    },
+    {
+      "at": 248,
+      "quote": "scheduleCommit(FrameHint::kNone);",
+      "kind": "call",
+      "text": "安排下一次 commit。"
+    },
+    {
+      "at": 249,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 250,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 251,
+      "quote": "if (mPowerHintSessionEnabled) {",
+      "kind": "branch",
+      "text": "ADPF 开着。"
+    },
+    {
+      "at": 252,
+      "quote": "mPowerAdvisor->setCompositeEnd(TimePoint::now());",
+      "kind": "call",
+      "text": "记录 composite 结束时刻。"
+    },
+    {
+      "at": 253,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 254,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 255,
+      "quote": "CompositeResultsPerDisplay resultsPerDisplay;",
+      "kind": "data",
+      "text": "返回给 Scheduler 的逐显示结果。"
+    },
+    {
+      "at": 256,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 257,
+      "quote": "// Filter out virtual displays.",
+      "kind": "note",
+      "text": "虚拟显示不属于 Scheduler 的 frame target 体系，过滤掉。"
+    },
+    {
+      "at": 258,
+      "quote": "for (const auto& [idVar, coverage] : mCompositionCoverage) {",
+      "kind": "note",
+      "text": "遍历覆盖统计。"
+    },
+    {
+      "at": 259,
+      "quote": "if (const auto idOpt = asPhysicalDisplayId(idVar)) {",
+      "kind": "branch",
+      "text": "只保留物理显示。"
+    },
+    {
+      "at": 260,
+      "quote": "resultsPerDisplay.try_emplace(*idOpt, CompositeResult{coverage});",
+      "kind": "call",
+      "text": "写入结果表。"
+    },
+    {
+      "at": 261,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭物理显示判断。"
+    },
+    {
+      "at": 262,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 263,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 264,
+      "quote": "return resultsPerDisplay;",
+      "kind": "note",
+      "text": "返回；Scheduler 会用它对每个 frame target 调 endFrame。"
+    },
+    {
+      "at": 265,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意 present 的真正发生点在 119 行的 CompositionEngine::present 内部。"
+    }
+  ]
+}

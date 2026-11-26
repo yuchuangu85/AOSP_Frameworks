@@ -1,0 +1,84 @@
+{
+  "id": "clm-schedule",
+  "title": "ClientLifecycleManager.scheduleTransaction",
+  "file": "base/services/core/java/com/android/server/wm/ClientLifecycleManager.java",
+  "sig": "boolean scheduleTransaction(@NonNull ClientTransaction transaction) {",
+  "span": [
+    73,
+    84
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "boolean scheduleTransaction(@NonNull ClientTransaction transaction) {",
+      "kind": "note",
+      "text": "向客户端下发一个 ClientTransaction。这是 system_server 驱动客户端生命周期变化的唯一出口。"
+    },
+    {
+      "at": 2,
+      "quote": "final RemoteException e = transaction.schedule();",
+      "kind": "call",
+      "text": "**真正跨进程**：transaction.schedule() 内部走 ApplicationThread binder 调用；返回 RemoteException 表示没送到。"
+    },
+    {
+      "at": 3,
+      "quote": "if (e != null) {",
+      "kind": "branch",
+      "text": "投递失败。"
+    },
+    {
+      "at": 4,
+      "quote": "final WindowProcessController wpc = mWms.mAtmService.getProcessController(",
+      "kind": "data",
+      "text": "取进程控制器，只为了日志里能打出进程名。"
+    },
+    {
+      "at": 5,
+      "quote": "transaction.getClient());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "Slog.w(TAG, \"Failed to deliver transaction for \" + wpc + \"\\ntransaction=\" + this, e);",
+      "kind": "note",
+      "text": "W 级日志：Failed to deliver transaction。**客户端进程可能已死或 binder 已断**，这是排查「Activity 卡在某状态」的关键线索。"
+    },
+    {
+      "at": 7,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false，调用方据此决定是否放弃该状态变化。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 9,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "投递成功。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "/**",
+      "kind": "note",
+      "text": "（后续是 javadoc）"
+    }
+  ]
+}

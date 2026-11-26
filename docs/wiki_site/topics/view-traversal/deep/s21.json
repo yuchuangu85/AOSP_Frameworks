@@ -1,0 +1,34 @@
+{
+  "step": "s21",
+  "title": "交接完成：本页边界到此为止",
+  "tldr": "canDrawThisFrame 为真才 context->draw，否则只 flush 与等 fence；回放与 swap 属于下一个主题。",
+  "why": "明确边界很重要，否则容易把两段不同性质的问题混在一起：本页范围内的一切都由「UI 线程是否要等」这条主线牵引；而回放、FlushAndSubmit、swapBuffers、BLAST 交接与 SF 合成，则完全发生在 UI 线程视野之外，由 vsync 与 buffer 状态驱动。把边界画清楚，排查时才能第一时间判断「这一帧的延迟该去 UI 侧找，还是去 RT/SF 侧找」。跳过分支也是在这里分流的：没有内容可画时 RT 仍要做 flush 与 fence 等待，但不会产出一块 buffer。",
+  "concepts": [
+    { "term": "canDrawThisFrame", "text": "为假时走跳帧分支：flushAndSubmit + waitOnFences，再以 didProduceBuffer=false 收尾。" },
+    { "term": "SkippedFrameReason::NothingToDraw", "text": "无脏区且 surface 无需重画时的跳过原因。" },
+    { "term": "didProduceBuffer", "text": "提交回调的布尔参数；跳帧时为 false，SF 根本看不到这一帧。" }
+  ],
+  "walk": [
+    { "call": "if (CC_LIKELY(canDrawThisFrame)) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:140", "what": "本帧是否真的有内容可画。" },
+    { "call": "context->draw(solelyTextureViewUpdates);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:141", "what": "进入回放：这个调用之后的一切属于 render-thread-to-sf 主题。" },
+    { "call": "// Do a flush in case syncFrameState performed any texture uploads. Since we skipped", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:144", "what": "跳帧分支：同步阶段可能已经上传了纹理，必须 flush 掉。" },
+    { "call": "void CanvasContext::draw(bool solelyTextureViewUpdates) {", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:672", "what": "RT 一帧的总调度入口。" },
+    { "call": "if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:699", "what": "RT 侧的第二道跳过闸门：NothingToDraw。" }
+  ],
+  "state": [
+    { "field": "mSyncResult", "before": "可能含 FrameDropped", "after": "回传给 Java", "note": "Java 侧据此决定要不要 invalidate/relayout。" },
+    { "field": "帧提交回调", "before": "已注册", "after": "本帧收尾时以 didProduceBuffer 调用", "note": "false 表示没产出 buffer。" }
+  ],
+  "threads": "RT 继续；UI 线程此时已经在做下一帧的 measure/layout/录制——两者并行。",
+  "pitfalls": [
+    "把「跳帧」当成「丢帧」：跳帧是主动不画，buffer 都没消耗；丢帧是产出了 buffer 但错过上屏时机。",
+    "在 UI 侧排查跳帧：跳帧判定在 RT（CanvasContext.draw 的第二道闸），不在 Java。",
+    "以为 context->draw 返回就上屏了：swap 与 SF 合成还在后面。"
+  ],
+  "debug": [
+    "debug.hwui.skip_empty_damage 关闭后可以区分「没脏区」和「没画」。",
+    "trace 里 DrawFrames 之后应有 flush commands 与 swap 相关切片；没有则本帧被跳过。",
+    "dumpsys gfxinfo 的 janky frames 与跳过原因可交叉验证。"
+  ],
+  "next": "如果这帧没排上或没画，问题出在哪几道闸门？见第 22、23 步的分支与降级。"
+}

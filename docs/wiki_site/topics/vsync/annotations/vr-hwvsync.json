@@ -1,0 +1,282 @@
+{
+  "id": "vr-hwvsync",
+  "title": "VSyncReactor::addHwVsyncTimestamp",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+  "sig": "bool VSyncReactor::addHwVsyncTimestamp",
+  "span": [
+    201,
+    245
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t> hwcVsyncPeriod,",
+      "kind": "note",
+      "text": "硬件 vsync 进入校准模型的唯一入口。返回值表示「是否还需要继续要硬件 vsync」。"
+    },
+    {
+      "at": 2,
+      "quote": "bool* periodFlushed, VSyncTracker::VsyncTimeSource source) {",
+      "kind": "note",
+      "text": "参数：时间戳、HWC 给的周期（可选）、是否刷了周期（出参）、时间源类型。"
+    },
+    {
+      "at": 3,
+      "quote": "assert(periodFlushed);",
+      "kind": "note",
+      "text": "没给 periodFlushed 指针就没法回报，直接断言掉。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "std::lock_guard lock(mMutex);",
+      "kind": "lock",
+      "text": "全程持 mMutex：这里会调 tracker 与 predictor。"
+    },
+    {
+      "at": 6,
+      "quote": "if (periodConfirmed(timestamp, hwcVsyncPeriod)) {",
+      "kind": "decision",
+      "text": "**周期是否确认**：用 10% 容差比较 HWC 周期或相邻时间戳距离。"
+    },
+    {
+      "at": 7,
+      "quote": "SFTRACE_FORMAT(\"VSR %\" PRIu64 \": period confirmed\", mId.value);",
+      "kind": "trace",
+      "text": "打 trace 记录确认动作。"
+    },
+    {
+      "at": 8,
+      "quote": "if (mModePtrTransitioningTo) {",
+      "kind": "branch",
+      "text": "有正在切换到的显示模式。"
+    },
+    {
+      "at": 9,
+      "quote": "mTracker.setDisplayModePtr(ftl::as_non_null(mModePtrTransitioningTo));",
+      "kind": "call",
+      "text": "**把模型切到新模式**：之后所有预测都基于新周期。"
+    },
+    {
+      "at": 10,
+      "quote": "*periodFlushed = true;",
+      "kind": "state",
+      "text": "告知调用方周期已刷。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭模式切换判断。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "if (mLastHwVsync.get() && !mLastHwVsync.isFirst()) {",
+      "kind": "branch",
+      "text": "之前存过一个待处理的 vsync 且不是第一个。"
+    },
+    {
+      "at": 14,
+      "quote": "addVsyncTimestampLocked(*mLastHwVsync.get(), source);",
+      "kind": "call",
+      "text": "把它先补进 tracker——确认过程里攒的样本不能丢。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 16,
+      "quote": "addVsyncTimestampLocked(timestamp, source);",
+      "kind": "call",
+      "text": "把当前时间戳喂给 tracker。"
+    },
+    {
+      "at": 17,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 18,
+      "quote": "endPeriodTransition();",
+      "kind": "call",
+      "text": "结束过渡态（清 period confirmation 相关布尔）。"
+    },
+    {
+      "at": 19,
+      "quote": "mMoreSamplesNeeded = mTracker.needsMoreSamples();",
+      "kind": "state",
+      "text": "**关键**：问预测器还要不要更多样本，决定后续是否关掉硬件 vsync。"
+    },
+    {
+      "at": 20,
+      "quote": "} else if (mPeriodConfirmationInProgress) {",
+      "kind": "note",
+      "text": "否则（未确认）分两种情况。"
+    },
+    {
+      "at": 21,
+      "quote": "SFTRACE_FORMAT(\"VSR %\" PRIu64 \": still confirming period\", mId.value);",
+      "kind": "trace",
+      "text": "打 trace。"
+    },
+    {
+      "at": 22,
+      "quote": "mLastHwVsync.set(timestamp);",
+      "kind": "state",
+      "text": "先记住这个时间戳，等确认后一起补。"
+    },
+    {
+      "at": 23,
+      "quote": "// Add the first vsync callback to the tracker to be based on a fresh vsync",
+      "kind": "note",
+      "text": "注释：第一个回调也要喂给 tracker，让模型基于新鲜的 vsync。"
+    },
+    {
+      "at": 24,
+      "quote": "if (mLastHwVsync.isFirst()) {",
+      "kind": "branch",
+      "text": "这是缓存的第一个。"
+    },
+    {
+      "at": 25,
+      "quote": "addVsyncTimestampLocked(*mLastHwVsync.get(), source);",
+      "kind": "call",
+      "text": "立即喂入。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 27,
+      "quote": "mMoreSamplesNeeded = true;",
+      "kind": "state",
+      "text": "确认期间一律需要更多样本。"
+    },
+    {
+      "at": 28,
+      "quote": "*periodFlushed = false;",
+      "kind": "state",
+      "text": "未刷周期。"
+    },
+    {
+      "at": 29,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则：常规采样路径。"
+    },
+    {
+      "at": 30,
+      "quote": "SFTRACE_FORMAT(\"VSR %\" PRIu64 \": adding sample\", mId.value);",
+      "kind": "trace",
+      "text": "打 trace。"
+    },
+    {
+      "at": 31,
+      "quote": "*periodFlushed = false;",
+      "kind": "state",
+      "text": "未刷周期。"
+    },
+    {
+      "at": 32,
+      "quote": "addVsyncTimestampLocked(timestamp, source);",
+      "kind": "call",
+      "text": "直接喂样本。"
+    },
+    {
+      "at": 33,
+      "quote": "mMoreSamplesNeeded = mTracker.needsMoreSamples();",
+      "kind": "state",
+      "text": "按预测器需要决定是否继续要样本。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭三分支。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "if (mExternalIgnoreFences) {",
+      "kind": "branch",
+      "text": "外部要求忽略 present fence。"
+    },
+    {
+      "at": 37,
+      "quote": "// keep HWVSync on as long as we ignore present fences.",
+      "kind": "note",
+      "text": "注释：只要还在忽略 fence，就必须继续要硬件 vsync。"
+    },
+    {
+      "at": 38,
+      "quote": "mMoreSamplesNeeded = true;",
+      "kind": "state",
+      "text": "强制需要样本。"
+    },
+    {
+      "at": 39,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 40,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "if (!mMoreSamplesNeeded) {",
+      "kind": "branch",
+      "text": "不再需要样本。"
+    },
+    {
+      "at": 42,
+      "quote": "setIgnorePresentFencesInternal(false);",
+      "kind": "call",
+      "text": "恢复监听 present fence（重新启用第二校准通道）。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 44,
+      "quote": "return mMoreSamplesNeeded;",
+      "kind": "note",
+      "text": "返回值决定 SF 是否 disableHardwareVsync。"
+    },
+    {
+      "at": 45,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

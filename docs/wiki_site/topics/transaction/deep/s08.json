@@ -1,0 +1,65 @@
+{
+  "step": "s08",
+  "title": "解析 layer 句柄与 buffer",
+  "tldr": "句柄解析成 layerId 等整数 id，buffer 还原成 ExternalTexture，全在 binder 线程完成。",
+  "why": "这一步是「binder 线程替主线程干活」的典型设计。SurfaceControl 是跨进程句柄，主线程在合成关键路径上不应该再去做句柄解析；所以在入口处一次性换成整数 id 和可以直接渲染的纹理对象。好处显而易见：主线程后续只做纯内存操作。代价是这一步在 binder 线程上，如果 buffer 解析（涉及图形内存映射）耗时过长，会直接表现为「事务提交变慢」。",
+  "concepts": [
+    {
+      "term": "LayerHandle::getLayerId",
+      "text": "句柄 → 整数 id。"
+    },
+    {
+      "term": "ExternalTexture",
+      "text": "可直接给 RenderEngine/HWC 用的纹理封装。"
+    },
+    {
+      "term": "ResolvedComposerState",
+      "text": "解析后的层状态，主线程只认它。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "resolvedState.layerId = LayerHandle::getLayerId(resolvedState.state.surface);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5648",
+      "what": "主句柄解析。"
+    },
+    {
+      "call": "resolvedState.externalTexture =",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5654",
+      "what": "buffer → 纹理。"
+    },
+    {
+      "call": "resolvedState.parentId = getLayerIdFromSurfaceControl(",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5669",
+      "what": "父句柄解析（reparent 时）。"
+    },
+    {
+      "call": "resolvedState.relativeParentId = getLayerIdFromSurfaceControl(",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5673",
+      "what": "相对层句柄解析。"
+    },
+    {
+      "call": "mBufferCountTracker.increment(resolvedState.layerId);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5666",
+      "what": "buffer 计数入账。"
+    }
+  ],
+  "state": [
+    {
+      "field": "ResolvedComposerState",
+      "before": "含 SurfaceControl 句柄",
+      "after": "全部换成 id",
+      "note": "主线程不再触碰句柄。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "以为解析在主线程：在 binder 线程入口。",
+    "忽略 buffer 计数：pending buffer 数不对会让 dequeue 误判。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 layer 列表显示 id 与名字对应。",
+    "Perfetto 里 setTransactionState 的耗时可看到解析成本。"
+  ],
+  "next": "入队与排帧怎么发生？见第 9 步。"
+}

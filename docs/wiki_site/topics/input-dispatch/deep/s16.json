@@ -1,0 +1,60 @@
+{
+  "step": "s16",
+  "title": "deliverInputEvent：选责任链起点",
+  "tldr": "合成事件走 Synthetic；指针事件在满足条件时跳过 Pre-IME；KeyEvent 先进 UnhandledKeyManager。",
+  "why": "这个函数只有几十行，却决定了事件会不会经过 IME 段。跳过 Pre-IME 的条件是 shouldSkipIme 且未置 FLAG_SKIP_IME——注释解释了为什么不能无条件跳过：Pre-IME 段里有 KEYCODE_BACK 拦截等逻辑，一旦跳过，返回键语义就断了。理解这一点，才能判断「改这里会不会把返回键改坏」。",
+  "concepts": [
+    {
+      "term": "mFirstInputStage / mFirstPostImeInputStage",
+      "text": "完整链的起点 / Post-IME 段的起点。"
+    },
+    {
+      "term": "shouldSkipIme",
+      "text": "指针事件通常可跳过 IME 段。"
+    },
+    {
+      "term": "UnhandledKeyManager",
+      "text": "记录未被处理的按键，供后续 fallback。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "private void deliverInputEvent(QueuedInputEvent q) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11293",
+      "what": "入口。"
+    },
+    {
+      "call": "boolean canSkipToPostIme = q.shouldSkipIme()",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11322",
+      "what": "跳过判定。"
+    },
+    {
+      "call": "stage = canSkipToPostIme ? mFirstPostImeInputStage : mFirstInputStage;",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11324",
+      "what": "决定起点。"
+    },
+    {
+      "call": "stage.deliver(q);",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:11338",
+      "what": "真正进链。"
+    }
+  ],
+  "state": [
+    {
+      "field": "QueuedInputEvent.mFlags",
+      "before": "可能有 FLAG_SKIP_IME",
+      "after": "按需设置",
+      "note": "影响是否走完整链。"
+    }
+  ],
+  "threads": "UI 线程。",
+  "pitfalls": [
+    "以为指针事件一定跳过 IME：置了 FLAG_SKIP_IME 就不跳。",
+    "随意改动跳过条件会破坏返回键拦截。"
+  ],
+  "debug": [
+    "atrace 里 deliverInputEvent src=0x... 标签能区分来源。",
+    "verifyEventConsistency 切片只在开发者选项开启时出现。"
+  ],
+  "next": "责任链里各级到底做什么？见第 17 步。"
+}

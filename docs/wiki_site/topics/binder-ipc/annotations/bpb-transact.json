@@ -1,0 +1,330 @@
+{
+  "id": "bpb-transact",
+  "title": "BpBinder::transact",
+  "file": "native/libs/binder/BpBinder.cpp",
+  "sig": "status_t BpBinder::transact(",
+  "span": [
+    394,
+    446
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t BpBinder::transact(",
+      "kind": "note",
+      "text": "代理侧入口。三件事：稳定性检查、RPC/本地分叉、把调用交给线程本地的 IPCThreadState。"
+    },
+    {
+      "at": 2,
+      "quote": "uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)",
+      "kind": "note",
+      "text": "续行：code/data/reply/flags。"
+    },
+    {
+      "at": 3,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 4,
+      "quote": "// Once a binder has died, it will never come back to life.",
+      "kind": "note",
+      "text": "注释：binder 死了就不会复活——这个前提决定后续所有判断。"
+    },
+    {
+      "at": 5,
+      "quote": "if (mAlive) {",
+      "kind": "branch",
+      "text": "仍然存活。"
+    },
+    {
+      "at": 6,
+      "quote": "bool privateVendor = flags & FLAG_PRIVATE_VENDOR;",
+      "kind": "data",
+      "text": "是否带「私有 vendor」标志。"
+    },
+    {
+      "at": 7,
+      "quote": "// don't send userspace flags to the kernel",
+      "kind": "note",
+      "text": "注释：私有标志只在本进程内使用，不能传给内核。"
+    },
+    {
+      "at": 8,
+      "quote": "flags = flags & ~static_cast<uint32_t>(FLAG_PRIVATE_VENDOR);",
+      "kind": "state",
+      "text": "剥掉它。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "// user transactions require a given stability level",
+      "kind": "note",
+      "text": "注释：用户事务要求稳定性等级匹配。"
+    },
+    {
+      "at": 11,
+      "quote": "if (code >= FIRST_CALL_TRANSACTION && code <= LAST_CALL_TRANSACTION) {",
+      "kind": "decision",
+      "text": "**用户事务区间**（AIDL 生成的 code）。"
+    },
+    {
+      "at": 12,
+      "quote": "using android::internal::Stability;",
+      "kind": "note",
+      "text": "引入稳定性工具。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "int16_t stability = Stability::getRepr(this);",
+      "kind": "data",
+      "text": "取本对象的稳定性等级。"
+    },
+    {
+      "at": 15,
+      "quote": "Stability::Level required = privateVendor ? Stability::VENDOR",
+      "kind": "data",
+      "text": "要求等级：vendor 事务要求 VENDOR，其余要求本地等级。"
+    },
+    {
+      "at": 16,
+      "quote": ": Stability::getLocalLevel();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 18,
+      "quote": "if (!Stability::check(stability, required)) [[unlikely]] {",
+      "kind": "branch",
+      "text": "**等级不匹配**。"
+    },
+    {
+      "at": 19,
+      "quote": "ALOGE(\"Cannot do a user transaction on a %s binder (%s) in a %s context.\",",
+      "kind": "note",
+      "text": "E 级日志带上双方等级与接口名。"
+    },
+    {
+      "at": 20,
+      "quote": "Stability::levelString(stability).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "String8(getInterfaceDescriptor()).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 22,
+      "quote": "Stability::levelString(required).c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 23,
+      "quote": "return BAD_TYPE;",
+      "kind": "note",
+      "text": "**返回 BAD_TYPE**：这是 platform 调用 vendor 服务失败的最常见原因。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭稳定性检查。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "status_t status;",
+      "kind": "data",
+      "text": "结果。"
+    },
+    {
+      "at": 28,
+      "quote": "if (isRpcBinder()) [[unlikely]] {",
+      "kind": "branch",
+      "text": "**是 RPC binder**（跨设备/跨 VM）。"
+    },
+    {
+      "at": 29,
+      "quote": "status = rpcSession()->transact(sp<IBinder>::fromExisting(this), code, data, reply,",
+      "kind": "call",
+      "text": "走 RPC session，不经过内核驱动。"
+    },
+    {
+      "at": 30,
+      "quote": "flags);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是普通 binder。"
+    },
+    {
+      "at": 32,
+      "quote": "if constexpr (!kEnableKernelIpc) {",
+      "kind": "branch",
+      "text": "编译期关闭了内核 IPC。"
+    },
+    {
+      "at": 33,
+      "quote": "LOG_ALWAYS_FATAL(\"Binder kernel driver disabled at build time\");",
+      "kind": "note",
+      "text": "直接 FATAL。"
+    },
+    {
+      "at": 34,
+      "quote": "return INVALID_OPERATION;",
+      "kind": "note",
+      "text": "不可达。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "status = IPCThreadState::self()->transact(binderHandle(), code, data, reply, flags);",
+      "kind": "call",
+      "text": "**交给线程本地的 IPCThreadState**，handle 是本对象的目标编号。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "if (data.dataSize() > binder::kLogTransactionsOverBytes) {",
+      "kind": "branch",
+      "text": "发出去的负载超过告警阈值。"
+    },
+    {
+      "at": 41,
+      "quote": "RpcMutexUniqueLock _l(mLock);",
+      "kind": "lock",
+      "text": "取描述符锁（读接口名用）。"
+    },
+    {
+      "at": 42,
+      "quote": "ALOGW(\"Large outgoing transaction of %zu bytes, interface descriptor '%s', code %d, \"",
+      "kind": "note",
+      "text": "W 级日志：Large outgoing transaction。"
+    },
+    {
+      "at": 43,
+      "quote": "\"flags %d was sent\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 44,
+      "quote": "data.dataSize(), BPBINDER_BEST_DESCRIPTOR_LOCKED, code, flags);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 46,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 47,
+      "quote": "if (status == DEAD_OBJECT) mAlive = 0;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 48,
+      "quote": "",
+      "kind": "branch",
+      "text": "**收到 DEAD_OBJECT**。"
+    },
+    {
+      "at": 49,
+      "quote": "return status;",
+      "kind": "state",
+      "text": "标记死亡：之后所有调用直接返回 DEAD_OBJECT，不再尝试。"
+    },
+    {
+      "at": 50,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 51,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 52,
+      "quote": "return DEAD_OBJECT;",
+      "kind": "note",
+      "text": "返回结果。"
+    },
+    {
+      "at": 53,
+      "quote": "}",
+      "kind": "note",
+      "text": "否则（已死亡）。"
+    }
+  ]
+}

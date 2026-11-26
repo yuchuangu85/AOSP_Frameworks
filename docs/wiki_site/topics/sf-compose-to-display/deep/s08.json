@@ -1,0 +1,30 @@
+{
+  "step": "s08",
+  "title": "composite：组装 CompositionRefreshArgs",
+  "tldr": "把输出、颜色、几何标志、帧间隔与层快照塞进 refreshArgs，再把工作交给 CompositionEngine。",
+  "why": "CompositionEngine 不知道 SF 的内部状态，它只吃一份 refreshArgs。因此这一步的完整性直接决定合成结果：漏了 outputs 就有显示不刷新，漏了 layersWithQueuedFrames 就有 buffer 永远不被释放（app 卡死在 dequeueBuffer），漏了 frameInterval 就会让 HWC 用错时序。此外 release fence 的 future 在这里预挂（attachReleaseFenceFutureToLayer），先建 future 后填 fence，避免合成路径上同步等 fence。",
+  "concepts": [
+    { "term": "CompositionRefreshArgs", "text": "一次合成的全部输入：outputs、layers、layersWithQueuedFrames、颜色与时序参数。" },
+    { "term": "layersWithQueuedFrames", "text": "本拍有新 buffer 的层；它们的 release fence 必须在 present 后兑现。" },
+    { "term": "release fence future", "text": "先把 promise 挂上，present 后填 fence，避免阻塞合成。" }
+  ],
+  "walk": [
+    { "call": "CompositeResultsPerDisplay SurfaceFlinger::composite(", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3330", "what": "入口，返回每显示的合成覆盖结果。" },
+    { "call": "auto optionalOffloadedRefreshArgs =", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3387", "what": "把物理显示加进 mainThread outputs，并可能生成卸载用参数。" },
+    { "call": "prepareLayersForComposition(refreshArgs, kCursorOnly, layers);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3393", "what": "把层按 output 分发。" },
+    { "call": "mCompositionEngine->present(refreshArgs);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3448", "what": "交给合成引擎。" }
+  ],
+  "state": [
+    { "field": "refreshArgs.updatingGeometryThisFrame", "before": "上一拍", "after": "mGeometryDirty / 可见区域 / 色彩矩阵任一为真", "note": "决定 Output 要不要重算几何。" }
+  ],
+  "threads": "SF 主线程；refreshArgs 之后只读，可以被安全地卸载到 worker。",
+  "pitfalls": [
+    "漏掉 layersWithQueuedFrames：app 永远拿不到 release fence，表现为 dequeueBuffer 卡死。",
+    "以为 refreshArgs 是活的：它是值语义的输入快照。"
+  ],
+  "debug": [
+    "trace 里 composite 切片下的 CompositionEngine::present 就是合成实际耗时。",
+    "Perfetto 的合成摘要能看到参与层数与合成方式分布。"
+  ],
+  "next": "CompositionEngine 怎样分三段处理？见第 9 步。"
+}

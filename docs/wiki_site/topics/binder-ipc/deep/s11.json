@@ -1,0 +1,55 @@
+{
+  "step": "s11",
+  "title": "Java 服务端：Binder.onTransact",
+  "tldr": "native 走 BBinder::transact，再经 JNI 落到 execTransact → onTransact。",
+  "why": "注意 BBinder::transact 会**先拦截一批内置 code**（PING_TRANSACTION、EXTENSION_TRANSACTION、DEBUG_PID_TRANSACTION 等），只有其它 code 才落到业务 onTransact。所以「探活」「取扩展接口」这些协议级能力不占用业务 code 空间，也不需要在每个 AIDL 实现里重复写。",
+  "concepts": [
+    {
+      "term": "PING_TRANSACTION",
+      "text": "探活，不进入业务。"
+    },
+    {
+      "term": "EXTENSION_TRANSACTION",
+      "text": "取扩展 binder，用于接口演进。"
+    },
+    {
+      "term": "FLAG_CLEAR_BUF",
+      "text": "要求回包可被清零。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "err = onTransact(code, data, reply, flags);",
+      "ref": "native/libs/binder/Binder.cpp:541",
+      "what": "默认分支才进业务。"
+    },
+    {
+      "call": "private boolean execTransact(long nativeBinderObj, int code, long dataObj,",
+      "ref": "base/core/java/android/os/Binder.java:1304",
+      "what": "JNI 回调 Java 的入口。"
+    },
+    {
+      "call": "protected boolean onTransact(int code, @NonNull Parcel data,",
+      "ref": "base/core/java/android/os/Binder.java:915",
+      "what": "业务实现。"
+    }
+  ],
+  "state": [
+    {
+      "field": "data 读位置",
+      "before": "可能非 0",
+      "after": "归零后再读",
+      "note": "BBinder 已 setDataPosition(0)。"
+    }
+  ],
+  "threads": "服务线程（binder 池线程）。",
+  "pitfalls": [
+    "以为所有 code 都到 onTransact：PING 等被拦截。",
+    "在 onTransact 里阻塞：会占住一个池线程。"
+  ],
+  "debug": [
+    "BBinder 里超 1s 的事务会打 W 级日志。",
+    "AIDL trace 能看到每个 code 的耗时。"
+  ],
+  "next": "回包怎么发？见第 12 步。"
+}

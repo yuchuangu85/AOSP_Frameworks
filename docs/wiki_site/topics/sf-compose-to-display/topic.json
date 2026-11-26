@@ -1,0 +1,2037 @@
+{
+  "extends": [
+    "topic_sf_commit.json"
+  ],
+  "lanes": [
+    {
+      "id": "RT",
+      "label": "RenderThread / BLAST",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "SF",
+      "label": "SurfaceFlinger 主线程",
+      "color": "#c792ea"
+    },
+    {
+      "id": "CE",
+      "label": "CompositionEngine / Output",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "HWC",
+      "label": "HWComposer / RenderEngine",
+      "color": "#ffb454"
+    },
+    {
+      "id": "HW",
+      "label": "硬件与面板（仓库外）",
+      "color": "#ff9f43"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "帧信号",
+      "hint": "who 起这一拍、pacesetter 怎么定"
+    },
+    {
+      "id": "P1",
+      "label": "收下 buffer",
+      "hint": "事务 flush → 快照 → latch"
+    },
+    {
+      "id": "P2",
+      "label": "准备合成",
+      "hint": "可见层与合成策略"
+    },
+    {
+      "id": "P3",
+      "label": "合成执行",
+      "hint": "CLIENT 走 RenderEngine，DEVICE 交 HWC"
+    },
+    {
+      "id": "P4",
+      "label": "上屏",
+      "hint": "present + present fence"
+    },
+    {
+      "id": "P5",
+      "label": "回流",
+      "hint": "release fence 与 frame timeline"
+    },
+    {
+      "id": "P6",
+      "label": "分支与诊断",
+      "hint": "降级路径与抓现场"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "RT",
+      "title": "交棒：buffer 与 acquire fence 进入 SF",
+      "brief": "上一次交接的终点：BLASTBufferQueue 把 GraphicBuffer handle、acquire fence、frameNumber 打包成 SurfaceControl.Transaction 一次性 apply。SF 还什么都还没做，这一拍只是把事务塞进队列。",
+      "refs": [
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 667,
+          "symbol": "t->setBuffer（buffer + fence + frameNumber）"
+        },
+        {
+          "file": "native/libs/gui/BLASTBufferQueue.cpp",
+          "line": 726,
+          "symbol": "apply(false, true)（oneway）"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "SF",
+      "title": "Scheduler::onFrameSignal：SF 相位的一拍",
+      "brief": "sf 相位的 vsync 回调落到 SF 主线程：FrameTargeter::beginFrame 先定 expectedPresentTime，再依次调 ICompositor::commit 与 composite。commit 返回 false 就只 scheduleFrame 等下一拍，不合成。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 411,
+          "symbol": "onFrameSignal"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 470,
+          "symbol": "compositor.commit"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 501,
+          "symbol": "compositor.composite"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 508,
+          "symbol": "endFrame"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P0",
+      "lane": "SF",
+      "title": "commit 的四道早退闸门",
+      "brief": "真正干活前有四个「这一拍不合成」的判定：display 已不在物理显示表里、mode set 还挂着、backpressure 触发、以及都没事时的正常路径。前三个都只 scheduleFrame 后返回。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3026,
+          "symbol": "hasDisplay"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3039,
+          "symbol": "isFramePending"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3059,
+          "symbol": "wouldBackpressureHwc"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3029,
+          "symbol": "scheduleFrame"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "updateLayerSnapshots：把事务变成快照",
+      "brief": "commit 的核心。flushTransactions 收下所有 BLAST 事务（含 setBuffer），applyTransactions 应用到 LayerLifecycleManager，LayerSnapshotBuilder.update 为每个可见层生成一份不可变快照；任何 Step 都只读快照，不再回头读 mStateLock 下的活对象。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2771,
+          "symbol": "updateLayerSnapshots"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2789,
+          "symbol": "collectTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2807,
+          "symbol": "flushTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2883,
+          "symbol": "LayerSnapshotBuilder.update"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3138,
+          "symbol": "commit 里调用"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "Layer::setBuffer：buffer 进 drawing state",
+      "brief": "事务被应用时，setBuffer 把新 buffer 从 mDrawingState.buffer 前移，同时记录 acquireFence、frameNumber、releaseBufferListener 与 FrameTimelineInfo。这里**不等待** fence，只是登记。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 921,
+          "symbol": "setBuffer"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 958,
+          "symbol": "previousBuffer"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 960,
+          "symbol": "acquireFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 978,
+          "symbol": "setFrameTimelineVsyncForBufferTransaction"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "latchBufferImpl：轮询 fence，不等不超时",
+      "brief": "latch 才是「真正收下这一帧」。若 head buffer 的 acquire fence 还没 signal，直接 return false 并 onLayerUpdate 让下一拍再来——它不阻塞合成线程，也不设超时。fence 信号了才 gatherBufferInfo 把 buffer 提进 mBufferInfo。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2953,
+          "symbol": "latchBufferImpl"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1506,
+          "symbol": "latchBufferImpl"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1520,
+          "symbol": "fenceHasSignaled"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1531,
+          "symbol": "gatherBufferInfo"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "mustComposite 与 commit 的返回值",
+      "brief": "updateLayerSnapshots 把「有事要合成」汇总成 mustComposite：有新 buffer latch、有事务、有 property 变化都算。commit 最后返回 mustComposite && 不在 bootloader 阶段——false 时 Scheduler 只排下一拍，整帧省掉。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2988,
+          "symbol": "mustComposite"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2990,
+          "symbol": "commitTransactions"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3201,
+          "symbol": "return mustComposite"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P2",
+      "lane": "SF",
+      "title": "composite：组装 CompositionRefreshArgs",
+      "brief": "composite 先把这一拍需要的一切塞进 refreshArgs：输出显示器、颜色设置、是否更新几何、帧间隔、expectedPresentTime，再把 layers 与 layersWithQueuedFrames 挂上去，并为后者预挂 release fence future。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3330,
+          "symbol": "composite"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3387,
+          "symbol": "addOutputsToRefreshArgs"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3392,
+          "symbol": "addLayerSnapshotsToCompositionArgs"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3436,
+          "symbol": "attachReleaseFenceFutureToLayer"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P2",
+      "lane": "CE",
+      "title": "CompositionEngine::present：三拍结构",
+      "brief": "合成引擎的门面只有三段：preComposition（让每层做提交前准备）→ 每个 output 的 prepare 与 present（可多显示器并发，present 返回 future）→ 等 HWC 完成后 postComposition 兜底兑现 release fence promise。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          "line": 131,
+          "symbol": "present"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          "line": 144,
+          "symbol": "output->prepare"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          "line": 155,
+          "symbol": "output->present"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          "line": 204,
+          "symbol": "postComposition"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P2",
+      "lane": "CE",
+      "title": "Output::prepare 与可见层计算",
+      "brief": "rebuildLayerStacks 从最上层往下逐层算 opaque/visible/covered region，决定哪些层真的进本输出；被顶掉的层进入 releasedLayers，它们本帧不画但仍要还 buffer。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 441,
+          "symbol": "prepare"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 446,
+          "symbol": "rebuildLayerStacks"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 553,
+          "symbol": "collectVisibleLayers"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 566,
+          "symbol": "setReleasedLayers"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P2",
+      "lane": "CE",
+      "title": "Output::present 的固定八步",
+      "brief": "顺序被写死：颜色配置 → 合成状态 → planner 规划 → 写 HWC 状态 → 颜色变换 → beginFrame → prepareFrame（问 HWC 要合成方式）→ finishFrame（GPU 合成），最后 presentFrameAndReleaseLayers。顺序错了会出现「写完 HWC 状态又改策略」的问题。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 450,
+          "symbol": "present"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 482,
+          "symbol": "updateColorProfile"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 484,
+          "symbol": "planComposition"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 498,
+          "symbol": "prepareFrame"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 502,
+          "symbol": "finishFrame"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 514,
+          "symbol": "presentFrameAndReleaseLayers"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P3",
+      "lane": "CE",
+      "title": "prepareFrame：问 HWC 用哪种合成",
+      "brief": "chooseCompositionStrategy 是合成方式的分水岭：先判断有没有层必须 CLIENT，再让 HWC validate（或在可跳过时直接 presentOrValidate），拿回 changedTypes 与 requests，applyCompositionStrategy 把结论写回各层。失败时静默退化为全 CLIENT。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1177,
+          "symbol": "prepareFrame"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1187,
+          "symbol": "chooseCompositionStrategy"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1202,
+          "symbol": "applyCompositionStrategy"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 248,
+          "symbol": "Display::chooseCompositionStrategy"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P3",
+      "lane": "HWC",
+      "title": "HWComposer::getDeviceCompositionChanges",
+      "brief": "HWC 往返点。能跳过 validate 时用 presentOrValidate 一步到位（要求无 client 合成且不会提前上屏）；否则 validate → getChangedCompositionTypes → getRequests → getClientTargetProperty → acceptChanges。hal 错误会退化成全 CLIENT。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 537,
+          "symbol": "getDeviceCompositionChanges"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 562,
+          "symbol": "canSkipValidate"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 584,
+          "symbol": "presentOrValidate"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 600,
+          "symbol": "validate"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 631,
+          "symbol": "acceptChanges"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P3",
+      "lane": "CE",
+      "title": "DEVICE 路径：把 buffer 写进 HWC",
+      "brief": "DEVICE 合成的层不经过 GPU：writeStateToHWC 按类型分派，writeBufferStateToHWC 从 HWC buffer 缓存取 slot，再把 buffer handle 与 acquire fence 交给 hal 的 setBuffer。HWC 拿到 fence 后自己等，不等完不扫出。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          "line": 662,
+          "symbol": "writeStateToHWC"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          "line": 704,
+          "symbol": "writeCompositionTypeToHWC"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          "line": 955,
+          "symbol": "writeBufferStateToHWC"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          "line": 1072,
+          "symbol": "hwcLayer->setBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P3",
+      "lane": "CE",
+      "title": "CLIENT 路径：RenderEngine 画进 client target",
+      "brief": "CLIENT 合成时 GPU 才介入：dequeueRenderBuffer 取一块 client target，composeSurfaces 把可见层转成 RenderEngine 的 LayerSettings 后 drawLayers，最后 finishFrame 用 queueBuffer 把 client target 连同 GPU fence 交给显示端。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1331,
+          "symbol": "dequeueRenderBuffer"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1337,
+          "symbol": "composeSurfaces"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1472,
+          "symbol": "drawLayers"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1348,
+          "symbol": "queueBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P4",
+      "lane": "HWC",
+      "title": "presentAndGetReleaseFences：真正上屏",
+      "brief": "present 是这一拍唯一真正「出去」的动作：可选择先 sleep_until earliestPresentTime（避免提前上屏），再 hwcDisplay->present 把 present fence 存进 displayData，随后 getReleaseFences 取回全部逐层 release fence。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 658,
+          "symbol": "presentAndGetReleaseFences"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 676,
+          "symbol": "earliestPresentTime"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 681,
+          "symbol": "present"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 685,
+          "symbol": "getReleaseFences"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P4",
+      "lane": "CE",
+      "title": "Display::presentFrame：present + 逐层 fence",
+      "brief": "Display 覆写 Output::presentFrame：先取 client target 的 acquire fence，再调 presentAndGetReleaseFences，然后从 HWComposer 取 present fence 与每个 hwcLayer 的 release fence，填进 FrameFences 返回给上层。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 416,
+          "symbol": "Display::presentFrame"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 432,
+          "symbol": "presentAndGetReleaseFences"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 438,
+          "symbol": "getPresentFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 447,
+          "symbol": "getLayerReleaseFence"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P4",
+      "lane": "SF",
+      "title": "onCompositionPresented：回填 timeline 并释放",
+      "brief": "present 之后 SF 立刻做的事：取 present fence 与 GPU 合成完成 fence、setSfPresent 写入 FrameTimeline、算 presentLatency 供下一拍定 timing，再逐层 onCompositionPresented 记录 present 时间、releasePendingBuffer 归还上一块 buffer。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3775,
+          "symbol": "onCompositionPresented"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3784,
+          "symbol": "getPresentFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3822,
+          "symbol": "setSfPresent"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3869,
+          "symbol": "layer->onCompositionPresented"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3872,
+          "symbol": "releasePendingBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P5",
+      "lane": "SF",
+      "title": "release fence 回流到 app",
+      "brief": "回调链路最后一步：Layer::callReleaseBufferCallback 把 release fence 与当前 maxAcquiredBufferCount 写进 BufferReleaseChannel，app 侧 dequeueBuffer 由此解除阻塞。SF 侧只是写一个 fd，不关心 app 何时醒来。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 711,
+          "symbol": "callReleaseBufferCallback"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 738,
+          "symbol": "writeReleaseFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 814,
+          "symbol": "releasePendingBuffer"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P5",
+      "lane": "SF",
+      "title": "Scheduler::onFrameSignal 收尾与下一拍",
+      "brief": "composite 返回后 Scheduler 对每个 display 调 targeter->endFrame：写入本拍的实际 present 结果、判定是否 missed、更新 vsync 轨迹。至此这一拍 SF 的工作结束，下一拍的唤醒由 vsync 定时器负责。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 501,
+          "symbol": "composite"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 505,
+          "symbol": "targeters"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 508,
+          "symbol": "endFrame"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P6",
+      "lane": "CE",
+      "title": "分支：commit 没有可合成的内容",
+      "brief": "最常见的「省一帧」：没有新事务、没有新 latch、也没有 property 变化时 commit 返回 false。此时 Scheduler 只 scheduleFrame，整帧不做合成，功耗与延迟都没白花。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 470,
+          "symbol": "commit 返回 false"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 472,
+          "symbol": "onCommitNotComposited"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3201,
+          "symbol": "返回值"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P6",
+      "lane": "SF",
+      "title": "分支：latch 没等到 fence",
+      "brief": "acquire fence 未 signal 时 latchBufferImpl 返回 false 并 onLayerUpdate 重排本拍；这一层本帧不出新内容，但 commit 仍可能因为别的层而有事可做。排查「画面比预期晚一帧」时这是第一嫌疑点。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1520,
+          "symbol": "!fenceHasSignaled"
+        },
+        {
+          "file": "native/services/surfaceflinger/Layer.cpp",
+          "line": 1522,
+          "symbol": "onLayerUpdate"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2954,
+          "symbol": "newDataLatched"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P6",
+      "lane": "HWC",
+      "title": "分支：合成策略回退与 validate 跳过",
+      "brief": "两类降级：chooseCompositionStrategy 失败或 HWC 不可用时退化为全 CLIENT（GPU 全包）；反过来 canSkipValidate 为真时用 presentOrValidate 一步完成，省掉一次 HAL 往返——trace 里会看到没有 validate 切片。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          "line": 1197,
+          "symbol": "resetCompositionStrategy"
+        },
+        {
+          "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          "line": 280,
+          "symbol": "失败日志"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 589,
+          "symbol": "state == 1"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P6",
+      "lane": "HW",
+      "title": "仓库外：HAL、gralloc 与面板",
+      "brief": "present 之后发生的一切都不在本仓库：vendor composer HAL 把图层合成进显示控制器、gralloc buffer 被 DPU 读取、kernel sync_file 在面板 vsync 时 signal present fence。本页只能看到 fence fd 与时间戳。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 681,
+          "symbol": "present 交给 HAL"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 3830,
+          "symbol": "presentLatency"
+        }
+      ]
+    }
+  ],
+  "p0": [
+    {
+      "id": "sf-commit",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "bool SurfaceFlinger::commit(",
+      "symbol": "SurfaceFlinger::commit",
+      "start": 2996,
+      "end": 3202,
+      "hint": 2996,
+      "why": "SF 一拍的入口：四道早退闸门、snapshot 提交、mustComposite 决策都在这里。"
+    },
+    {
+      "id": "sf-composite",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "CompositeResultsPerDisplay SurfaceFlinger::composite(",
+      "symbol": "SurfaceFlinger::composite",
+      "start": 3330,
+      "end": 3594,
+      "hint": 3330,
+      "why": "把这一拍要合成的一切组装成 refreshArgs，再交给 CompositionEngine::present。"
+    },
+    {
+      "id": "sf-snapshots",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "bool SurfaceFlinger::updateLayerSnapshots(",
+      "symbol": "SurfaceFlinger::updateLayerSnapshots",
+      "start": 2771,
+      "end": 2994,
+      "hint": 2771,
+      "why": "事务 → 快照 → latch 的全过程；决定哪些层的 buffer 在这一拍被真正收下。"
+    },
+    {
+      "id": "sf-presented",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "void SurfaceFlinger::onCompositionPresented(",
+      "symbol": "SurfaceFlinger::onCompositionPresented",
+      "start": 3775,
+      "end": 4037,
+      "hint": 3775,
+      "why": "present 之后的回填：FrameTimeline、present fence、逐层释放 buffer。"
+    },
+    {
+      "id": "out-present",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "sig": "ftl::Future<std::monostate> Output::present(",
+      "symbol": "Output::present",
+      "start": 450,
+      "end": 519,
+      "hint": 450,
+      "why": "单个输出的合成主序列：顺序被写死的八步，错序会改坏状态机。"
+    },
+    {
+      "id": "out-prepare",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "sig": "void Output::prepare(",
+      "symbol": "Output::prepare",
+      "start": 441,
+      "end": 448,
+      "hint": 441,
+      "why": "可见层计算入口，只有两行却决定了这一帧到底画哪些层。"
+    },
+    {
+      "id": "out-prepareframe",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "sig": "void Output::prepareFrame()",
+      "symbol": "Output::prepareFrame",
+      "start": 1177,
+      "end": 1205,
+      "hint": 1177,
+      "why": "合成方式的分水岭：问 HWC 要 validate 结果，再写回各层。"
+    },
+    {
+      "id": "hwc-validate",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "sig": "status_t HWComposer::getDeviceCompositionChanges(",
+      "symbol": "HWComposer::getDeviceCompositionChanges",
+      "start": 537,
+      "end": 635,
+      "hint": 537,
+      "why": "唯一与 composer HAL 往返的地方：validate / presentOrValidate 与错误降级。"
+    },
+    {
+      "id": "hwc-present",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "sig": "status_t HWComposer::presentAndGetReleaseFences(",
+      "symbol": "HWComposer::presentAndGetReleaseFences",
+      "start": 658,
+      "end": 691,
+      "hint": 658,
+      "why": "上屏的唯一出口：present + 取 release fence，含 earliestPresentTime 的等待。"
+    },
+    {
+      "id": "hwc-clienttarget",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "sig": "status_t HWComposer::setClientTarget(",
+      "symbol": "HWComposer::setClientTarget",
+      "start": 525,
+      "end": 535,
+      "hint": 525,
+      "why": "GPU 合成时把 client target 交给 HWC 的薄封装，便于对照 CLIENT 路径。"
+    }
+  ],
+  "architecture": {
+    "width": 1320,
+    "height": 620,
+    "groups": [
+      {
+        "id": "app",
+        "label": "app 进程",
+        "x": 24,
+        "y": 24,
+        "w": 300,
+        "h": 560,
+        "color": "#33d6c0"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger 进程",
+        "x": 356,
+        "y": 24,
+        "w": 620,
+        "h": 560,
+        "color": "#c792ea"
+      },
+      {
+        "id": "hal",
+        "label": "composer HAL（vendor，仓库外）",
+        "x": 1008,
+        "y": 24,
+        "w": 280,
+        "h": 560,
+        "color": "#ffb454"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "bbq",
+        "group": "app",
+        "label": "BLASTBufferQueue",
+        "sub": "Transaction + buffer + fence",
+        "x": 56,
+        "y": 120,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "release",
+        "group": "app",
+        "label": "BufferReleaseChannel",
+        "sub": "readReleaseFence",
+        "x": 56,
+        "y": 330,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "sfmain",
+        "group": "sf",
+        "label": "SurfaceFlinger",
+        "sub": "commit / composite",
+        "x": 390,
+        "y": 90,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "layer",
+        "group": "sf",
+        "label": "Layer / LayerFE",
+        "sub": "setBuffer / latchBufferImpl",
+        "x": 390,
+        "y": 210,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "ce",
+        "group": "sf",
+        "label": "CompositionEngine",
+        "sub": "Output::present",
+        "x": 690,
+        "y": 150,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "re",
+        "group": "sf",
+        "label": "RenderEngine",
+        "sub": "drawLayers（GPU 合成）",
+        "x": 690,
+        "y": 270,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "hwc",
+        "group": "sf",
+        "label": "HWComposer",
+        "sub": "present / getReleaseFences",
+        "x": 390,
+        "y": 400,
+        "w": 250,
+        "h": 70
+      },
+      {
+        "id": "composer",
+        "group": "hal",
+        "label": "composer3 HAL",
+        "sub": "validate / present",
+        "x": 1040,
+        "y": 120,
+        "w": 220,
+        "h": 70
+      },
+      {
+        "id": "panel",
+        "group": "hal",
+        "label": "DPU + 面板",
+        "sub": "present fence / release fence",
+        "x": 1040,
+        "y": 250,
+        "w": 220,
+        "h": 70
+      }
+    ],
+    "edges": [
+      {
+        "from": "bbq",
+        "to": "sfmain",
+        "label": "Transaction（oneway）",
+        "kind": "oneway"
+      },
+      {
+        "from": "sfmain",
+        "to": "layer",
+        "label": "latchBufferImpl",
+        "kind": "call"
+      },
+      {
+        "from": "sfmain",
+        "to": "ce",
+        "label": "composite → present",
+        "kind": "call"
+      },
+      {
+        "from": "ce",
+        "to": "re",
+        "label": "CLIENT：drawLayers",
+        "kind": "call"
+      },
+      {
+        "from": "ce",
+        "to": "hwc",
+        "label": "DEVICE：writeStateToHWC",
+        "kind": "call"
+      },
+      {
+        "from": "hwc",
+        "to": "composer",
+        "label": "present",
+        "kind": "call"
+      },
+      {
+        "from": "composer",
+        "to": "panel",
+        "label": "合成上屏",
+        "kind": "call"
+      },
+      {
+        "from": "panel",
+        "to": "hwc",
+        "label": "release fence",
+        "kind": "callback"
+      },
+      {
+        "from": "layer",
+        "to": "release",
+        "label": "writeReleaseFence",
+        "kind": "oneway"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "f0",
+        "kind": "start",
+        "label": "onFrameSignal(sf 相位)",
+        "x": 530,
+        "y": 60
+      },
+      {
+        "id": "f1",
+        "kind": "process",
+        "label": "FrameTargeter::beginFrame 定 expectedPresentTime",
+        "x": 530,
+        "y": 160
+      },
+      {
+        "id": "f2",
+        "kind": "decision",
+        "label": "commit 早退？（display/mode/backpressure）",
+        "x": 530,
+        "y": 280
+      },
+      {
+        "id": "f3",
+        "kind": "process",
+        "label": "updateLayerSnapshots：flush + snapshot + latch",
+        "x": 530,
+        "y": 400
+      },
+      {
+        "id": "f4",
+        "kind": "decision",
+        "label": "mustComposite ?",
+        "x": 530,
+        "y": 510
+      },
+      {
+        "id": "f5",
+        "kind": "process",
+        "label": "CompositeEngine::present → Output::prepare/present",
+        "x": 530,
+        "y": 630
+      },
+      {
+        "id": "f6",
+        "kind": "decision",
+        "label": "HWC 要 CLIENT 合成？",
+        "x": 530,
+        "y": 740
+      },
+      {
+        "id": "f7",
+        "kind": "process",
+        "label": "RenderEngine drawLayers + queueBuffer",
+        "x": 880,
+        "y": 740
+      },
+      {
+        "id": "f8",
+        "kind": "process",
+        "label": "presentAndGetReleaseFences",
+        "x": 530,
+        "y": 850
+      },
+      {
+        "id": "f9",
+        "kind": "end",
+        "label": "onCompositionPresented + release fence 回流",
+        "x": 530,
+        "y": 960
+      },
+      {
+        "id": "f10",
+        "kind": "process",
+        "label": "只 scheduleFrame，等下一拍",
+        "x": 180,
+        "y": 280
+      },
+      {
+        "id": "f11",
+        "kind": "process",
+        "label": "scheduleFrame 兜底",
+        "x": 180,
+        "y": 510
+      }
+    ],
+    "edges": [
+      {
+        "from": "f0",
+        "to": "f1"
+      },
+      {
+        "from": "f1",
+        "to": "f2"
+      },
+      {
+        "from": "f2",
+        "to": "f3",
+        "label": "否"
+      },
+      {
+        "from": "f2",
+        "to": "f10",
+        "label": "是"
+      },
+      {
+        "from": "f3",
+        "to": "f4"
+      },
+      {
+        "from": "f4",
+        "to": "f5",
+        "label": "是"
+      },
+      {
+        "from": "f4",
+        "to": "f11",
+        "label": "否"
+      },
+      {
+        "from": "f5",
+        "to": "f6"
+      },
+      {
+        "from": "f6",
+        "to": "f7",
+        "label": "是"
+      },
+      {
+        "from": "f6",
+        "to": "f8",
+        "label": "否：全 DEVICE"
+      },
+      {
+        "from": "f7",
+        "to": "f8"
+      },
+      {
+        "from": "f8",
+        "to": "f9"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s01",
+      "from": "RT",
+      "to": "SF",
+      "label": "Transaction::setBuffer + apply",
+      "kind": "oneway"
+    },
+    {
+      "step": "s02",
+      "from": "SF",
+      "to": "SF",
+      "label": "onFrameSignal → beginFrame",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "SF",
+      "to": "SF",
+      "label": "compositor.commit",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "SF",
+      "to": "SF",
+      "label": "四道早退闸门",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "SF",
+      "to": "SF",
+      "label": "updateLayerSnapshots",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "SF",
+      "to": "SF",
+      "label": "Layer::setBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s06",
+      "from": "SF",
+      "to": "SF",
+      "label": "latchBufferImpl（轮询 fence）",
+      "kind": "call"
+    },
+    {
+      "step": "s07",
+      "from": "SF",
+      "to": "SF",
+      "label": "mustComposite → 返回 Scheduler",
+      "kind": "call"
+    },
+    {
+      "step": "s08",
+      "from": "SF",
+      "to": "SF",
+      "label": "composite：组装 refreshArgs",
+      "kind": "call"
+    },
+    {
+      "step": "s09",
+      "from": "SF",
+      "to": "CE",
+      "label": "CompositionEngine::present",
+      "kind": "call"
+    },
+    {
+      "step": "s10",
+      "from": "CE",
+      "to": "CE",
+      "label": "Output::prepare → collectVisibleLayers",
+      "kind": "call"
+    },
+    {
+      "step": "s11",
+      "from": "CE",
+      "to": "CE",
+      "label": "Output::present 八步",
+      "kind": "call"
+    },
+    {
+      "step": "s12",
+      "from": "CE",
+      "to": "CE",
+      "label": "prepareFrame → chooseCompositionStrategy",
+      "kind": "call"
+    },
+    {
+      "step": "s13",
+      "from": "CE",
+      "to": "HWC",
+      "label": "getDeviceCompositionChanges",
+      "kind": "call"
+    },
+    {
+      "step": "s13",
+      "from": "HWC",
+      "to": "HW",
+      "label": "validate / presentOrValidate",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "CE",
+      "to": "HWC",
+      "label": "writeStateToHWC → setBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s15",
+      "from": "CE",
+      "to": "HW",
+      "label": "RenderEngine drawLayers → queueBuffer",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "HWC",
+      "to": "HW",
+      "label": "present → present fence",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "HW",
+      "to": "HWC",
+      "label": "getReleaseFences",
+      "kind": "callback"
+    },
+    {
+      "step": "s17",
+      "from": "CE",
+      "to": "HWC",
+      "label": "Display::presentFrame 取 fence",
+      "kind": "call"
+    },
+    {
+      "step": "s18",
+      "from": "SF",
+      "to": "SF",
+      "label": "onCompositionPresented",
+      "kind": "call"
+    },
+    {
+      "step": "s19",
+      "from": "SF",
+      "to": "RT",
+      "label": "writeReleaseFence",
+      "kind": "oneway"
+    },
+    {
+      "step": "s20",
+      "from": "SF",
+      "to": "SF",
+      "label": "endFrame",
+      "kind": "call"
+    },
+    {
+      "step": "s24",
+      "from": "HW",
+      "to": "HWC",
+      "label": "panel vsync 时 signal present fence",
+      "kind": "callback"
+    }
+  ],
+  "pitfalls": [
+    {
+      "case": "latch 是轮询不是等待",
+      "behavior": "fence 没 signal 就 return false 并 onLayerUpdate 重排，合成线程不会被 fence 卡住；代价是这一层本拍没出新内容",
+      "ref": "Layer.cpp:1520 / SurfaceFlinger.cpp:2953"
+    },
+    {
+      "case": "commit 返回 false 不代表出错",
+      "behavior": "没有新事务/新 latch 时 SF 主动跳过合成，只 scheduleFrame，这是正常的省电路径",
+      "ref": "Scheduler.cpp:470 / SurfaceFlinger.cpp:3201"
+    },
+    {
+      "case": "合成方式是 HWC 决定的",
+      "behavior": "DEVICE 由硬件叠加，CLIENT 才走 RenderEngine；排查花屏/闪烁/功耗先看 chooseCompositionStrategy 的结论",
+      "ref": "Output.cpp:1187 / HWComposer.cpp:537"
+    },
+    {
+      "case": "validate 可以被跳过",
+      "behavior": "无 client 合成且不会提前上屏时走 presentOrValidate，一步完成 present——trace 里没有 validate 切片是正常的",
+      "ref": "HWComposer.cpp:562 / 584"
+    },
+    {
+      "case": "present 之前可能先 sleep",
+      "behavior": "earliestPresentTime 存在时会 sleep_until，避免提前上屏；这段等待会体现在 SF 的 present 耗时里",
+      "ref": "HWComposer.cpp:676"
+    },
+    {
+      "case": "release fence 是两段",
+      "behavior": "DEVICE 层拿 HWC 的逐层 release fence；CLIENT 合成还要与 client target 的 acquire fence merge",
+      "ref": "Output.cpp:1778 / Display.cpp:447"
+    },
+    {
+      "case": "被遮挡的层也要还 buffer",
+      "behavior": "releasedLayers 本帧不画，但仍用 present fence 兑现 release promise，否则 app 再也拿不到这块 buffer",
+      "ref": "Output.cpp:566 / 1790"
+    },
+    {
+      "case": "postComposition 是兜底",
+      "behavior": "还有未兑现的 release fence promise 会被填 NO_FENCE，避免 app 永久阻塞",
+      "ref": "CompositionEngine.cpp:204"
+    },
+    {
+      "case": "present fence 不是「已上屏」",
+      "behavior": "它由 vendor HAL / 面板 vsync 驱动，信号时间才是真实上屏时刻；本仓库只能看到 fd 与时间戳",
+      "ref": "HWComposer.cpp:681"
+    },
+    {
+      "case": "bootloader 阶段不合成",
+      "behavior": "commit 的返回值会与 BootStage 比较，开机动画前的帧不走正常合成路径",
+      "ref": "SurfaceFlinger.cpp:3201"
+    }
+  ],
+  "facts": [
+    "<b>一拍的三个函数</b>：Scheduler 调 commit → composite → endFrame；前两个由 SurfaceFlinger 实现，第三个由 FrameTargeter 收尾。",
+    "<b>commit 决定「做不做」，composite 决定「怎么做」</b>：前者产出 mustComposite，后者把工作分发到 CompositionEngine 与 HWC。",
+    "<b>latch 的核心是 fence</b>：acquire fence 未 signal 就退出重排，SF 从不为了一个 buffer 阻塞合成线程。",
+    "<b>合成方式只有两种</b>：DEVICE 交给 HWC 硬件叠加，CLIENT 由 RenderEngine 画进 client target；决定权在 HWC 的 validate 结果。",
+    "<b>闭环靠 release fence</b>：present 之后逐层回填 fence 到 BufferReleaseChannel，app 的 dequeueBuffer 才解除阻塞。"
+  ],
+  "glossary": [
+    {
+      "term": "pacesetter",
+      "text": "多显示器时作为节拍基准的那块屏，其余 display 跟随它的 expectedPresentTime。"
+    },
+    {
+      "term": "expectedPresentTime",
+      "text": "本拍计划上屏的时刻，FrameTargeter 算出后一路传给 HWC 的 present。"
+    },
+    {
+      "term": "LayerSnapshot",
+      "text": "Layer 状态在 commit 时拍下的不可变副本，合成阶段只读它。"
+    },
+    {
+      "term": "latch",
+      "text": "把 buffer 从 drawing state 提进 mBufferInfo，前提是 acquire fence 已 signal。"
+    },
+    {
+      "term": "acquire fence",
+      "text": "GPU 写完 buffer 的信号；HWC/RenderEngine 读这块 buffer 前必须等它。"
+    },
+    {
+      "term": "release fence",
+      "text": "显示端用完 buffer 的信号；app 拿到它才能重新 dequeue。"
+    },
+    {
+      "term": "present fence",
+      "text": "这一帧真正上屏的信号，由 HAL/面板 vsync 触发信号。"
+    },
+    {
+      "term": "DEVICE composition",
+      "text": "HWC 用硬件叠加层直接合成，不耗 GPU。"
+    },
+    {
+      "term": "CLIENT composition",
+      "text": "HWC 无法直接叠加时，由 RenderEngine 用 GPU 画进 client target。"
+    },
+    {
+      "term": "client target",
+      "text": "GPU 合成用的目标 buffer，本质也是一个 BufferQueue 生产者。"
+    },
+    {
+      "term": "validate",
+      "text": "把本帧全部图层状态交给 HWC，由它返回哪些层必须改成 CLIENT。"
+    },
+    {
+      "term": "presentOrValidate",
+      "text": "composer3 的合并调用：条件允许时一步完成 validate 与 present。"
+    },
+    {
+      "term": "mustComposite",
+      "text": "本拍是否有事可做的总标志，由新 buffer latch、事务、属性变化共同决定。"
+    },
+    {
+      "term": "released layer",
+      "text": "本帧被上层完全遮挡、不参与合成，但仍需归还 buffer 的层。"
+    },
+    {
+      "term": "setSfPresent",
+      "text": "把 SF 的 present 时间与 fence 写进 FrameTimeline，供 jank 归因。"
+    },
+    {
+      "term": "FrameFences",
+      "text": "Display::presentFrame 的返回值：present fence、client target acquire fence、逐层 release fence。"
+    }
+  ],
+  "scenario": {
+    "title": "一次合成上屏（60Hz，示数量级）",
+    "events": [
+      {
+        "t": "0.0 ms",
+        "label": "帧信号",
+        "detail": "Scheduler::onFrameSignal 进 SF 主线程，beginFrame 定 expectedPresentTime"
+      },
+      {
+        "t": "0.1 ms",
+        "label": "commit 开始",
+        "detail": "四道早退闸门全过，进入 updateLayerSnapshots"
+      },
+      {
+        "t": "0.3 ms",
+        "label": "收下 buffer",
+        "detail": "flushTransactions → applyTransactions → latchBufferImpl（fence 已 signal）"
+      },
+      {
+        "t": "0.4 ms",
+        "label": "commit 返回 true",
+        "detail": "mustComposite 为真，Scheduler 继续调 composite"
+      },
+      {
+        "t": "0.5 ms",
+        "label": "组装参数",
+        "detail": "refreshArgs 填好 outputs / layers / layersWithQueuedFrames"
+      },
+      {
+        "t": "0.6 ms",
+        "label": "可见层计算",
+        "detail": "Output::prepare 从顶往下算 opaque/visible region"
+      },
+      {
+        "t": "0.8 ms",
+        "label": "问 HWC",
+        "detail": "getDeviceCompositionChanges：3 层可 DEVICE，1 层要 CLIENT"
+      },
+      {
+        "t": "1.5 ms",
+        "label": "GPU 合成",
+        "detail": "RenderEngine drawLayers 把 CLIENT 层画进 client target"
+      },
+      {
+        "t": "2.0 ms",
+        "label": "present",
+        "detail": "presentAndGetReleaseFences，HWC 开始扫出"
+      },
+      {
+        "t": "2.2 ms",
+        "label": "回填",
+        "detail": "onCompositionPresented：setSfPresent + 逐层 releasePendingBuffer"
+      },
+      {
+        "t": "≈8.3 ms",
+        "label": "上屏",
+        "detail": "面板 vsync 时 present fence signal，像素真正可见"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：一拍里 SF 做哪三件事",
+      "route": "全景·架构 → 流程图 → 时序图前 10 条"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：commit → composite → present",
+      "route": "精读第 1→17 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "补齐回流与降级路径",
+      "route": "精读第 18→24 步 + 降级与坑"
+    },
+    {
+      "time": "半天",
+      "goal": "能改代码 / 能抓现场",
+      "route": "代码逐行 10 个 P0 函数 + 方法清单 + 文件结构"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "SurfaceFlinger::commit",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 2996,
+      "size": 207,
+      "thread": "SF 主线程",
+      "lock": "mStateLock（局部）、MODE_TRANSITION_LOCK",
+      "purpose": "一拍的门：早退闸门、snapshot 提交、latch 汇总、mustComposite 决策。",
+      "risk": "早退条件写宽会漏合成（画面不更新），写窄会白跑一帧（功耗）。",
+      "status": "card"
+    },
+    {
+      "fn": "SurfaceFlinger::composite",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 3330,
+      "size": 265,
+      "thread": "SF 主线程",
+      "lock": "mStateLock（局部读取 mDisplays）",
+      "purpose": "组装 CompositionRefreshArgs 并驱动 CompositionEngine，最后回填 FrameTimeline 与 TimeStats。",
+      "risk": "layersWithQueuedFrames 与 layers 混用会导致某些层的 release fence 永远不被兑现。",
+      "status": "card"
+    },
+    {
+      "fn": "SurfaceFlinger::updateLayerSnapshots",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "line": 2771,
+      "size": 224,
+      "thread": "SF 主线程",
+      "lock": "mStateLock（提交快照期间）",
+      "purpose": "把事务应用到 LayerLifecycleManager，产出快照，并逐层 latch buffer。",
+      "risk": "latch 只轮询不等待，误以为这里会阻塞 fence 就会把「晚一帧」归因到错误的地方。",
+      "status": "card"
+    },
+    {
+      "fn": "Output::present",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "line": 450,
+      "size": 70,
+      "thread": "SF 主线程（可被 offload 到 HwcAsyncWorker）",
+      "lock": "无（读 refreshArgs 与 outputState）",
+      "purpose": "单个输出的合成主序列：八个步骤顺序固定，最后 presentFrameAndReleaseLayers。",
+      "risk": "步骤顺序被调整会破坏「先写 HWC 状态再 present」的前提，表现为 HAL 报 BAD_VALUE 或黑屏。",
+      "status": "card"
+    },
+    {
+      "fn": "HWComposer::getDeviceCompositionChanges",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "line": 537,
+      "size": 99,
+      "thread": "SF 主线程（或 HWC 异步 worker）",
+      "lock": "无 Android 侧锁；HAL 内部同步",
+      "purpose": "与 composer HAL 往返：决定 DEVICE/CLIENT，拿回 changedTypes / requests / client target 属性。",
+      "risk": "HAL 报错时静默退化为全 CLIENT，GPU 负载会突然升高而日志里只有一行 error。",
+      "status": "card"
+    },
+    {
+      "fn": "HWComposer::presentAndGetReleaseFences",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "line": 658,
+      "size": 34,
+      "thread": "SF 主线程（或 HWC 异步 worker）",
+      "lock": "无",
+      "purpose": "上屏出口：保存 present fence、取全部逐层 release fence。",
+      "risk": "earliestPresentTime 的 sleep_until 会直接拖长本帧；present 失败则整帧没有 fence。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s12",
+      "fn": "Display::chooseCompositionStrategy",
+      "ref": "Display.cpp:248-293 · HWComposer.cpp:562-597",
+      "rows": [
+        {
+          "cond": "无 client 合成 + 不会提前上屏",
+          "then": "presentOrValidate 一步完成",
+          "effect": "省掉一次 HAL 往返；state==1 时直接跳过后续 present"
+        },
+        {
+          "cond": "有 client 合成或可能提前上屏",
+          "then": "validate → getChangedCompositionTypes",
+          "effect": "多一次 HAL 往返，拿到精确的合成方式"
+        },
+        {
+          "cond": "HAL 返回错误",
+          "then": "chooseCompositionStrategy 返回 false",
+          "effect": "resetCompositionStrategy 后全 CLIENT，GPU 兜底"
+        },
+        {
+          "cond": "display 断开/无 HAL id",
+          "then": "直接 return false",
+          "effect": "本输出不参与合成"
+        }
+      ]
+    },
+    {
+      "step": "s22",
+      "fn": "Layer::latchBufferImpl",
+      "ref": "Layer.cpp:1506-1566 · SurfaceFlinger.cpp:2950-2958",
+      "rows": [
+        {
+          "cond": "head buffer 的 acquire fence 未 signal",
+          "then": "onLayerUpdate + return false",
+          "effect": "本拍这一层不出新内容，下一拍再来"
+        },
+        {
+          "cond": "fence 已 signal",
+          "then": "gatherBufferInfo 提进 mBufferInfo",
+          "effect": "本拍可以合成这块 buffer"
+        },
+        {
+          "cond": "该层本拍无 buffer",
+          "then": "只有旧 buffer 被释放才算需重算",
+          "effect": "recomputeVisibleRegions=oldBufferInfo.mBuffer!=nullptr"
+        },
+        {
+          "cond": "crop/transform/尺寸变化",
+          "then": "recomputeVisibleRegions=true",
+          "effect": "可见区域重算，合成范围可能扩大"
+        }
+      ]
+    },
+    {
+      "step": "s03",
+      "fn": "SurfaceFlinger::commit 早退",
+      "ref": "SurfaceFlinger.cpp:3014-3067",
+      "rows": [
+        {
+          "cond": "frameTargets 里有 display 已不在物理显示表",
+          "then": "processDisplayChangesLocked + scheduleFrame + return false",
+          "effect": "热插拔重连后推迟一拍"
+        },
+        {
+          "cond": "mode set pending 且 fence 未到",
+          "then": "scheduleFrame + return false",
+          "effect": "模式切换期间不合成"
+        },
+        {
+          "cond": "HWC 反压（wouldBackpressureHwc）",
+          "then": "onFrameMissed + scheduleCommit + return false",
+          "effect": "主动跳一拍，避免排队越积越深"
+        },
+        {
+          "cond": "都通过",
+          "then": "进入 updateLayerSnapshots",
+          "effect": "正常路径"
+        }
+      ]
+    },
+    {
+      "step": "s19",
+      "fn": "release fence 的三种来源",
+      "ref": "Output.cpp:1754-1794 · Layer.cpp:711-749",
+      "rows": [
+        {
+          "cond": "DEVICE 层（有 hwcLayer）",
+          "then": "用 frame.layerFences 里 HWC 给的 release fence",
+          "effect": "硬件用完即 release"
+        },
+        {
+          "cond": "本输出用 client 合成",
+          "then": "与 client target 的 acquire fence merge",
+          "effect": "要等 GPU 画完才算用完"
+        },
+        {
+          "cond": "本帧被遮挡（releasedLayers）",
+          "then": "用 present fence 兜底",
+          "effect": "保证 app 不会永久拿不到 buffer"
+        },
+        {
+          "cond": "到 postComposition 仍未兑现",
+          "then": "填 Fence::NO_FENCE",
+          "effect": "最后兜底，立即释放"
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "native/services/surfaceflinger/SurfaceFlinger.cpp",
+    "native/services/surfaceflinger/Layer.cpp",
+    "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+    "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+    "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+    "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+    "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+    "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp"
+  ],
+  "inventorySpans": [
+    "commit",
+    "composite",
+    "updateLayerSnapshots",
+    "onCompositionPresented",
+    "latchBuffers",
+    "setBuffer",
+    "latchBufferImpl",
+    "releasePendingBuffer",
+    "callReleaseBufferCallback",
+    "onCompositionPresented",
+    "prepareReleaseCallbacks",
+    "gatherBufferInfo",
+    "onFrameSignal",
+    "onCompositionPresented",
+    "endFrame",
+    "present",
+    "preComposition",
+    "postComposition",
+    "prepare",
+    "prepareFrame",
+    "finishFrame",
+    "dequeueRenderBuffer",
+    "composeSurfaces",
+    "presentFrame",
+    "presentFrameAndReleaseLayers",
+    "planComposition",
+    "writeCompositionState",
+    "collectVisibleLayers",
+    "rebuildLayerStacks",
+    "chooseCompositionStrategy",
+    "applyCompositionStrategy",
+    "executeCommands",
+    "writeStateToHWC",
+    "writeBufferStateToHWC",
+    "writeCompositionTypeToHWC",
+    "getDeviceCompositionChanges",
+    "presentAndGetReleaseFences",
+    "getPresentFence",
+    "getLayerReleaseFence",
+    "clearReleaseFences",
+    "setClientTarget",
+    "executeCommands"
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 8
+  },
+  "classes": [
+    {
+      "name": "Scheduler",
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "tier": 0,
+      "side": "UI",
+      "role": "SF 的帧调度：收到 sf 相位信号后驱动 commit/composite",
+      "members": [
+        "onFrameSignal",
+        "addPresentFence"
+      ],
+      "fields": [
+        "mDisplays",
+        "mVsyncModulator"
+      ]
+    },
+    {
+      "name": "SurfaceFlinger",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "tier": 1,
+      "side": "UI",
+      "role": "合成总控：commit 收事务、composite 组装参数、present 后回填",
+      "members": [
+        "commit",
+        "composite",
+        "updateLayerSnapshots",
+        "onCompositionPresented"
+      ],
+      "fields": [
+        "mStateLock",
+        "mLayersWithQueuedFrames",
+        "mDrawingState"
+      ]
+    },
+    {
+      "name": "Layer",
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "tier": 2,
+      "side": "UI",
+      "role": "单个图层：收 buffer、latch、释放",
+      "members": [
+        "setBuffer",
+        "latchBufferImpl",
+        "releasePendingBuffer",
+        "callReleaseBufferCallback"
+      ],
+      "fields": [
+        "mDrawingState",
+        "mBufferInfo"
+      ]
+    },
+    {
+      "name": "LayerSnapshotBuilder",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "tier": 2,
+      "side": "UI",
+      "role": "把层状态拍成不可变快照，供合成阶段只读",
+      "members": [
+        "update",
+        "getSnapshot",
+        "forEachSnapshot"
+      ],
+      "fields": [
+        "mSnapshots"
+      ]
+    },
+    {
+      "name": "CompositionEngine",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "合成引擎门面：pre → 各 output 的 prepare/present → post",
+      "members": [
+        "present",
+        "preComposition",
+        "postComposition"
+      ],
+      "fields": [
+        "mDisplays"
+      ]
+    },
+    {
+      "name": "Output",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "单个输出的合成主序列与可见层计算",
+      "members": [
+        "prepare",
+        "present",
+        "prepareFrame",
+        "finishFrame",
+        "presentFrameAndReleaseLayers"
+      ],
+      "fields": [
+        "mRenderSurface",
+        "mPlanner"
+      ]
+    },
+    {
+      "name": "OutputLayer",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "输出侧的层：把状态与 buffer 写进 HWC",
+      "members": [
+        "writeStateToHWC",
+        "writeBufferStateToHWC",
+        "writeCompositionTypeToHWC"
+      ],
+      "fields": [
+        "hwcBufferCache",
+        "activeBufferSlot"
+      ]
+    },
+    {
+      "name": "Display",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "物理显示：问 HWC 要合成方式、执行 present 并取 fence",
+      "members": [
+        "chooseCompositionStrategy",
+        "applyCompositionStrategy",
+        "presentFrame"
+      ],
+      "fields": [
+        "mIsDisconnected"
+      ]
+    },
+    {
+      "name": "HWComposer",
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "composer HAL 的封装：validate/present/release fence",
+      "members": [
+        "getDeviceCompositionChanges",
+        "presentAndGetReleaseFences",
+        "getPresentFence",
+        "getLayerReleaseFence"
+      ],
+      "fields": [
+        "mDisplayData",
+        "mComposer"
+      ]
+    },
+    {
+      "name": "RenderEngine",
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "GPU 合成：把可见层画进 client target",
+      "members": [
+        "drawLayers",
+        "cleanupPostRender"
+      ],
+      "fields": []
+    }
+  ],
+  "relations": [
+    {
+      "from": "Scheduler",
+      "to": "SurfaceFlinger",
+      "label": "ICompositor::commit/composite",
+      "kind": "uses"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "Layer",
+      "label": "latchBufferImpl",
+      "kind": "uses"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "LayerSnapshotBuilder",
+      "label": "update",
+      "kind": "owns"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "CompositionEngine",
+      "label": "present(refreshArgs)",
+      "kind": "uses"
+    },
+    {
+      "from": "CompositionEngine",
+      "to": "Output",
+      "label": "prepare/present",
+      "kind": "owns"
+    },
+    {
+      "from": "Output",
+      "to": "OutputLayer",
+      "label": "writeStateToHWC",
+      "kind": "uses"
+    },
+    {
+      "from": "Output",
+      "to": "RenderEngine",
+      "label": "drawLayers",
+      "kind": "uses"
+    },
+    {
+      "from": "Output",
+      "to": "Display",
+      "label": "presentFrame 覆写",
+      "kind": "uses"
+    },
+    {
+      "from": "Display",
+      "to": "HWComposer",
+      "label": "presentAndGetReleaseFences",
+      "kind": "uses"
+    },
+    {
+      "from": "OutputLayer",
+      "to": "HWComposer",
+      "label": "setBuffer",
+      "kind": "uses"
+    },
+    {
+      "from": "Layer",
+      "to": "HWComposer",
+      "label": "getPresentFence / getLayerReleaseFence",
+      "kind": "uses"
+    }
+  ]
+}

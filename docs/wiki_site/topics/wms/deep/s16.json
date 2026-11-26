@@ -1,0 +1,51 @@
+{
+  "step": "s16",
+  "title": "提交给 SurfaceFlinger",
+  "tldr": "transaction 经 setTransactionState 交给 SF，由 SF 在某个 vsync 拍子上 applyTransactionState 应用。",
+  "why": "这是「WMS 布局完成」与「画面更新」之间的最后一跳，也是「改了布局但还没看到」的标准解释：中间至少隔一个 vsync。排查视觉问题时要区分三个阶段：WMS 算对了吗（dumpsys frame）、transaction 提交了吗（trace）、SF 应用了吗（SF 侧的 Transaction 时间线）。",
+  "concepts": [
+    {
+      "term": "setTransactionState",
+      "text": "SF 的服务端入口。"
+    },
+    {
+      "term": "applyTransactionState",
+      "text": "真正写 drawing state 的地方。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5579",
+      "what": "入队与净化。"
+    },
+    {
+      "call": "bool SurfaceFlinger::applyTransactionState(",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5757",
+      "what": "应用。"
+    },
+    {
+      "call": "update.transactions = mTransactionHandler.flushTransactions();",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2807",
+      "what": "在 commit 里取出可应用事务。"
+    }
+  ],
+  "state": [
+    {
+      "field": "SF 的 drawing state",
+      "before": "上一帧",
+      "after": "本帧",
+      "note": "之后才参与合成。"
+    }
+  ],
+  "threads": "binder 线程入队 → SF 主线程应用。",
+  "pitfalls": [
+    "以为 WMS 改完就上屏：中间隔 vsync。",
+    "忽略多显示器各自的 SF 时序。"
+  ],
+  "debug": [
+    "Perfetto 的 SF 轨道与 Transaction 时间线。",
+    "`dumpsys SurfaceFlinger --latency` 看实际上屏。"
+  ],
+  "next": "Insets 如何参与？见第 17 步。"
+}

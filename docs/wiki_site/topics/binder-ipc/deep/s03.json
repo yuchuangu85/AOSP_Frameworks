@@ -1,0 +1,51 @@
+{
+  "step": "s03",
+  "title": "JNI 桥：Java transact → BpBinder",
+  "tldr": "JNI 把 Java Parcel 取成 native Parcel（本质是取指针），再调 IBinder::transact，最后把 status 翻译成 Java 异常。",
+  "why": "这个函数是 Java 语义与 native 语义的翻译层，值得逐行看：空指针抛 NPE、对象已 finalize 抛 IllegalStateException、UNKNOWN_TRANSACTION 只返回 false 不抛异常、其它 status 一律翻译成对应异常。也就是说「哪种 binder 错误变成哪种 Java 异常」完全由这里决定——看不懂 Java 侧异常时应该回来读它。",
+  "concepts": [
+    {
+      "term": "parcelForJavaObject",
+      "text": "从 Java Parcel 取 native 指针。"
+    },
+    {
+      "term": "signalExceptionForError",
+      "text": "把 status 翻译成 Java 异常。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "static jboolean android_os_BinderProxy_transact(JNIEnv* env, jobject obj,",
+      "ref": "base/core/jni/android_util_Binder.cpp:1644",
+      "what": "JNI 入口。"
+    },
+    {
+      "call": "status_t err = target->transact(code, *data, reply, flags);",
+      "ref": "base/core/jni/android_util_Binder.cpp:1671",
+      "what": "真正的 native 调用。"
+    },
+    {
+      "call": "signalExceptionForError(env, obj, err, true /*canThrowRemoteException*/, data->dataSize());",
+      "ref": "base/core/jni/android_util_Binder.cpp:1685",
+      "what": "status → Java 异常。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Java Parcel 的 native 指针",
+      "before": "同一个",
+      "after": "同一个",
+      "note": "JNI 不拷贝数据，只取指针。"
+    }
+  ],
+  "threads": "Java 调用线程。",
+  "pitfalls": [
+    "以为 JNI 会拷贝 Parcel：只取指针。",
+    "把 UNKNOWN_TRANSACTION 当异常：它只返回 false。"
+  ],
+  "debug": [
+    "这里打 ALOGV 可看到每次跨层调用。",
+    "异常类型可反查这里的映射。"
+  ],
+  "next": "native 代理怎么找线程状态？见第 4 步。"
+}

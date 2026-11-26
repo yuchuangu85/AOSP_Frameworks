@@ -1,0 +1,30 @@
+{
+  "step": "s10",
+  "title": "Output::prepare 与可见层计算",
+  "tldr": "从最上层往下逐层算 opaque/visible/covered 区域，被遮挡的层不画但仍要还 buffer。",
+  "why": "可见性计算决定了「这一帧到底要画几层」，是整个合成优化的基石：一个不透明的全屏窗口可以把它下面的所有层判为不可见，从而省掉它们的合成成本。同时它必须正确登记 releasedLayers：这些层本帧不参与合成，但仍持有 buffer，如果不把它们纳入 release 流程，app 的 BufferQueue 槽位就会被永久占住。所以这一步既是性能优化点，也是正确性关键点。",
+  "concepts": [
+    { "term": "opaqueRegion / visibleRegion / coveredRegion", "text": "三个区域共同决定一个层是否可见、可见多少。" },
+    { "term": "releasedLayers", "text": "本帧被完全遮挡的层，不参与合成但要归还 buffer。" },
+    { "term": "includesLayer", "text": "判断层是否属于本输出的 layerStack。" }
+  ],
+  "walk": [
+    { "call": "void Output::prepare(const compositionengine::CompositionRefreshArgs& refreshArgs,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:441", "what": "入口只有两步。" },
+    { "call": "rebuildLayerStacks(refreshArgs, geomSnapshots);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:446", "what": "重算可见层集合。" },
+    { "call": "for (auto layer : reversed(refreshArgs.layers)) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:558", "what": "从顶层往下逐层处理。" },
+    { "call": "setReleasedLayers(refreshArgs);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:566", "what": "登记本帧被顶掉的层。" }
+  ],
+  "state": [
+    { "field": "outputState.dirtyRegion", "before": "上一帧的脏区", "after": "按快照 contentDirty 累加", "note": "影响本输出的重绘范围。" }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为被遮挡的层什么都不用做：它仍要 release buffer。",
+    "可见性计算漏掉透明区域：会把不该画的层算成可见，浪费 GPU。"
+  ],
+  "debug": [
+    "trace 里 Output::prepare 子切片。",
+    "dumpsys SurfaceFlinger 能看到每层的 visible region 与 released 状态。"
+  ],
+  "next": "Output::present 的八步顺序为什么不能改？见第 11 步。"
+}

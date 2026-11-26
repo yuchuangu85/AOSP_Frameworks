@@ -1,0 +1,60 @@
+{
+  "step": "s09",
+  "title": "入无锁队列并置事务标志",
+  "tldr": "组装 QueuedTransactionState 后 queueTransaction 入无锁队列，再 setTransactionFlags 触发 SF 排帧。",
+  "why": "「无锁队列」是这里的关键设计：setTransactionState 跑在 binder 线程，如果它要和主线程抢同一把锁，多进程高频提交时会出现明显争用。用无锁队列后，binder 线程只是 push，主线程在自己的节奏里 pop。但这也意味着「入队成功」不等于「事务会被立刻处理」——真正生效要等 SF 下一次 commit，而何时 commit 由 setTransactionFlags 与 vsync 共同决定。",
+  "concepts": [
+    {
+      "term": "QueuedTransactionState",
+      "text": "服务端队列元素：带 applyToken、postTime、resolved states、barriers。"
+    },
+    {
+      "term": "eTransactionFlushNeeded",
+      "text": "事务标志，表示有待 flush 的队列内容。"
+    },
+    {
+      "term": "TransactionSchedule",
+      "text": "EarlyStart / EarlyEnd / Late 三种调度时机。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "QueuedTransactionState state{transactionState.mFrameTimelineInfo,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5684",
+      "what": "组装队列元素。"
+    },
+    {
+      "call": "mTransactionHandler.queueTransaction(std::move(state));",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5720",
+      "what": "**入无锁队列**。"
+    },
+    {
+      "call": "setTransactionFlags(eTransactionFlushNeeded, schedule, frameHint,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5729",
+      "what": "置标志并请求排帧。"
+    },
+    {
+      "call": "if (timeToWake > 30ms) {",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5739",
+      "what": "帧率变更时可能立刻唤醒 SF。"
+    }
+  ],
+  "state": [
+    {
+      "field": "无锁队列",
+      "before": "空",
+      "after": "追加一笔",
+      "note": "主线程下一次 collect 时取出。"
+    }
+  ],
+  "threads": "binder 线程返回；主线程异步消费。",
+  "pitfalls": [
+    "以为返回 NO_ERROR 就代表已应用：只代表已入队。",
+    "在多进程高频提交时疑惑延迟：入队与 flush 之间隔着一次 vsync。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 pending transaction 数。",
+    "atrace 里 setTransactionState 与 TransactionHandler 段之间的间隔。"
+  ],
+  "next": "主线程如何按 token 取出？见第 10 步。"
+}

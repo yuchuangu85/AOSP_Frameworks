@@ -1,0 +1,156 @@
+{
+  "id": "td-schedulelocked",
+  "title": "VSyncDispatchTimerQueue::scheduleLocked",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+  "sig": "std::optional<ScheduleResult> VSyncDispatchTimerQueue::scheduleLocked(",
+  "span": [
+    414,
+    437
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::optional<ScheduleResult> VSyncDispatchTimerQueue::scheduleLocked(",
+      "kind": "note",
+      "text": "武装单条注册的核心：决定「用新的调度参数还是延后合并」。"
+    },
+    {
+      "at": 2,
+      "quote": "CallbackToken token, ScheduleTiming scheduleTiming) {",
+      "kind": "note",
+      "text": "token 是注册标识，scheduleTiming 含 work/ready/lastVsync/committedVsync。"
+    },
+    {
+      "at": 3,
+      "quote": "auto it = mCallbacks.find(token);",
+      "kind": "data",
+      "text": "找注册。"
+    },
+    {
+      "at": 4,
+      "quote": "if (it == mCallbacks.end()) {",
+      "kind": "branch",
+      "text": "注册已失效。"
+    },
+    {
+      "at": 5,
+      "quote": "return {};",
+      "kind": "note",
+      "text": "返回空 → 上层会 FATAL，这是「静默不刷新」的防线。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 7,
+      "quote": "auto& callback = it->second;",
+      "kind": "data",
+      "text": "取出该注册。"
+    },
+    {
+      "at": 8,
+      "quote": "auto const now = mTimeKeeper->now();",
+      "kind": "data",
+      "text": "当前时间。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "/* If the timer thread will run soon, we'll apply this work update via the callback",
+      "kind": "note",
+      "text": "**核心注释**：如果 timer 线程马上就要跑，就不要取消它，改为把这次更新合并进那次回调。"
+    },
+    {
+      "at": 11,
+      "quote": "* timer recalculation to avoid cancelling a callback that is about to fire. */",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 12,
+      "quote": "auto const rearmImminent = now > mIntendedWakeupTime;",
+      "kind": "data",
+      "text": "判断是否「即将武装」。"
+    },
+    {
+      "at": 13,
+      "quote": "if (CC_UNLIKELY(rearmImminent)) {",
+      "kind": "branch",
+      "text": "马上就要跑。"
+    },
+    {
+      "at": 14,
+      "quote": "return callback->addPendingWorkloadUpdate(*mTracker, now, scheduleTiming);",
+      "kind": "call",
+      "text": "**登记 pending workload**，由回调侧合并计算——避免取消一个正要触发的定时器。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "const auto result = callback->schedule(scheduleTiming, *mTracker, now);",
+      "kind": "call",
+      "text": "正常路径：让 entry 自己算目标 vsync 与唤醒点。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 19,
+      "quote": "if (callback->wakeupTime() < mIntendedWakeupTime - mTimerSlack) {",
+      "kind": "decision",
+      "text": "新唤醒点比当前武装目标早了超过 mTimerSlack。"
+    },
+    {
+      "at": 20,
+      "quote": "rearmTimerSkippingUpdateFor(now, it);",
+      "kind": "call",
+      "text": "**重新武装 timerfd**（跳过更新）。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "return result;",
+      "kind": "note",
+      "text": "返回调度结果。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

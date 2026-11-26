@@ -1,0 +1,114 @@
+{
+  "id": "sf-applyall",
+  "title": "SurfaceFlinger::applyTransactionsLocked",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "bool SurfaceFlinger::applyTransactionsLocked(",
+  "span": [
+    5501,
+    5517
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool SurfaceFlinger::applyTransactionsLocked(std::vector<QueuedTransactionState>& transactions)",
+      "kind": "note",
+      "text": "批量应用入口。注意调用方**已经持有 mStateLock**（函数名带 Locked），所以这里不再加锁。"
+    },
+    {
+      "at": 2,
+      "quote": "REQUIRES(mStateLock) {",
+      "kind": "note",
+      "text": "续行：事务列表通过引用传入，会被 move 掉内部数据。"
+    },
+    {
+      "at": 3,
+      "quote": "bool needsTraversal = false;",
+      "kind": "data",
+      "text": "是否需要这一帧做 traversal。"
+    },
+    {
+      "at": 4,
+      "quote": "// Now apply all transactions.",
+      "kind": "note",
+      "text": "注释：现在应用所有事务。"
+    },
+    {
+      "at": 5,
+      "quote": "for (auto& transaction : transactions) {",
+      "kind": "note",
+      "text": "逐笔应用。"
+    },
+    {
+      "at": 6,
+      "quote": "needsTraversal |=",
+      "kind": "call",
+      "text": "累加：任一事务要求 traversal 就要 traversal。"
+    },
+    {
+      "at": 7,
+      "quote": "applyTransactionState(transaction.frameTimelineInfo, transaction.states,",
+      "kind": "call",
+      "text": "**核心**：单笔事务的应用。"
+    },
+    {
+      "at": 8,
+      "quote": "transaction.displays, transaction.flags,",
+      "kind": "note",
+      "text": "续行：frameTimelineInfo 与 states。"
+    },
+    {
+      "at": 9,
+      "quote": "transaction.inputWindowCommands,",
+      "kind": "note",
+      "text": "续行：displays 与 flags。"
+    },
+    {
+      "at": 10,
+      "quote": "transaction.desiredPresentTime, transaction.isAutoTimestamp,",
+      "kind": "note",
+      "text": "续行：input window commands。"
+    },
+    {
+      "at": 11,
+      "quote": "std::move(transaction.uncacheBufferIds), transaction.postTime,",
+      "kind": "note",
+      "text": "续行：present 时间与 buffer 回收。"
+    },
+    {
+      "at": 12,
+      "quote": "transaction.hasListenerCallbacks,",
+      "kind": "note",
+      "text": "续行：回调与来源身份。"
+    },
+    {
+      "at": 13,
+      "quote": "transaction.listenerCallbacks, transaction.originPid,",
+      "kind": "note",
+      "text": "续行：事务 id。"
+    },
+    {
+      "at": 14,
+      "quote": "transaction.originUid, transaction.id);",
+      "kind": "note",
+      "text": "闭合调用。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 16,
+      "quote": "return needsTraversal;",
+      "kind": "note",
+      "text": "返回是否需要 traversal。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

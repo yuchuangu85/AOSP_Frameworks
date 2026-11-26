@@ -1,0 +1,56 @@
+{
+  "step": "s22",
+  "title": "驱动边界：哪些不在本仓库",
+  "tldr": "binder 驱动、SELinux 策略、servicemanager 进程实现都不在本仓库，只能按接口假设描述。",
+  "why": "把边界写清楚的理由和 vsync 一样：避免用本仓库代码推断仓库外的行为。具体来说，「一次事务最大多少字节」「驱动如何做线程优先级继承」「SELinux 如何判定这次调用」都无法从这些文件读出来。能读到的是接口契约：ioctl 的参数结构、命令字、以及失败码——这些足够定位「是调用方、驱动还是对端」的问题。",
+  "concepts": [
+    {
+      "term": "ioctl 接口",
+      "text": "用户态与驱动唯一的契约。"
+    },
+    {
+      "term": "SELinux",
+      "text": "在驱动内判定，代码不在本仓库。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1304",
+      "what": "唯一入口。"
+    },
+    {
+      "call": "ALOGE_IF(mProcess->mDriverFD >= 0,",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1358",
+      "what": "错误时的提示明确指出可能是驱动问题。"
+    },
+    {
+      "call": "void IPCThreadState::joinThreadPool(bool isMain)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:841",
+      "what": "接收侧线程池同样只依赖这个 ioctl 接口。"
+    },
+    {
+      "call": "status_t IPCThreadState::executeCommand(int32_t cmd)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1408",
+      "what": "BR_* 命令字就是本仓库能看到的全部驱动语义。"
+    }
+  ],
+  "state": [
+    {
+      "field": "进程的驱动 fd",
+      "before": "已打开",
+      "after": "断开后置 -EBADF",
+      "note": "断开即所有调用失败。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "在本仓库找驱动实现。",
+    "把 SELinux 拒绝当 binder bug。"
+  ],
+  "debug": [
+    "dmesg 里有 binder 驱动日志（仓库外）。",
+    "avc denied 提示 SELinux 拦截。"
+  ],
+  "next": "怎么排查现场？见第 23 步。"
+}

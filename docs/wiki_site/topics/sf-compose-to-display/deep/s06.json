@@ -1,0 +1,32 @@
+{
+  "step": "s06",
+  "title": "latchBufferImpl：轮询 fence，不等不超时",
+  "tldr": "acquire fence 没 signal 就 return false 并让下一拍再来；合成线程绝不阻塞在 fence 上。",
+  "why": "这是 SF 与 app 之间最重要的解耦点。如果 SF 在这里等 fence，GPU 稍慢就会把整个合成线程挂住，进而拖垮所有窗口；SF 选择轮询，代价是这一层本拍可能不出新内容，但整条流水线保持推进。理解这个设计，才能正确解读两件事：一是「SF 明明收到 buffer 了，画面却晚一拍」；二是 FrameTimeline 里 latch time 与 acquire fence signal time 的关系。此外 latch 还顺手算出了可见区域是否需要重算（crop、transform、尺寸变化都会触发）。",
+  "concepts": [
+    { "term": "fenceHasSignaled", "text": "检查 drawing state 的 acquire fence 是否已完成。" },
+    { "term": "gatherBufferInfo", "text": "把 drawing state 的 buffer 提进 mBufferInfo，成为「已 latch」状态。" },
+    { "term": "onLayerUpdate", "text": "请求下一拍继续处理该层。" }
+  ],
+  "walk": [
+    { "call": "bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,", "ref": "native/services/surfaceflinger/Layer.cpp:1506", "what": "入口；调用方持 mStateLock。" },
+    { "call": "if (mDrawingState.buffer && !fenceHasSignaled()) {", "ref": "native/services/surfaceflinger/Layer.cpp:1520", "what": "fence 未完成：直接退出，不等待。" },
+    { "call": "mFlinger->onLayerUpdate();", "ref": "native/services/surfaceflinger/Layer.cpp:1522", "what": "让下一拍重新处理。" },
+    { "call": "latchBufferStatsAndHandles(latchTime, expectedPresentTime, bgColorOnly);", "ref": "native/services/surfaceflinger/Layer.cpp:1525", "what": "记录 latch 统计并处理回调句柄。" },
+    { "call": "gatherBufferInfo();", "ref": "native/services/surfaceflinger/Layer.cpp:1531", "what": "把 buffer 提进 mBufferInfo。" }
+  ],
+  "state": [
+    { "field": "mBufferInfo.mBuffer", "before": "上一拍的 buffer", "after": "本拍 buffer（latch 成功时）", "note": "合成阶段读的就是它。" },
+    { "field": "recomputeVisibleRegions", "before": "false", "after": "true（crop/transform/尺寸变化）", "note": "影响 Output 的几何计算。" }
+  ],
+  "threads": "SF 主线程，持 mStateLock。",
+  "pitfalls": [
+    "以为 latch 会等 fence：它只轮询，不阻塞、不超时。",
+    "把 recomputeVisibleRegions 当无关紧要：它影响可见区域与脏区计算。"
+  ],
+  "debug": [
+    "trace 里 latchBuffer 的瞬时事件带 frameNumber；若某帧反复出现说明 fence 慢。",
+    "dumpsys SurfaceFlinger --latency 能对比 queue 与 present 时间差。"
+  ],
+  "next": "latch 之后，commit 如何决定「这一拍要不要合成」？见第 7 步。"
+}

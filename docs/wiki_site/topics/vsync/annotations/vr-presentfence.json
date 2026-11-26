@@ -1,0 +1,240 @@
+{
+  "id": "vr-presentfence",
+  "title": "VSyncReactor::addPresentFence",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+  "sig": "void VSyncReactor::addPresentFence",
+  "span": [
+    71,
+    108
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool VSyncReactor::addPresentFence(std::shared_ptr<FenceTime> fence) {",
+      "kind": "note",
+      "text": "present fence 是第二条校准通道：它给出「这一帧真正上屏」的时刻，与硬件 vsync 一起喂同一个模型。"
+    },
+    {
+      "at": 2,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 4,
+      "quote": "if (!fence) {",
+      "kind": "branch",
+      "text": "空 fence 直接忽略。"
+    },
+    {
+      "at": 5,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "返回 false 表示不需要更多样本。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "nsecs_t const signalTime = fence->getCachedSignalTime();",
+      "kind": "data",
+      "text": "取缓存里的信号时间（不阻塞）。"
+    },
+    {
+      "at": 9,
+      "quote": "if (signalTime == Fence::SIGNAL_TIME_INVALID) {",
+      "kind": "branch",
+      "text": "时间非法。"
+    },
+    {
+      "at": 10,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "忽略：无效 fence 不参与校准。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "std::lock_guard lock(mMutex);",
+      "kind": "lock",
+      "text": "进入临界区，保护 tracker 与挂起队列。"
+    },
+    {
+      "at": 14,
+      "quote": "if (mExternalIgnoreFences || mInternalIgnoreFences) {",
+      "kind": "branch",
+      "text": "**正在忽略 fence**（外部或内部要求）。"
+    },
+    {
+      "at": 15,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"mExternalIgnoreFences=%d mInternalIgnoreFences=%d\",",
+      "kind": "note",
+      "text": "打 trace 记录两侧状态，便于排查「为什么模型不更新」。"
+    },
+    {
+      "at": 16,
+      "quote": "mExternalIgnoreFences, mInternalIgnoreFences);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "return true;",
+      "kind": "note",
+      "text": "直接返回，不喂样本。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 19,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 20,
+      "quote": "bool timestampAccepted = updateTrackerWithSignaledFences();",
+      "kind": "call",
+      "text": "先处理此前挂起的 fence：有已 signal 的补进模型。"
+    },
+    {
+      "at": 21,
+      "quote": "if (signalTime == Fence::SIGNAL_TIME_PENDING) {",
+      "kind": "branch",
+      "text": "本次 fence 还没 signal。"
+    },
+    {
+      "at": 22,
+      "quote": "if (mPendingLimit == mUnfiredFences.size()) {",
+      "kind": "branch",
+      "text": "挂起队列已满（最多 20 个）。"
+    },
+    {
+      "at": 23,
+      "quote": "mUnfiredFences.erase(mUnfiredFences.begin());",
+      "kind": "call",
+      "text": "**丢最旧的**：这是「内存与新鲜度」的取舍。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭容量判断。"
+    },
+    {
+      "at": 25,
+      "quote": "mUnfiredFences.push_back(std::move(fence));",
+      "kind": "call",
+      "text": "挂起，等下次调用时再尝试。"
+    },
+    {
+      "at": 26,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则已经 signal。"
+    },
+    {
+      "at": 27,
+      "quote": "timestampAccepted &=",
+      "kind": "call",
+      "text": "直接喂给 tracker，时间源标记为 PresentFence。"
+    },
+    {
+      "at": 28,
+      "quote": "addVsyncTimestampLocked(signalTime, VSyncTracker::VsyncTimeSource::PresentFence);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "if (!timestampAccepted) {",
+      "kind": "branch",
+      "text": "**样本被拒**。"
+    },
+    {
+      "at": 32,
+      "quote": "mMoreSamplesNeeded = true;",
+      "kind": "state",
+      "text": "需要更多样本。"
+    },
+    {
+      "at": 33,
+      "quote": "setIgnorePresentFencesInternal(true);",
+      "kind": "call",
+      "text": "内部开始忽略 fence，避免污染模型。"
+    },
+    {
+      "at": 34,
+      "quote": "mPeriodConfirmationInProgress = true;",
+      "kind": "state",
+      "text": "进入周期确认态。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "return mMoreSamplesNeeded;",
+      "kind": "note",
+      "text": "返回是否还需要更多样本。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

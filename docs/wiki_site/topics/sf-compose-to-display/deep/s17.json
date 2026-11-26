@@ -1,0 +1,65 @@
+{
+  "step": "s17",
+  "title": "Display::presentFrame：present + 逐层 fence",
+  "tldr": "Display 覆写 presentFrame：present 后取 present fence 与逐层 release fence 并返回。",
+  "why": "基类 Output::presentFrame 只返回 client target 的 acquire fence（因为纯软件输出没有 HWC）；真正的物理显示由 Display 覆写，在这里补上 HWC 的 present 与逐层 release。这个分层解释了为什么「合成引擎能同时支持物理屏与虚拟屏」：两者的差异被收敛到这一个虚函数里。同时它也决定了 FrameFences 的完整性——漏了某层 fence，那一层的 buffer 就永远不会被归还。",
+  "concepts": [
+    {
+      "term": "FrameFences",
+      "text": "一次 present 的 fence 集合：present fence、client target fence、逐层 release fence。"
+    },
+    {
+      "term": "getOutputLayersOrderedByZ",
+      "text": "按 z 序取输出层的列表，用于逐层收集 release fence。"
+    },
+    {
+      "term": "clearReleaseFences",
+      "text": "取完后清掉 HWC 里的映射，避免下一拍读到旧 fence。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "compositionengine::Output::FrameFences Display::presentFrame() {",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:416",
+      "what": "覆写入口。"
+    },
+    {
+      "call": "hwc.presentAndGetReleaseFences(*halDisplayIdOpt, getState().earliestPresentTime);",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:432",
+      "what": "调用上屏。"
+    },
+    {
+      "call": "fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:438",
+      "what": "取 present fence。"
+    },
+    {
+      "call": "fences.layerFences.emplace(hwcLayer, hwc.getLayerReleaseFence(*halDisplayIdOpt, hwcLayer));",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:447",
+      "what": "逐层取 release fence。"
+    },
+    {
+      "call": "hwc.clearReleaseFences(*halDisplayIdOpt);",
+      "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:450",
+      "what": "清理，避免跨拍污染。"
+    }
+  ],
+  "state": [
+    {
+      "field": "fences.clientTargetAcquireFence",
+      "before": "由基类填入",
+      "after": "保持（client 合成时非空）",
+      "note": "与逐层 fence 一起决定 release 时机。"
+    }
+  ],
+  "threads": "SF 主线程或 HwcAsyncWorker。",
+  "pitfalls": [
+    "以为基类实现就够了：基类不会 present，物理显示必须由 Display 覆写。",
+    "忘记 clearReleaseFences：下一拍可能读到上一拍的 fence。"
+  ],
+  "debug": [
+    "trace 里 Display::presentFrame 与 HWComposer::presentAndGetReleaseFences 是嵌套的。",
+    "dumpsys SurfaceFlinger 能看到每层最近的 release fence。"
+  ],
+  "next": "present 之后 SF 还要做哪些回填？见第 18 步。"
+}

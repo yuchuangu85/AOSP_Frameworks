@@ -1,0 +1,60 @@
+{
+  "id": "out-prepare",
+  "title": "Output::prepare",
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "sig": "void Output::prepare(",
+  "span": [
+    441,
+    448
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void Output::prepare(const compositionengine::CompositionRefreshArgs& refreshArgs,",
+      "kind": "note",
+      "text": "单个输出的第一步。只有 8 行，但它决定了这一帧到底有哪些层参与合成——后面所有工作都以此为输入。"
+    },
+    {
+      "at": 2,
+      "quote": "LayerFESet& geomSnapshots) {",
+      "kind": "note",
+      "text": "geomSnapshots 由调用方（CompositionEngine::present）在多个 output 之间共享，保证同一层在多屏上只取一次几何快照。"
+    },
+    {
+      "at": 3,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片就是 Output::prepare，可与后面的 present 切片对比看两侧耗时。"
+    },
+    {
+      "at": 4,
+      "quote": "ALOGV(__FUNCTION__);",
+      "kind": "note",
+      "text": "VERBOSE 日志，默认不输出；只在 HAL 级别排查时打开。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行，逻辑分隔。"
+    },
+    {
+      "at": 6,
+      "quote": "rebuildLayerStacks(refreshArgs, geomSnapshots);",
+      "kind": "call",
+      "text": "核心：逐层求 opaque/visible/covered region，决定谁能被看到，并把被顶掉的层登记为 released layer。"
+    },
+    {
+      "at": 7,
+      "quote": "uncacheBuffers(refreshArgs.bufferIdsToUncache);",
+      "kind": "call",
+      "text": "把上一帧通知要回收的 buffer 从 HWC 的 buffer 缓存里摘掉；不清会让 buffer slot 一直被占着。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意这里既没有 dequeue，也没有任何 GPU 动作——真正画在 finishFrame。"
+    }
+  ]
+}

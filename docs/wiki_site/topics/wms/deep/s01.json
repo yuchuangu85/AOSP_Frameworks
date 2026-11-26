@@ -1,0 +1,51 @@
+{
+  "step": "s01",
+  "title": "客户端持有 IWindowSession",
+  "tldr": "ViewRootImpl 通过 WindowManagerGlobal 拿到 IWindowSession，addWindow/relayout/remove 全走这个会话。",
+  "why": "会话是 WMS 与客户端之间唯一的长期契约，理解它才能理解后续所有权限判断。WMS 侧不是靠「这次 binder 调用的 uid」判断身份，而是靠 Session 对象——因为同一个进程可能通过不同会话操作窗口。这也解释了为什么 WMS 里到处出现 `session.mUid` 而不是 `Binder.getCallingUid()`。",
+  "concepts": [
+    {
+      "term": "IWindowSession",
+      "text": "会话接口，进程内单例，绑定到 WMS 侧 Session 对象。"
+    },
+    {
+      "term": "IWindow",
+      "text": "反方向回调接口，WMS 用它通知客户端（如尺寸变化）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+      "ref": "base/services/core/java/com/android/server/wm/Session.java:272",
+      "what": "会话的加窗口入口。"
+    },
+    {
+      "call": "return mService.addWindow(this, window, attrs, viewVisibility, displayId, userId,",
+      "ref": "base/services/core/java/com/android/server/wm/Session.java:275",
+      "what": "把自身作为会话转发给 WMS。"
+    },
+    {
+      "call": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1672",
+      "what": "WMS 侧入口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Session.mUid / mPid",
+      "before": "绑定到创建者",
+      "after": "不变",
+      "note": "后续所有权限判断的基准。"
+    }
+  ],
+  "threads": "客户端调用线程（binder 进入 system_server）。",
+  "pitfalls": [
+    "以为权限看当次 binder 调用者：看 Session。",
+    "忽略会话是进程级单例。"
+  ],
+  "debug": [
+    "dumpsys window 里能看到会话与其窗口数量。",
+    "「client is dead」日志说明会话已失效。"
+  ],
+  "next": "会话如何转发？见第 2 步。"
+}

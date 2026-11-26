@@ -1,0 +1,60 @@
+{
+  "step": "s09",
+  "title": "服务线程：joinThreadPool",
+  "tldr": "服务线程进池后注册（BC_ENTER_LOOPER/BC_REGISTER_LOOPER），循环 getAndExecuteCommand，超时且非主线程可退出。",
+  "why": "这个循环解释了「服务端并发度」从哪来：每个跑在这里的线程就是一个并发执行槽。而 BR_SPAWN_LOOPER 让驱动可以要求进程扩容——所以线程数是动态的，上限由进程配置决定。另一个细节：非主线程在空闲超时后允许退出（线程池缩容），主线程则一直留着。",
+  "concepts": [
+    {
+      "term": "BC_ENTER_LOOPER / BC_REGISTER_LOOPER",
+      "text": "主线程进入 / 其它线程注册。"
+    },
+    {
+      "term": "getAndExecuteCommand",
+      "text": "talkWithDriver + executeCommand 的组合。"
+    },
+    {
+      "term": "BR_SPAWN_LOOPER",
+      "text": "驱动要求扩容。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void IPCThreadState::joinThreadPool(bool isMain)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:841",
+      "what": "入口。"
+    },
+    {
+      "call": "result = getAndExecuteCommand();",
+      "ref": "native/libs/binder/IPCThreadState.cpp:854",
+      "what": "循环主体。"
+    },
+    {
+      "call": "if(result == TIMED_OUT && !isMain) {",
+      "ref": "native/libs/binder/IPCThreadState.cpp:863",
+      "what": "非主线程可缩容退出。"
+    },
+    {
+      "call": "mProcess->spawnPooledThread(false);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:273",
+      "what": "executeCommand 里处理扩容请求。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mCurrentThreads",
+      "before": "N",
+      "after": "N±1",
+      "note": "下溢会 FATAL。"
+    }
+  ],
+  "threads": "服务线程（每个池线程一个）。",
+  "pitfalls": [
+    "以为线程池固定：BR_SPAWN_LOOPER 会扩容。",
+    "忽略「单线程池」会让同步调用排队。"
+  ],
+  "debug": [
+    "dumpsys 显示 binder 线程数。",
+    "trace 里看线程池线程的唤醒分布。"
+  ],
+  "next": "命令如何分发？见第 10 步。"
+}

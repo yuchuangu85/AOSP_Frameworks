@@ -1,0 +1,510 @@
+{
+  "id": "vri-layout",
+  "title": "ViewRootImpl::performLayout",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "private void performLayout(",
+  "span": [
+    5538,
+    5612
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void performLayout(WindowManager.LayoutParams lp, int desiredWindowWidth,",
+      "kind": "note",
+      "text": "布局入口。lp 与 desiredWindow* 只服务于「二次布局时重新 measure」这一路。"
+    },
+    {
+      "at": 2,
+      "quote": "int desiredWindowHeight) {",
+      "kind": "note",
+      "text": "第二行参数收尾。"
+    },
+    {
+      "at": 3,
+      "quote": "mScrollMayChange = true;",
+      "kind": "state",
+      "text": "布局会改变可滚动范围，先置位；下一次滚动时据此重新钳制 scrollY。"
+    },
+    {
+      "at": 4,
+      "quote": "mInLayout = true;",
+      "kind": "state",
+      "text": "进入 layout 窗口期的标志。它为真时，子 View 的 requestLayout 会被 ViewRootImpl.requestLayoutDuringLayout 记进 mLayoutRequesters，而不是立刻递归。"
+    },
+    {
+      "at": 6,
+      "quote": "final View host = mView;",
+      "kind": "data",
+      "text": "取一次引用，避免中途被 detach 后反复读字段拿到脏值。"
+    },
+    {
+      "at": 7,
+      "quote": "if (host == null) {",
+      "kind": "branch",
+      "text": "没有根 View 直接返回；注意此时 mInLayout 已置 true，靠后续路径清理或下一次 traversal 复位。"
+    },
+    {
+      "at": 8,
+      "quote": "return;",
+      "kind": "note",
+      "text": "空根短路。"
+    },
+    {
+      "at": 8,
+      "quote": "return;",
+      "kind": "note",
+      "text": "关闭空判断。"
+    },
+    {
+      "at": 9,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭空根判断，继续正常布局。"
+    },
+    {
+      "at": 10,
+      "quote": "if (DEBUG_ORIENTATION || DEBUG_LAYOUT) {",
+      "kind": "branch",
+      "text": "调试开关：只在开发构建/手动打开时打印，不参与正常路径。"
+    },
+    {
+      "at": 11,
+      "quote": "Log.v(mTag, \"Laying out \" + host + \" to (\" +",
+      "kind": "note",
+      "text": "打印即将使用的测量尺寸。"
+    },
+    {
+      "at": 12,
+      "quote": "host.getMeasuredWidth() + \", \" + host.getMeasuredHeight() + \")\");",
+      "kind": "note",
+      "text": "日志参数收尾。"
+    },
+    {
+      "at": 12,
+      "quote": "host.getMeasuredWidth() + \", \" + host.getMeasuredHeight() + \")\");",
+      "kind": "note",
+      "text": "关闭调试分支。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试日志分支。"
+    },
+    {
+      "at": 15,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"layout\");",
+      "kind": "trace",
+      "text": "atrace 名为 layout，与 measure、draw 对齐即可把一帧的 UI 时间拆成三段。"
+    },
+    {
+      "at": 15,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"layout\");",
+      "kind": "call",
+      "text": "第一次布局：位置固定从 (0,0) 起，尺寸取测量结果——窗口坐标系下根节点不需要偏移。"
+    },
+    {
+      "at": 16,
+      "quote": "try {",
+      "kind": "note",
+      "text": "保证 trace 一定会闭合。"
+    },
+    {
+      "at": 16,
+      "quote": "try {",
+      "kind": "state",
+      "text": "第一次布局结束后立刻复位，这样下面统计到的请求就是「layout 期间产生的」。"
+    },
+    {
+      "at": 17,
+      "quote": "host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());",
+      "kind": "call",
+      "text": "第一次布局；如果这一帧就是唯一的布局，后面两个大块都会被跳过。"
+    },
+    {
+      "at": 19,
+      "quote": "mInLayout = false;",
+      "kind": "state",
+      "text": "复位后，下面统计到的就是「layout 期间」产生的请求。"
+    },
+    {
+      "at": 20,
+      "quote": "int numViewsRequestingLayout = mLayoutRequesters.size();",
+      "kind": "data",
+      "text": "layout 期间被记下的请求者数量；为 0 意味着布局干净，绝大多数帧走这一条。"
+    },
+    {
+      "at": 21,
+      "quote": "if (numViewsRequestingLayout > 0) {",
+      "kind": "branch",
+      "text": "有人违规在 layout 里 requestLayout：进入二次布局处理。"
+    },
+    {
+      "at": 22,
+      "quote": "// requestLayout() was called during layout.",
+      "kind": "note",
+      "text": "AOSP 自己承认这是「不当调用」，但仍要保证渲染结果正确。"
+    },
+    {
+      "at": 23,
+      "quote": "// If no layout-request flags are set on the requesting views, there is no problem.",
+      "kind": "note",
+      "text": "常见情况：容器已经处理了这些请求，标志被清掉，其实不用重来。"
+    },
+    {
+      "at": 24,
+      "quote": "// If some requests are still pending, then we need to clear those flags and do",
+      "kind": "note",
+      "text": "确有悬而未决的请求，才需要补一次完整的 measure/layout。"
+    },
+    {
+      "at": 25,
+      "quote": "// a full request/measure/layout pass to handle this situation.",
+      "kind": "note",
+      "text": "补做的代价是这一帧变长，严重时直接掉帧。"
+    },
+    {
+      "at": 25,
+      "quote": "// a full request/measure/layout pass to handle this situation.",
+      "kind": "branch",
+      "text": "null 表示没有需要继续处理的，直接跳过整段补偿。"
+    },
+    {
+      "at": 26,
+      "quote": "ArrayList<View> validLayoutRequesters = getValidLayoutRequesters(mLayoutRequesters,",
+      "kind": "call",
+      "text": "筛出真正还需要布局的 View；第二个参数 false 表示这是第一次检查（会清标志）。"
+    },
+    {
+      "at": 27,
+      "quote": "false);",
+      "kind": "note",
+      "text": "参数收尾。"
+    },
+    {
+      "at": 28,
+      "quote": "if (validLayoutRequesters != null) {",
+      "kind": "branch",
+      "text": "确认还有需要补做的布局。"
+    },
+    {
+      "at": 29,
+      "quote": "// Set this flag to indicate that any further requests are happening during",
+      "kind": "note",
+      "text": "准备进入第二次布局，先给自己打个「正在二次布局」的标记。"
+    },
+    {
+      "at": 30,
+      "quote": "// the second pass, which may result in posting those requests to the next",
+      "kind": "note",
+      "text": "这个标记决定了第二次期间的新请求会被推到下一帧，而不是再叠加第三轮。"
+    },
+    {
+      "at": 31,
+      "quote": "// frame instead",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 32,
+      "quote": "mHandlingLayoutInLayoutRequest = true;",
+      "kind": "state",
+      "text": "置位后，requestLayoutDuringLayout 对新的请求返回 false，调用方就会把它推后。"
+    },
+    {
+      "at": 32,
+      "quote": "mHandlingLayoutInLayoutRequest = true;",
+      "kind": "note",
+      "text": "逐个重放 requestLayout，让 View 自己的标志回到「需要布局」。"
+    },
+    {
+      "at": 34,
+      "quote": "// Process fresh layout requests, then measure and layout",
+      "kind": "note",
+      "text": "顺序固定：先让请求者重新置标志，再 measure，最后 layout。"
+    },
+    {
+      "at": 34,
+      "quote": "// Process fresh layout requests, then measure and layout",
+      "kind": "note",
+      "text": "打 W 级日志并带上 View 名字：这是查「为什么这帧有两遍布局」最直接的线索。"
+    },
+    {
+      "at": 35,
+      "quote": "int numValidRequests = validLayoutRequesters.size();",
+      "kind": "data",
+      "text": "本轮要处理的请求数。"
+    },
+    {
+      "at": 36,
+      "quote": "for (int i = 0; i < numValidRequests; ++i) {",
+      "kind": "call",
+      "text": "重放请求；因为 mInLayout 已是 false，这次会正常走完整流程而不再被拦截。"
+    },
+    {
+      "at": 37,
+      "quote": "final View view = validLayoutRequesters.get(i);",
+      "kind": "data",
+      "text": "取当前请求者。"
+    },
+    {
+      "at": 37,
+      "quote": "final View view = validLayoutRequesters.get(i);",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 38,
+      "quote": "Log.w(\"View\", \"requestLayout() improperly called by \" + view +",
+      "kind": "note",
+      "text": "W 级日志：应用在 layout 里 requestLayout，属于「不推荐但必须容错」的写法。"
+    },
+    {
+      "at": 39,
+      "quote": "\" during layout: running second layout pass\");",
+      "kind": "note",
+      "text": "日志收尾。"
+    },
+    {
+      "at": 40,
+      "quote": "view.requestLayout();",
+      "kind": "state",
+      "text": "再次进入 layout 窗口期，供第二次 layout 期间的请求判定使用。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "call",
+      "text": "第二次布局。到这一步，一帧内已经跑了两次 measure/layout。"
+    },
+    {
+      "at": 42,
+      "quote": "measureHierarchy(host, lp, mView.getContext().getResources(),",
+      "kind": "call",
+      "text": "第二次测量：这回走完整的 measureHierarchy，会考虑窗口约束与 lp，而不只是复用上次 spec。"
+    },
+    {
+      "at": 43,
+      "quote": "desiredWindowWidth, desiredWindowHeight, false /* forRootSizeOnly */);",
+      "kind": "note",
+      "text": "forRootSizeOnly=false 表示这次不只为根节点算尺寸，整个层级都要重新量。"
+    },
+    {
+      "at": 44,
+      "quote": "mInLayout = true;",
+      "kind": "state",
+      "text": "再次进入 layout 窗口期。"
+    },
+    {
+      "at": 45,
+      "quote": "host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());",
+      "kind": "call",
+      "text": "第二次布局。到这里一帧内已经跑了两次 measure/layout，UI 时间会明显变长。"
+    },
+    {
+      "at": 46,
+      "quote": "",
+      "kind": "branch",
+      "text": "还有人要布局：不能在当前帧继续叠加，只能推到下一帧。"
+    },
+    {
+      "at": 47,
+      "quote": "mHandlingLayoutInLayoutRequest = false;",
+      "kind": "state",
+      "text": "先清标记，才能用「第二次期间是否还有新请求」来判断要不要推到下一帧。"
+    },
+    {
+      "at": 49,
+      "quote": "// Check the valid requests again, this time without checking/clearing the",
+      "kind": "note",
+      "text": "再查一遍，但这次不清标志，因为二次期间的请求要保留到下一帧处理。"
+    },
+    {
+      "at": 50,
+      "quote": "// layout flags, since requests happening during the second pass get noop'd",
+      "kind": "note",
+      "text": "这些请求会被 noop 掉（在二次 pass 里），所以必须外推。"
+    },
+    {
+      "at": 51,
+      "quote": "validLayoutRequesters = getValidLayoutRequesters(mLayoutRequesters, true);",
+      "kind": "call",
+      "text": "第二参数 true 表示「这是二次检查」：不清标志，只判断是否还有人需要布局。"
+    },
+    {
+      "at": 52,
+      "quote": "if (validLayoutRequesters != null) {",
+      "kind": "branch",
+      "text": "二次布局后还有人要布局，只能推到下一帧。"
+    },
+    {
+      "at": 53,
+      "quote": "final ArrayList<View> finalRequesters = validLayoutRequesters;",
+      "kind": "data",
+      "text": "存成 final 供内部 Runnable 捕获。"
+    },
+    {
+      "at": 53,
+      "quote": "final ArrayList<View> finalRequesters = validLayoutRequesters;",
+      "kind": "note",
+      "text": "逐个重放。"
+    },
+    {
+      "at": 54,
+      "quote": "// Post second-pass requests to the next frame",
+      "kind": "note",
+      "text": "AOSP 明确的防死循环策略：外推而不是就地重试。"
+    },
+    {
+      "at": 55,
+      "quote": "getRunQueue().post(new Runnable() {",
+      "kind": "call",
+      "text": "用 HandlerActionQueue 把任务挂到下一次 traversal 前执行，而不是投普通 Message。"
+    },
+    {
+      "at": 55,
+      "quote": "getRunQueue().post(new Runnable() {",
+      "kind": "note",
+      "text": "第二级日志：这次明确说是「二次 pass 期间」的违规调用。"
+    },
+    {
+      "at": 56,
+      "quote": "@Override",
+      "kind": "note",
+      "text": "覆写注解。"
+    },
+    {
+      "at": 57,
+      "quote": "public void run() {",
+      "kind": "note",
+      "text": "下一帧执行时再重放这些请求。"
+    },
+    {
+      "at": 57,
+      "quote": "public void run() {",
+      "kind": "call",
+      "text": "下一帧真正执行时，这些 View 会重新把父链置为需要布局。"
+    },
+    {
+      "at": 58,
+      "quote": "int numValidRequests = finalRequesters.size();",
+      "kind": "data",
+      "text": "重新取数量——到执行时集合内容就是这一批快照。"
+    },
+    {
+      "at": 58,
+      "quote": "int numValidRequests = finalRequesters.size();",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 59,
+      "quote": "for (int i = 0; i < numValidRequests; ++i) {",
+      "kind": "note",
+      "text": "run 结束。"
+    },
+    {
+      "at": 60,
+      "quote": "final View view = finalRequesters.get(i);",
+      "kind": "data",
+      "text": "取当前请求者。"
+    },
+    {
+      "at": 61,
+      "quote": "Log.w(\"View\", \"requestLayout() improperly called by \" + view +",
+      "kind": "note",
+      "text": "关闭「还有请求」的 if。"
+    },
+    {
+      "at": 62,
+      "quote": "\" during second layout pass: posting in next frame\");",
+      "kind": "note",
+      "text": "日志点明后果是被推到下一帧。"
+    },
+    {
+      "at": 62,
+      "quote": "\" during second layout pass: posting in next frame\");",
+      "kind": "note",
+      "text": "关闭 validLayoutRequesters 的 if。"
+    },
+    {
+      "at": 63,
+      "quote": "view.requestLayout();",
+      "kind": "note",
+      "text": "关闭 numViewsRequestingLayout 的 if——这里是绝大多数帧的正常出口。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "run 结束。"
+    },
+    {
+      "at": 66,
+      "quote": "});",
+      "kind": "note",
+      "text": "post 结束。"
+    },
+    {
+      "at": 66,
+      "quote": "});",
+      "kind": "note",
+      "text": "try/finally 结束。"
+    },
+    {
+      "at": 67,
+      "quote": "}",
+      "kind": "state",
+      "text": "兜底复位：即使上面走了二次布局分支，这里也一定把标志清干净。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for 循环。"
+    },
+    {
+      "at": 71,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "无论走哪条路径都收 trace。"
+    },
+    {
+      "at": 72,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合 layout 切片；若这帧走了二次布局，这个切片会明显变宽。"
+    },
+    {
+      "at": 73,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 validLayoutRequesters 判断。"
+    },
+    {
+      "at": 74,
+      "quote": "mInLayout = false;",
+      "kind": "state",
+      "text": "兜底复位：无论走哪条分支，mInLayout 都会被清掉。"
+    },
+    {
+      "at": 75,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束，layout 在这里交棒给 performDraw。"
+    }
+  ]
+}

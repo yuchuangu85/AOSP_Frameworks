@@ -1,0 +1,60 @@
+{
+  "step": "s18",
+  "title": "进 View 树：dispatchTouchEvent",
+  "tldr": "ViewPostIme → dispatchPointerEvent → dispatchTouchEvent；拦截只在 DOWN 时询问。",
+  "why": "从这一步开始，输入不再由系统控制，而是交给应用代码。两个规则值得记住：一是拦截判定只在 ACTION_DOWN 时询问（后续事件沿用结果），所以「动态切换拦截」在同一个手势内不会生效；二是 DOWN 时会清空旧的 touch target，避免上次手势的残留导致点击落错 View。这两条是「点击错乱」类问题的主要来源。",
+  "concepts": [
+    {
+      "term": "dispatchPointerEvent",
+      "text": "View 上统一入口，按 source 分流到触摸/悬停/通用运动。"
+    },
+    {
+      "term": "mFirstTouchTarget",
+      "text": "ViewGroup 记录的接收链。"
+    },
+    {
+      "term": "FLAG_DISALLOW_INTERCEPT",
+      "text": "禁止拦截的标志位。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "protected int onProcess(QueuedInputEvent q) {",
+      "ref": "base/core/java/android/view/ViewRootImpl.java:8545",
+      "what": "ViewPostImeInputStage 的处理入口。"
+    },
+    {
+      "call": "public final boolean dispatchPointerEvent(MotionEvent event) {",
+      "ref": "base/core/java/android/view/View.java:17290",
+      "what": "View 层统一入口。"
+    },
+    {
+      "call": "public boolean dispatchTouchEvent(MotionEvent ev) {",
+      "ref": "base/core/java/android/view/ViewGroup.java:2756",
+      "what": "ViewGroup 的拦截与下发。"
+    },
+    {
+      "call": "public boolean onTouchEvent(MotionEvent event) {",
+      "ref": "base/core/java/android/view/View.java:18447",
+      "what": "叶子节点的最终回调。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mFirstTouchTarget",
+      "before": "上一次手势的接收链",
+      "after": "DOWN 时清空并重建",
+      "note": "UP/CANCEL 时置空。"
+    }
+  ],
+  "threads": "UI 线程；应用的 onTouchEvent 直接在主线程同步执行。",
+  "pitfalls": [
+    "在手势中途切换拦截：不会生效，只在 DOWN 时询问。",
+    "在 onTouchEvent 做重活：直接拉高输入延迟并可能触发 ANR。"
+  ],
+  "debug": [
+    "Layout Inspector 的 touch target 视图。",
+    "atrace 里 deliverInputEvent 下能看到 View 分发耗时。"
+  ],
+  "next": "处理完后如何回执？见第 19 步。"
+}

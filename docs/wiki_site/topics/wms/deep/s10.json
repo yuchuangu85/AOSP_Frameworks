@@ -1,0 +1,51 @@
+{
+  "step": "s10",
+  "title": "performLayout：谁来触发布局",
+  "tldr": "布局是攒批的：设 layoutNeeded 后请求 traversal，在下一拍统一执行，同帧多次修改只布局一次。",
+  "why": "这是 WMS 性能设计的核心。如果每次 setLayoutParams 都立刻布局，一次属性变更会触发几十次重算。攒批带来一个副作用：你修改了属性，但读取 frame 时可能还是旧值——因为布局还没跑。排查「改了没生效」时，先确认 traversal 是否已经发生。",
+  "concepts": [
+    {
+      "term": "traversal",
+      "text": "一次完整的布局+应用+提交。"
+    },
+    {
+      "term": "WindowSurfacePlacer",
+      "text": "负责攒批与重复布局的控制者。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mWindowPlacerLocked.performSurfacePlacement();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2389",
+      "what": "一次 placement 的入口。"
+    },
+    {
+      "call": "void applySurfaceChangesTransaction() {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5594",
+      "what": "每屏的应用阶段。"
+    },
+    {
+      "call": "performLayout(true /* initial */, false /* updateInputWindows */);",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5617",
+      "what": "真正的布局调用。"
+    }
+  ],
+  "state": [
+    {
+      "field": "layoutNeeded",
+      "before": "true",
+      "after": "false（布局后）",
+      "note": "任何属性变化会重新置 true。"
+    }
+  ],
+  "threads": "WMS 主线程（traversal 在 scheduleTraversal 的 Runnable 里）。",
+  "pitfalls": [
+    "改属性后立刻读 frame：可能还没布局。",
+    "在同一帧里反复改属性：只布局一次，但可能触发重复布局。"
+  ],
+  "debug": [
+    "atrace 里 performLayout 与 applySurfaceChangesTransaction 切片。",
+    "DEBUG_LAYOUT_REPEATS 打印重复次数。"
+  ],
+  "next": "relayout 怎么算尺寸？见第 11 步。"
+}

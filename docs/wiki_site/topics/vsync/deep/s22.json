@@ -1,0 +1,55 @@
+{
+  "step": "s22",
+  "title": "掉帧判定：三套并行判据",
+  "tldr": "FrameTargeter 的 missed、FrameTimeline 的 presentDelay/deadlineDelta、LayerHistory 投票，口径不同。",
+  "why": "这三套判据经常被混用，导致错误的优化方向。FrameTargeter 判的是「SF 这一拍是否错过自己的计划」；FrameTimeline 判的是「这一帧是否在 app 的 deadline 前完成并上屏」，并按原因分类（AppDeadlineMissed / SurfaceFlingerScheduling / PredictionError）；LayerHistory 则完全是为刷新率选择服务的投票。要回答「谁慢」，看 deadlineDelta 与 presentDelay 的组合；要回答「SF 是否调度失误」，看 FrameTargeter。",
+  "concepts": [
+    {
+      "term": "presentDelay",
+      "text": "实际 present 与预测 present 之差。"
+    },
+    {
+      "term": "deadlineDelta",
+      "text": "实际完成与预测 endTime 之差。"
+    },
+    {
+      "term": "AppDeadlineMissed",
+      "text": "LateFinish && LatePresent 时的分类。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "const bool mFrameMissed =",
+      "ref": "native/services/surfaceflinger/Scheduler/src/FrameTargeter.cpp:162",
+      "what": "SF 自身的 missed 判定。"
+    },
+    {
+      "call": "bool FrameTimeline::classifyJankLocked(int64_t vsyncId,",
+      "ref": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp:829",
+      "what": "FrameTimeline 分类。"
+    },
+    {
+      "call": "void LayerHistory::record(int32_t layerId, LayerProps props, nsecs_t presentTime,",
+      "ref": "native/services/surfaceflinger/Scheduler/LayerHistory.cpp:116",
+      "what": "刷新率投票。"
+    }
+  ],
+  "state": [
+    {
+      "field": "JankTracker / TimeStats",
+      "before": "上一帧统计",
+      "after": "累计",
+      "note": "dumpsys --frametimeline 可查。"
+    }
+  ],
+  "threads": "SF 主线程（onCompositionPresented 内）。",
+  "pitfalls": [
+    "用 Skipped N frames 代替 FrameTimeline 的 jank 分类。",
+    "把刷新率投票当成掉帧指标。"
+  ],
+  "debug": [
+    "`dumpsys SurfaceFlinger --frametimeline -jank`。",
+    "Perfetto 的 FrameTimeline 轨道。"
+  ],
+  "next": "现场怎么抓？见第 23 步。"
+}

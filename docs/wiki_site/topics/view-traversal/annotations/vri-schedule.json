@@ -1,0 +1,186 @@
+{
+  "id": "vri-schedule",
+  "title": "ViewRootImpl::scheduleTraversals",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "void scheduleTraversals()",
+  "span": [
+    3307,
+    3335
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void scheduleTraversals() {",
+      "kind": "note",
+      "text": "一帧的排队口。它只负责「排队」，不做任何 measure/layout/draw；真正执行在 vsync 到达后的 doTraversal。"
+    },
+    {
+      "at": 2,
+      "quote": "checkThreadCompat();",
+      "kind": "thread",
+      "text": "所有 traversal 都必须在 UI 线程发起。子线程改 View 后的 invalidate 之所以会崩，根子在这里。"
+    },
+    {
+      "at": 3,
+      "quote": "if (!mTraversalScheduled) {",
+      "kind": "branch",
+      "text": "幂等闸门：同一帧内重复 invalidate/requestLayout 只排一次 traversal，后面的调用直接丢掉。"
+    },
+    {
+      "at": 4,
+      "quote": "mTraversalScheduled = true;",
+      "kind": "state",
+      "text": "置位发生在立屏障之前，保证重入调用看到的一定是「已排队」。"
+    },
+    {
+      "at": 5,
+      "quote": "// The following behavior is load-bearing for public API correctness.",
+      "kind": "note",
+      "text": "这段注释是 AOSP 自己写下的契约：同步屏障不是性能优化，而是公开 API 的正确性依赖。"
+    },
+    {
+      "at": 6,
+      "quote": "// For example, the following code is defined to be correct and the",
+      "kind": "note",
+      "text": "官方例子：setText 之后立刻 post，回调里读到的宽度必须已经是新文本量出来的宽度。"
+    },
+    {
+      "at": 7,
+      "quote": "// MessageQueue sync barrier mechanism and its usage here is",
+      "kind": "note",
+      "text": "关键词是 MessageQueue 的 sync barrier：挡住其后的同步消息，只放行异步消息。"
+    },
+    {
+      "at": 8,
+      "quote": "// responsible for ensuring it:",
+      "kind": "note",
+      "text": "一句话：屏障由本方法立、由 doTraversal 拆，两者必须成对。"
+    },
+    {
+      "at": 9,
+      "quote": "//",
+      "kind": "note",
+      "text": "空注释行，仅分隔示例代码与说明。"
+    },
+    {
+      "at": 10,
+      "quote": "//   textView.setText(\"Hello, world!\");",
+      "kind": "note",
+      "text": "示例第 1 步：setText 内部会 requestLayout/invalidate，从而触发本方法。"
+    },
+    {
+      "at": 11,
+      "quote": "//   textView.getHandler().post(new Runnable() {",
+      "kind": "note",
+      "text": "示例第 2 步：紧接着投一个普通（同步）消息。"
+    },
+    {
+      "at": 12,
+      "quote": "//     public void run() {",
+      "kind": "note",
+      "text": "该 Runnable 在 traversal 之后才允许执行。"
+    },
+    {
+      "at": 13,
+      "quote": "//       // This code will run after traversals have happened",
+      "kind": "note",
+      "text": "注释点题：跑的时候 traversal 已经发生。"
+    },
+    {
+      "at": 14,
+      "quote": "//       // and the TextView has been measured with its new text.",
+      "kind": "note",
+      "text": "所以这里读 width 得到的是新文本的测量结果，而不是旧值。"
+    },
+    {
+      "at": 15,
+      "quote": "//       reportNewTextWidth(textView.getWidth());",
+      "kind": "note",
+      "text": "如果屏障顺序写反，这一行就会读到旧宽度——这就是它被注释成 load-bearing 的原因。"
+    },
+    {
+      "at": 16,
+      "quote": "//     }",
+      "kind": "note",
+      "text": "Runnable 结束。"
+    },
+    {
+      "at": 17,
+      "quote": "//   });",
+      "kind": "note",
+      "text": "post 调用结束。"
+    },
+    {
+      "at": 18,
+      "quote": "//",
+      "kind": "note",
+      "text": "空注释行，转下一段结论。"
+    },
+    {
+      "at": 19,
+      "quote": "// Any message posted after scheduling traversals (e.g. via",
+      "kind": "note",
+      "text": "结论段：排队之后投递的消息（无论是 requestLayout 还是 invalidate 引发的）都排在 traversal 之后。"
+    },
+    {
+      "at": 20,
+      "quote": "// View#requestLayout or View#invalidate) is guaranteed to run after",
+      "kind": "note",
+      "text": "requestLayout 与 invalidate 两条路径在这里被明确并列为触发者。"
+    },
+    {
+      "at": 21,
+      "quote": "// the scheduled traversals have occurred unless the message is",
+      "kind": "note",
+      "text": "「unless」引出唯一豁免。"
+    },
+    {
+      "at": 22,
+      "quote": "// specifically \"asynchronous\" - see Message#setAsynchronous",
+      "kind": "branch",
+      "text": "异步消息可以穿过屏障；Choreographer 自己的 vsync 消息就是异步的，否则它永远进不来。"
+    },
+    {
+      "at": 23,
+      "quote": "postTraversalBarrier();",
+      "kind": "lock",
+      "text": "立在注册 vsync 回调之前：先挡住消息，再请 vsync，避免「消息跑了、帧还没排」的窗口。"
+    },
+    {
+      "at": 24,
+      "quote": "mChoreographer.postVsyncCallback(",
+      "kind": "call",
+      "text": "向 Choreographer 注册遍历回调；这是本方法与 vsync 的唯一连接点。"
+    },
+    {
+      "at": 25,
+      "quote": "Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);",
+      "kind": "data",
+      "text": "回调类型固定是 CALLBACK_TRAVERSAL，在 doFrame 里排在 INPUT/ANIMATION 之后、COMMIT 之前。"
+    },
+    {
+      "at": 26,
+      "quote": "notifyRendererOfFramePending();",
+      "kind": "call",
+      "text": "通知硬件渲染器「本帧有活」，让它在等待 vsync 期间先做准备（例如预热 EGL）。"
+    },
+    {
+      "at": 27,
+      "quote": "pokeDrawLockIfNeeded();",
+      "kind": "call",
+      "text": "必要时提前唤醒屏幕的 draw lock，减少息屏/低电场景下首帧的延迟。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if：本帧已排过就直接走完，不重复注册。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意全程没有画任何东西，只有「排队 + 挡消息」两件事。"
+    }
+  ]
+}

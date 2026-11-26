@@ -1,0 +1,1065 @@
+{
+  "meta": {
+    "slug": "view-traversal",
+    "title": "View 请求刷新 → 绘制 → 交棒 RenderThread",
+    "subtitle": "从 invalidate()/requestLayout() 冒泡到一次 traversal，经过同步屏障与 vsync 唤醒、measure/layout、录制 display list，最后把任务推进 RenderThread 队列并在 mSignal 上停住",
+    "version": "android17-release",
+    "built": "2026-11-25",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲这条路径：View.invalidate 沿 parent 冒泡到 ViewRootImpl，mWillDrawSoon 合并同帧请求后 scheduleTraversals 投同步屏障并向 Choreographer 注册 CALLBACK_TRAVERSAL；vsync 到达后 doTraversal 拆屏障并进 performTraversals，按需做 measure/layout；performDraw → ThreadedRenderer.draw 先把脏 RenderNode 重录进 staging，再把 FrameInfo 经 JNI 交给 DrawFrameTask，postAndWait 把 run() 丢进 RenderThread 队列并 park 在 mSignal；RT 的 syncFrameState 做完 prepareTree 后 unblockUiThread 放走 UI，UI 线程就此开始下一帧，回放与 swap 已在本页边界之外。",
+    "kicker": "AOSP · android17-release · View traversal → RenderThread"
+  },
+  "lanes": [
+    { "id": "V", "label": "View 树", "color": "#7bd88f" },
+    { "id": "UI", "label": "App UI 线程", "color": "#4c8dff" },
+    { "id": "CH", "label": "Choreographer / vsync", "color": "#ff9f43" },
+    { "id": "RT", "label": "RenderThread", "color": "#33d6c0" },
+    { "id": "HW", "label": "硬件 / 跨进程", "color": "#c792ea" }
+  ],
+  "phases": [
+    { "id": "P0", "label": "请求与排队", "hint": "冒泡 → 合并 → 屏障 + vsync" },
+    { "id": "P1", "label": "唤醒与解屏", "hint": "doFrame → doTraversal → 拆屏障" },
+    { "id": "P2", "label": "遍历判定", "hint": "relayout/measure/layout/draw 三选三" },
+    { "id": "P3", "label": "测量与布局", "hint": "measure/layout + 二次布局防护" },
+    { "id": "P4", "label": "录制", "hint": "脏节点重建 staging" },
+    { "id": "P5", "label": "交棒", "hint": "FrameInfo → 队列 → mSignal" },
+    { "id": "P6", "label": "RT 同步与放行", "hint": "prepareTree → 放走 UI" },
+    { "id": "P7", "label": "分支与诊断", "hint": "跳过、跳帧、抓现场" }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "V",
+      "title": "invalidate()：只在 View 上置脏",
+      "brief": "View.invalidate() 转调 invalidate(true)，再进 invalidateInternal：先跳过 ghost view 与非必需场景，然后置 PFLAG_DIRTY / 清 PFLAG_DRAWN，并沿 parent 链冒泡。这里还没有任何遍历。",
+      "refs": [
+        { "file": "base/core/java/android/view/View.java", "line": 21431, "symbol": "invalidate" },
+        { "file": "base/core/java/android/view/View.java", "line": 21449, "symbol": "invalidate(boolean)" },
+        { "file": "base/core/java/android/view/View.java", "line": 21453, "symbol": "invalidateInternal" }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "UI",
+      "title": "invalidateChildInParent → invalidateRectOnScreen",
+      "brief": "冒泡到 ViewRootImpl：checkThread 校验线程，按 scroll/translate 修正脏区后进 invalidateRectOnScreen，把脏区并进 mDirty 并与窗口 bounds 求交；intersected 与 mWillDrawSoon 决定是否真的 scheduleTraversals。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 2887, "symbol": "invalidateChildInParent" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 2912, "symbol": "invalidateRectOnScreen" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 2926, "symbol": "intersect" }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P0",
+      "lane": "UI",
+      "title": "scheduleTraversals：幂等 + 同步屏障 + vsync 回调",
+      "brief": "mTraversalScheduled 保证一帧只排一次；先 postTraversalBarrier 把后续同步消息挡住，再向 Choreographer 注册 CALLBACK_TRAVERSAL。requestLayout 走 mLayoutRequested 另一条判定，但同样收敛到这里。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3307, "symbol": "scheduleTraversals" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3310, "symbol": "mTraversalScheduled" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3329, "symbol": "postTraversalBarrier" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3330, "symbol": "postVsyncCallback" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3356, "symbol": "mQueue.postSyncBarrier" }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "CH",
+      "title": "vsync 到达：doFrame 里的 CALLBACK_TRAVERSAL",
+      "brief": "EventThread 经 BitTube 唤醒 app，Choreographer.FrameDisplayEventReceiver.onVsync 投同步消息，doFrame 依次跑 INPUT/ANIMATION/INSETS_ANIMATION/TRAVERSAL/COMMIT；TraversalCallback.onVsync 把 frameTimeNanos 交给 ViewRootImpl。",
+      "refs": [
+        { "file": "base/core/java/android/view/Choreographer.java", "line": 656, "symbol": "postVsyncCallback" },
+        { "file": "base/core/java/android/view/Choreographer.java", "line": 1074, "symbol": "doFrame" },
+        { "file": "base/core/java/android/view/Choreographer.java", "line": 1209, "symbol": "doCallbacks(TRAVERSAL)" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 11445, "symbol": "TraversalCallback" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 11447, "symbol": "TraversalCallback.onVsync" }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P1",
+      "lane": "UI",
+      "title": "doTraversal：拆屏障后进 performTraversals",
+      "brief": "doTraversal 先确认 mTraversalScheduled 仍在，清标志、removeTraversalBarrier() 拆掉同步屏障，才进 performTraversals。顺序是先拆屏障再遍历：遍历期间新投递的同步消息不会插进 measure/layout/draw 中间。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3347, "symbol": "doTraversal" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3349, "symbol": "mTraversalScheduled=false" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3350, "symbol": "removeTraversalBarrier" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3351, "symbol": "performTraversals" }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P2",
+      "lane": "UI",
+      "title": "performTraversals：决定本帧做什么",
+      "brief": "单帧总控。relayout、测量、布局、绘制各有独立判据，任何一段都可以整帧跳过：只 invalidate 时通常只做 draw，只 requestLayout 时通常做 measure+layout+draw。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 3924, "symbol": "performTraversals" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 4599, "symbol": "performMeasure" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 4638, "symbol": "performLayout" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 4903, "symbol": "performDraw" }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P3",
+      "lane": "V",
+      "title": "performMeasure：把 spec 压到 View 树",
+      "brief": "被 mViewMeasureDeferred 触发时调用：mView.measure(wSpec, hSpec) 一次，随后把结果记进 mMeasuredWidth/Height 并清掉 deferred 标志。measure 本身是递归的，成本由 View 树的深度与布局复杂度决定。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5472, "symbol": "performMeasure" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5476, "symbol": "trace measure" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5478, "symbol": "mView.measure" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5484, "symbol": "mViewMeasureDeferred=false" }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P3",
+      "lane": "V",
+      "title": "performLayout：布局 + 二次布局防护",
+      "brief": "host.layout(0,0,measuredW,measuredH)；结束后若 mLayoutRequesters 非空，说明 layout 期间有人又 requestLayout，就再跑一次 measure/layout；第二次期间的新请求通过 getRunQueue().post 推到下一帧，避免无限循环。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5538, "symbol": "performLayout" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5541, "symbol": "mInLayout=true" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5554, "symbol": "host.layout" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5569, "symbol": "mHandlingLayoutInLayoutRequest" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5592, "symbol": "post 到下一帧" }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P4",
+      "lane": "UI",
+      "title": "performDraw：屏幕状态、脏区与 trace 区间",
+      "brief": "屏幕关且不要求 report 直接返回；否则算 fullRedrawNeeded、置 mIsDrawing，进 draw() 前后包一层 TRACE_TAG_VIEW 的 draw 段。这一步只决定「画不画」，真正的录制在 ThreadedRenderer。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5940, "symbol": "performDraw" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5942, "symbol": "screen_off" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5959, "symbol": "fullRedrawNeeded" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5963, "symbol": "traceBegin draw" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5970, "symbol": "draw(...)" }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P4",
+      "lane": "UI",
+      "title": "ViewRootImpl.draw：脏区、偏移与软硬件分流",
+      "brief": "dirty 为空且不在动画、也无无障碍焦点变化时整段跳过；硬件分支先 invalidateRoot/updateContentDrawBounds/HDR 等准备，再调 ThreadedRenderer.draw；软件分支走 drawSoftware（lockCanvas 直接画），两者是互斥的两套栈。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6161, "symbol": "draw" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6211, "symbol": "final Rect dirty = mDirty" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6259, "symbol": "dirty.isEmpty()" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6260, "symbol": "isHardwareEnabled" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6320, "symbol": "ThreadedRenderer.draw" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6353, "symbol": "drawSoftware" }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P4",
+      "lane": "UI",
+      "title": "ThreadedRenderer.draw：先录制，再交棒",
+      "brief": "markDrawStart 后 updateRootDisplayList 把脏子树重录进各自的 staging 槽，再取 FrameInfo 调 syncAndDrawFrame；返回值是 RT 写、Java 读的位掩码，surface 丢了要 relayout，要求重画要 invalidate。",
+      "refs": [
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 827, "symbol": "draw" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 828, "symbol": "markDrawStart" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 830, "symbol": "updateRootDisplayList" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 848, "symbol": "syncAndDrawFrame" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 849, "symbol": "SYNC_LOST_SURFACE" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 856, "symbol": "SYNC_REDRAW_REQUESTED" }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P4",
+      "lane": "V",
+      "title": "updateDisplayListIfDirty：脏才重录",
+      "brief": "三个条件任一成立才重建：没有 PFLAG_DRAWING_CACHE_VALID、RenderNode 没有 display list、或 mRecreateDisplayList。若只是子节点需要刷新，则走 dispatchGetDisplayList 后直接返回，不做录制——这是整条链路上最值钱的一次短路。",
+      "refs": [
+        { "file": "base/core/java/android/view/View.java", "line": 24306, "symbol": "updateDisplayListIfDirty" },
+        { "file": "base/core/java/android/view/View.java", "line": 24313, "symbol": "PFLAG_DRAWING_CACHE_VALID" },
+        { "file": "base/core/java/android/view/View.java", "line": 24322, "symbol": "dispatchGetDisplayList" },
+        { "file": "base/core/java/android/view/View.java", "line": 24339, "symbol": "beginRecording" },
+        { "file": "base/core/java/android/view/View.java", "line": 24377, "symbol": "endRecording" }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P4",
+      "lane": "V",
+      "title": "onDraw 的绘制调用被录成 draw op",
+      "brief": "硬件分支里 canvas.translate(-scrollX,-scrollY) 后调 draw(canvas) 或 dispatchDraw(canvas)：RecordingCanvas 不画像素，只把每个 drawXxx 调用记成 op。PFLAG_SKIP_DRAW 的「无背景容器」有快路径，省掉 draw 直接 dispatchDraw。",
+      "refs": [
+        { "file": "base/core/java/android/view/View.java", "line": 24348, "symbol": "else 分支" },
+        { "file": "base/core/java/android/view/View.java", "line": 24351, "symbol": "canvas.translate" },
+        { "file": "base/core/java/android/view/View.java", "line": 24358, "symbol": "PFLAG_SKIP_DRAW" },
+        { "file": "base/core/java/android/view/View.java", "line": 24368, "symbol": "draw(canvas)" },
+        { "file": "base/graphics/java/android/graphics/RecordingCanvas.java", "line": 63, "symbol": "obtain" }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P4",
+      "lane": "UI",
+      "title": "根节点也是一张 display list",
+      "brief": "updateRootDisplayList 在 mRootNodeNeedsUpdate 或根节点还没有 display list 时，用根 RenderNode 再录一层：translate 到 inset 偏移、onPreDraw、drawRenderNode(内容树)、onPostDraw。窗口 inset 与预绘制副作用都被烘进根节点，RT 回放时只需回放一张。",
+      "refs": [
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 730, "symbol": "updateRootDisplayList" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 731, "symbol": "Record View#draw()" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 769, "symbol": "mRootNodeNeedsUpdate" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 770, "symbol": "mRootNode.beginRecording" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 777, "symbol": "drawRenderNode" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 784, "symbol": "mRootNode.endRecording" }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P5",
+      "lane": "UI",
+      "title": "syncAndDrawFrame → JNI：FrameInfo 搬进 task",
+      "brief": "HardwareRenderer 只有一行 native 调用；JNI 先校验 long[] 长度等于 UI_THREAD_FRAME_INFO_SIZE（不等就 abort），再用 GetLongArrayRegion 直接把数组拷进 DrawFrameTask 的 mFrameInfo。RenderProxy 只转发，不解析。",
+      "refs": [
+        { "file": "base/graphics/java/android/graphics/HardwareRenderer.java", "line": 595, "symbol": "syncAndDrawFrame" },
+        { "file": "base/graphics/java/android/graphics/HardwareRenderer.java", "line": 596, "symbol": "nSyncAndDrawFrame" },
+        { "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp", "line": 464, "symbol": "JNI 入口" },
+        { "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp", "line": 467, "symbol": "LOG_ALWAYS_FATAL_IF" },
+        { "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp", "line": 471, "symbol": "GetLongArrayRegion" },
+        { "file": "base/libs/hwui/renderthread/RenderProxy.cpp", "line": 237, "symbol": "syncAndDrawFrame" }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P5",
+      "lane": "UI",
+      "title": "postAndWait：把 run() 推进队列，然后 park",
+      "brief": "drawFrame 清 mSyncResult、记 mSyncQueued，进 postAndWait：先取 mLock，把 run() post 进 RT 任务队列，再 mSignal.wait(mLock)。队列锁与 mLock 是两把锁，前者保护队列，后者只护条件变量；这里的 wait 没有超时。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 72, "symbol": "drawFrame" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 75, "symbol": "mSyncResult" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 76, "symbol": "mSyncQueued" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 82, "symbol": "postAndWait" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 84, "symbol": "AutoMutex" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 85, "symbol": "queue().post" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 86, "symbol": "mSignal.wait" }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P6",
+      "lane": "RT",
+      "title": "DrawFrameTask::run 开始同步",
+      "brief": "RT 侧一帧的总入口：从 mFrameInfo 取 vsyncId 打 DrawFrames trace，记 syncDelay，构造 MODE_FULL 的 TreeInfo 并调 syncFrameState；返回值 canUnblockUiThread、canDrawThisFrame 决定后续走向。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 89, "symbol": "run" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 91, "symbol": "ATRACE_FORMAT" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 103, "symbol": "TreeInfo" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 106, "symbol": "syncFrameState" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 107, "symbol": "canDrawThisFrame" }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P6",
+      "lane": "RT",
+      "title": "syncFrameState → prepareTree",
+      "brief": "读 FrameInfo 各字段喂 TimeLord，makeCurrent 建/切换 EGL 上下文，unpinImages 释放上一帧的纹理图钉，再 prepareTree：把 staging 换成 display list、累加 damage；最后按 hasOutputTarget/canDraw 决定 LostSurface 或 ContextIsStopped。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 169, "symbol": "syncFrameState" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 178, "symbol": "makeCurrent" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 179, "symbol": "unpinImages" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 191, "symbol": "prepareTree" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 196, "symbol": "hasOutputTarget" },
+        { "file": "base/libs/hwui/renderthread/CanvasContext.cpp", "line": 506, "symbol": "prepareTree" }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P6",
+      "lane": "RT",
+      "title": "RenderNode::syncDisplayList：staging → display list",
+      "brief": "先给 staging 子树增父引用计数，再删除旧的 display list，然后 mDisplayList = std::move(mStagingDisplayList) 并 syncContents。move 完成的那一刻，UI 线程录的这批 op 才真正对 RT 可见。",
+      "refs": [
+        { "file": "base/libs/hwui/RenderNode.cpp", "line": 431, "symbol": "syncDisplayList" },
+        { "file": "base/libs/hwui/RenderNode.cpp", "line": 435, "symbol": "incParentRefCount" },
+        { "file": "base/libs/hwui/RenderNode.cpp", "line": 437, "symbol": "deleteDisplayList" },
+        { "file": "base/libs/hwui/RenderNode.cpp", "line": 438, "symbol": "mDisplayList = move" },
+        { "file": "base/libs/hwui/RenderNode.cpp", "line": 442, "symbol": "syncContents" }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P6",
+      "lane": "RT",
+      "title": "unblockUiThread：UI 从这里自由",
+      "brief": "run() 先做本地拷贝（context、frameCallback、frameCompleteCallback），注释写明此后访问 this 不安全；canUnblockUiThread 为真时 unblockUiThread() 取 mLock 并 signal，UI 线程的 syncAndDrawFrame 立刻返回。UI 只等同步，不等绘制。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 117, "symbol": "拷贝 context" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 124, "symbol": "UNSAFE TO ACCESS" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 125, "symbol": "canUnblockUiThread" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 126, "symbol": "unblockUiThread" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 219, "symbol": "unblockUiThread 定义" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 221, "symbol": "mSignal.signal" }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P6",
+      "lane": "RT",
+      "title": "交接完成：本页边界到此为止",
+      "brief": "canDrawThisFrame 为真才 context->draw，否则只 flushAndSubmit + waitOnFences 并以 didProduceBuffer=false 收尾。此后 RT 回放 draw op、FlushAndSubmit、swapBuffers 属于下一个主题（render-thread-to-sf）。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 140, "symbol": "canDrawThisFrame" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 141, "symbol": "context->draw" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 144, "symbol": "跳帧分支只 flush" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 148, "symbol": "flushAndSubmit" },
+        { "file": "base/libs/hwui/renderthread/CanvasContext.cpp", "line": 672, "symbol": "CanvasContext::draw" },
+        { "file": "base/libs/hwui/renderthread/CanvasContext.cpp", "line": 699, "symbol": "NothingToDraw" }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P7",
+      "lane": "UI",
+      "title": "分支：这一帧被合并或被裁掉",
+      "brief": "mWillDrawSoon 为真表示同帧已有排队，invalidate 被合并（正常）；intersected 为假表示脏区落在窗口外被裁掉，本次请求直接作废；dirty 全空且 mIsAnimating 为假时 ViewRootImpl.draw 整段跳过。",
+      "refs": [
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 2931, "symbol": "mWillDrawSoon" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 2928, "symbol": "intersected=false" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 6259, "symbol": "draw 跳过" }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "RT",
+      "title": "分支：跳帧、丢 surface 与二次布局",
+      "brief": "三类「丢帧」别混：skippedFrameReason 让本帧不画（didProduceBuffer=false）；LostSurfaceRewardIfFound 让 Java 侧下一帧 relayout；NothingToDraw 干脆不上报 SF。另有一类不是丢帧：二次布局把 layout 期间的请求推到下一帧。",
+      "refs": [
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 199, "symbol": "NoOutputTarget" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 212, "symbol": "FrameDropped" },
+        { "file": "base/libs/hwui/renderthread/CanvasContext.cpp", "line": 700, "symbol": "NothingToDraw" },
+        { "file": "base/core/java/android/view/ViewRootImpl.java", "line": 5592, "symbol": "二次布局推后" }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "HW",
+      "title": "诊断：trace、dumpsys 与开关",
+      "brief": "按 vsyncId 把 UI 与 RT 串起来：Choreographer 的 getVsyncId、Record View#draw()、DrawFrames <vsyncId>、flush commands。脏区可视化用 debug.hwui.show_dirty_regions，跳过空帧用 debug.hwui.skip_empty_damage。",
+      "refs": [
+        { "file": "base/core/java/android/view/Choreographer.java", "line": 958, "symbol": "getVsyncId" },
+        { "file": "base/core/java/android/view/ThreadedRenderer.java", "line": 731, "symbol": "Record View#draw()" },
+        { "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "line": 91, "symbol": "DrawFrames" },
+        { "file": "base/libs/hwui/Properties.h", "line": 103, "symbol": "show_dirty_regions" },
+        { "file": "base/libs/hwui/Properties.h", "line": 109, "symbol": "skip_empty_damage" }
+      ]
+    }
+  ],
+  "p0": [
+    {
+      "id": "vri-schedule",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "void scheduleTraversals()",
+      "symbol": "ViewRootImpl.scheduleTraversals",
+      "start": 3307,
+      "end": 3335,
+      "hint": 3307,
+      "why": "一帧的排队口：幂等闸门、同步屏障、vsync 回调三件事都在这里。"
+    },
+    {
+      "id": "vri-traversal",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "void doTraversal(long frameTimeNanos)",
+      "symbol": "ViewRootImpl.doTraversal",
+      "start": 3347,
+      "end": 3353,
+      "hint": 3347,
+      "why": "拆屏障与进遍历的顺序在这里定死，只 7 行却决定了可见的执行时序。"
+    },
+    {
+      "id": "vri-measure",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "private void performMeasure(",
+      "symbol": "ViewRootImpl.performMeasure",
+      "start": 5472,
+      "end": 5485,
+      "hint": 5472,
+      "why": "测量入口：spec 下发、trace、deferred 标志清理。"
+    },
+    {
+      "id": "vri-layout",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "private void performLayout(",
+      "symbol": "ViewRootImpl.performLayout",
+      "start": 5538,
+      "end": 5612,
+      "hint": 5538,
+      "why": "布局 + 二次布局防护：这段代码决定了 requestLayout 会不会把一帧拖成两帧。"
+    },
+    {
+      "id": "vri-performdraw",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "private boolean performDraw(",
+      "symbol": "ViewRootImpl.performDraw",
+      "start": 5940,
+      "end": 6043,
+      "hint": 5940,
+      "why": "绘制总控：屏幕状态、fullRedraw、trace 区间、异步上报与收尾。"
+    },
+    {
+      "id": "vri-draw",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "private boolean draw(boolean fullRedrawNeeded",
+      "symbol": "ViewRootImpl.draw",
+      "start": 6161,
+      "end": 6365,
+      "hint": 6161,
+      "why": "脏区判定与软/硬件分流；「画不画」的唯一决策点。"
+    },
+    {
+      "id": "tr-draw",
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "sig": "void draw(View view, AttachInfo attachInfo",
+      "symbol": "ThreadedRenderer.draw",
+      "start": 827,
+      "end": 859,
+      "hint": 827,
+      "why": "录制 + 交棒两件事的衔接点，并消费 RT 回传的 SyncResult。"
+    },
+    {
+      "id": "tr-rootdl",
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "sig": "private void updateRootDisplayList(",
+      "symbol": "ThreadedRenderer.updateRootDisplayList",
+      "start": 730,
+      "end": 788,
+      "hint": 730,
+      "why": "根节点录制：inset、onPreDraw/onPostDraw 与内容树合并成一张 display list。"
+    },
+    {
+      "id": "view-udlid",
+      "file": "base/core/java/android/view/View.java",
+      "sig": "public RenderNode updateDisplayListIfDirty()",
+      "symbol": "View.updateDisplayListIfDirty",
+      "start": 24306,
+      "end": 24395,
+      "hint": 24306,
+      "why": "「脏才重录」的判定核心，整条链路上最值钱的一次短路。"
+    },
+    {
+      "id": "df-postwait",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "sig": "void DrawFrameTask::postAndWait()",
+      "symbol": "DrawFrameTask::postAndWait",
+      "start": 82,
+      "end": 87,
+      "hint": 82,
+      "why": "UI 线程停在这里：队列投递 + 条件变量等待，5 行决定了「UI 等不等绘制」。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "View",
+      "file": "base/core/java/android/view/View.java",
+      "tier": 0,
+      "side": "UI",
+      "role": "叶子与容器：置脏、冒泡、把 onDraw 录成 display list",
+      "members": ["invalidate", "invalidateInternal", "updateDisplayListIfDirty", "draw", "dispatchDraw"],
+      "fields": ["mPrivateFlags", "mRenderNode", "mLeft", "mScrollX"]
+    },
+    {
+      "name": "ViewRootImpl",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "tier": 0,
+      "side": "UI",
+      "role": "窗口的树根：排队、屏障、遍历总控、脏区与软/硬件分流",
+      "members": ["scheduleTraversals", "doTraversal", "performTraversals", "performMeasure", "performLayout", "performDraw"],
+      "fields": ["mTraversalScheduled", "mWillDrawSoon", "mDirty", "mLayoutRequested", "mInLayout"]
+    },
+    {
+      "name": "Choreographer",
+      "file": "base/core/java/android/view/Choreographer.java",
+      "tier": 0,
+      "side": "UI",
+      "role": "vsync 分发：五类回调按固定顺序在同一个 doFrame 里跑",
+      "members": ["postVsyncCallback", "doFrame", "doCallbacks", "getVsyncId"],
+      "fields": ["mCallbackQueues", "mLastVsyncEventData"]
+    },
+    {
+      "name": "ThreadedRenderer",
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "tier": 1,
+      "side": "UI",
+      "role": "硬件渲染门面：录制根节点、发起 syncAndDrawFrame、消费 SyncResult",
+      "members": ["draw", "updateRootDisplayList", "updateViewTreeDisplayList", "syncAndDrawFrame"],
+      "fields": ["mRootNode", "mRootNodeNeedsUpdate", "mSurfaceWidth", "mNativeProxy"]
+    },
+    {
+      "name": "HardwareRenderer",
+      "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+      "tier": 1,
+      "side": "UI",
+      "role": "Java 侧 native 桥：一行 nSyncAndDrawFrame",
+      "members": ["syncAndDrawFrame"],
+      "fields": ["mNativeProxy"]
+    },
+    {
+      "name": "RenderNode",
+      "file": "base/graphics/java/android/graphics/RenderNode.java",
+      "tier": 2,
+      "side": "UI",
+      "role": "display list 的载体：beginRecording/endRecording 成对使用",
+      "members": ["beginRecording", "endRecording", "hasDisplayList", "drawRenderNode"],
+      "fields": ["mCurrentRecordingCanvas", "mNativeRenderNode"]
+    },
+    {
+      "name": "RecordingCanvas",
+      "file": "base/graphics/java/android/graphics/RecordingCanvas.java",
+      "tier": 2,
+      "side": "UI",
+      "role": "只记录不绘制的 Canvas：把 drawXxx 调用录成 op",
+      "members": ["obtain", "drawBitmap", "drawRenderNode"],
+      "fields": ["mNode", "mWidth", "mHeight"]
+    },
+    {
+      "name": "DrawFrameTask",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "交棒的实体：mFrameInfo、mSignal、mSyncResult 都在它身上",
+      "members": ["drawFrame", "postAndWait", "run", "syncFrameState", "unblockUiThread"],
+      "fields": ["mFrameInfo", "mSignal", "mSyncResult", "mSyncQueued"]
+    },
+    {
+      "name": "RenderProxy",
+      "file": "base/libs/hwui/renderthread/RenderProxy.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "JNI 侧门面：只把调用转发给 DrawFrameTask",
+      "members": ["syncAndDrawFrame", "destroy", "forceDrawNextFrame"],
+      "fields": ["mDrawFrameTask"]
+    },
+    {
+      "name": "CanvasContext",
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "RT 侧的画布状态：prepareTree、draw、EGL surface 与 damage",
+      "members": ["prepareTree", "draw", "makeCurrent", "unpinImages"],
+      "fields": ["mRenderPipeline", "mDamageAccumulator", "mCurrentFrameInfo"]
+    }
+  ],
+  "relations": [
+    { "from": "View", "to": "ViewRootImpl", "label": "invalidateChildInParent", "kind": "uses" },
+    { "from": "ViewRootImpl", "to": "Choreographer", "label": "postVsyncCallback", "kind": "uses" },
+    { "from": "ViewRootImpl", "to": "ThreadedRenderer", "label": "draw(view, attachInfo, this)", "kind": "uses" },
+    { "from": "ThreadedRenderer", "to": "View", "label": "updateDisplayListIfDirty", "kind": "uses" },
+    { "from": "View", "to": "RenderNode", "label": "beginRecording / endRecording", "kind": "owns" },
+    { "from": "View", "to": "RecordingCanvas", "label": "录制 draw op", "kind": "uses" },
+    { "from": "ThreadedRenderer", "to": "RenderNode", "label": "mRootNode", "kind": "owns" },
+    { "from": "ThreadedRenderer", "to": "HardwareRenderer", "label": "extends", "kind": "uses" },
+    { "from": "HardwareRenderer", "to": "RenderProxy", "label": "nSyncAndDrawFrame", "kind": "uses" },
+    { "from": "RenderProxy", "to": "DrawFrameTask", "label": "mDrawFrameTask", "kind": "owns" },
+    { "from": "DrawFrameTask", "to": "CanvasContext", "label": "mContext->prepareTree", "kind": "uses" },
+    { "from": "DrawFrameTask", "to": "RenderNode", "label": "syncFrameState 触发 syncDisplayList", "kind": "uses" }
+  ],
+  "architecture": {
+    "width": 1280,
+    "height": 700,
+    "groups": [
+      { "id": "app", "label": "app 进程 · UI 线程", "x": 24, "y": 24, "w": 620, "h": 640, "color": "#4c8dff" },
+      { "id": "rt", "label": "app 进程 · RenderThread", "x": 676, "y": 24, "w": 580, "h": 640, "color": "#33d6c0" }
+    ],
+    "boxes": [
+      { "id": "view", "group": "app", "label": "View", "sub": "invalidate / onDraw", "x": 56, "y": 90, "w": 250, "h": 70 },
+      { "id": "vri", "group": "app", "label": "ViewRootImpl", "sub": "scheduleTraversals / performTraversals", "x": 56, "y": 200, "w": 250, "h": 70 },
+      { "id": "choreo", "group": "app", "label": "Choreographer", "sub": "doFrame / TRAVERSAL", "x": 56, "y": 310, "w": 250, "h": 70 },
+      { "id": "tr", "group": "app", "label": "ThreadedRenderer", "sub": "updateRootDisplayList / draw", "x": 356, "y": 200, "w": 250, "h": 70 },
+      { "id": "hardware", "group": "app", "label": "HardwareRenderer", "sub": "nSyncAndDrawFrame", "x": 356, "y": 310, "w": 250, "h": 70 },
+      { "id": "task", "group": "rt", "label": "DrawFrameTask", "sub": "postAndWait / run", "x": 710, "y": 200, "w": 250, "h": 70 },
+      { "id": "proxy", "group": "rt", "label": "RenderProxy", "sub": "syncAndDrawFrame", "x": 710, "y": 310, "w": 250, "h": 70 },
+      { "id": "ctx", "group": "rt", "label": "CanvasContext", "sub": "prepareTree / draw", "x": 1010, "y": 200, "w": 220, "h": 70 },
+      { "id": "rnode", "group": "rt", "label": "RenderNode (native)", "sub": "syncDisplayList", "x": 1010, "y": 310, "w": 220, "h": 70 }
+    ],
+    "edges": [
+      { "from": "view", "to": "vri", "label": "invalidateChildInParent", "kind": "call" },
+      { "from": "vri", "to": "choreo", "label": "postVsyncCallback", "kind": "call" },
+      { "from": "choreo", "to": "vri", "label": "onVsync → doTraversal", "kind": "call" },
+      { "from": "vri", "to": "tr", "label": "draw()", "kind": "call" },
+      { "from": "tr", "to": "view", "label": "updateDisplayListIfDirty", "kind": "call" },
+      { "from": "tr", "to": "hardware", "label": "syncAndDrawFrame", "kind": "call" },
+      { "from": "hardware", "to": "proxy", "label": "JNI（FrameInfo long[]）", "kind": "call" },
+      { "from": "proxy", "to": "task", "label": "mDrawFrameTask", "kind": "call" },
+      { "from": "task", "to": "ctx", "label": "syncFrameState", "kind": "call" },
+      { "from": "ctx", "to": "rnode", "label": "prepareTree", "kind": "call" },
+      { "from": "task", "to": "hardware", "label": "mSignal.signal（放行 UI）", "kind": "oneway" }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      { "id": "f0", "kind": "start", "label": "invalidate / requestLayout", "x": 530, "y": 60 },
+      { "id": "f1", "kind": "decision", "label": "intersected && !mWillDrawSoon ?", "x": 530, "y": 180 },
+      { "id": "f2", "kind": "process", "label": "scheduleTraversals：屏障 + vsync 回调", "x": 530, "y": 300 },
+      { "id": "f3", "kind": "process", "label": "doTraversal：拆屏障 → performTraversals", "x": 530, "y": 400 },
+      { "id": "f4", "kind": "decision", "label": "需要 measure / layout ?", "x": 530, "y": 510 },
+      { "id": "f5", "kind": "process", "label": "performDraw → ThreadedRenderer.draw", "x": 530, "y": 630 },
+      { "id": "f6", "kind": "process", "label": "脏才重录：staging display list", "x": 530, "y": 730 },
+      { "id": "f7", "kind": "process", "label": "postAndWait：UI park 在 mSignal", "x": 530, "y": 830 },
+      { "id": "f8", "kind": "decision", "label": "canUnblockUiThread ?", "x": 530, "y": 940 },
+      { "id": "f9", "kind": "end", "label": "UI 返回，RT 继续回放", "x": 530, "y": 1050 },
+      { "id": "f10", "kind": "process", "label": "丢弃本次请求（被合并 / 被裁掉）", "x": 880, "y": 180 },
+      { "id": "f11", "kind": "process", "label": "只录制，不 measure/layout", "x": 180, "y": 510 }
+    ],
+    "edges": [
+      { "from": "f0", "to": "f1" },
+      { "from": "f1", "to": "f2", "label": "是" },
+      { "from": "f1", "to": "f10", "label": "否" },
+      { "from": "f2", "to": "f3" },
+      { "from": "f3", "to": "f4" },
+      { "from": "f4", "to": "f5", "label": "是" },
+      { "from": "f4", "to": "f11", "label": "否" },
+      { "from": "f11", "to": "f5" },
+      { "from": "f5", "to": "f6" },
+      { "from": "f6", "to": "f7" },
+      { "from": "f7", "to": "f8" },
+      { "from": "f8", "to": "f9", "label": "是" },
+      { "from": "f8", "to": "f9", "label": "否：UI 继续等" }
+    ]
+  },
+  "sequence": [
+    { "step": "s01", "from": "V", "to": "UI", "label": "invalidate → invalidateInternal", "kind": "call" },
+    { "step": "s02", "from": "V", "to": "UI", "label": "invalidateChildInParent", "kind": "call" },
+    { "step": "s02", "from": "UI", "to": "UI", "label": "invalidateRectOnScreen：并脏区 + 求交", "kind": "call" },
+    { "step": "s03", "from": "UI", "to": "UI", "label": "scheduleTraversals：postSyncBarrier", "kind": "call" },
+    { "step": "s03", "from": "UI", "to": "CH", "label": "postVsyncCallback(TRAVERSAL)", "kind": "call" },
+    { "step": "s04", "from": "CH", "to": "CH", "label": "vsync → doFrame → doCallbacks", "kind": "call" },
+    { "step": "s04", "from": "CH", "to": "UI", "label": "TraversalCallback.onVsync", "kind": "call" },
+    { "step": "s05", "from": "UI", "to": "UI", "label": "doTraversal：removeTraversalBarrier", "kind": "call" },
+    { "step": "s06", "from": "UI", "to": "UI", "label": "performTraversals", "kind": "call" },
+    { "step": "s07", "from": "UI", "to": "V", "label": "performMeasure → mView.measure", "kind": "call" },
+    { "step": "s08", "from": "UI", "to": "V", "label": "performLayout → host.layout", "kind": "call" },
+    { "step": "s09", "from": "UI", "to": "UI", "label": "performDraw", "kind": "call" },
+    { "step": "s10", "from": "UI", "to": "UI", "label": "draw：脏区判定 + 软/硬件分流", "kind": "call" },
+    { "step": "s11", "from": "UI", "to": "V", "label": "ThreadedRenderer.draw → updateRootDisplayList", "kind": "call" },
+    { "step": "s12", "from": "V", "to": "V", "label": "updateDisplayListIfDirty", "kind": "call" },
+    { "step": "s13", "from": "V", "to": "V", "label": "RecordingCanvas 录 draw op", "kind": "call" },
+    { "step": "s14", "from": "UI", "to": "V", "label": "根节点录制 + drawRenderNode", "kind": "call" },
+    { "step": "s15", "from": "UI", "to": "RT", "label": "syncAndDrawFrame → JNI 拷 FrameInfo", "kind": "call" },
+    { "step": "s16", "from": "UI", "to": "RT", "label": "postAndWait：queue().post(run) + mSignal.wait", "kind": "call" },
+    { "step": "s17", "from": "RT", "to": "RT", "label": "DrawFrameTask::run（DrawFrames vsyncId）", "kind": "call" },
+    { "step": "s18", "from": "RT", "to": "RT", "label": "syncFrameState → prepareTree", "kind": "call" },
+    { "step": "s19", "from": "RT", "to": "RT", "label": "syncDisplayList：staging → display list", "kind": "call" },
+    { "step": "s20", "from": "RT", "to": "UI", "label": "unblockUiThread → mSignal.signal", "kind": "oneway" },
+    { "step": "s21", "from": "RT", "to": "HW", "label": "context->draw（本页边界外）", "kind": "call" },
+    { "step": "s24", "from": "HW", "to": "UI", "label": "trace / dumpsys 回读", "kind": "oneway" }
+  ],
+  "pitfalls": [
+    {
+      "case": "invalidate 不等于立刻绘制",
+      "behavior": "它只置脏并冒泡，同帧第二次调用被 mWillDrawSoon 合并；真正绘制要等 vsync 后的 doTraversal",
+      "ref": "ViewRootImpl.java:2931"
+    },
+    {
+      "case": "屏障先立、后拆",
+      "behavior": "scheduleTraversals 先 postSyncBarrier，doTraversal 里 removeTraversalBarrier 之后才 performTraversals；顺序反过来会让 setText 后的 post 读到旧宽度",
+      "ref": "ViewRootImpl.java:3329 / 3350"
+    },
+    {
+      "case": "UI 只等同步、不等绘制",
+      "behavior": "postAndWait 在 RT 的 unblockUiThread 就返回，UI 可以开始下一帧；RT 还在回放与 swap",
+      "ref": "DrawFrameTask.cpp:86 / 126"
+    },
+    {
+      "case": "mSignal.wait 没有超时",
+      "behavior": "RT 卡在 makeCurrent/prepareTree 时 UI 会一直停在这里，最终以 ANR 暴露而不是抛异常",
+      "ref": "DrawFrameTask.cpp:86"
+    },
+    {
+      "case": "「重录」与「重遍历」不是一回事",
+      "behavior": "updateDisplayListIfDirty 只在三条件任一成立时录制；只是子节点要刷新时走 dispatchGetDisplayList 直接返回",
+      "ref": "View.java:24313 / 24322"
+    },
+    {
+      "case": "requestLayout 会把一帧拖成两帧",
+      "behavior": "layout 期间的新请求触发第二次 measure/layout；第二次期间还请求就 getRunQueue().post 到下一帧",
+      "ref": "ViewRootImpl.java:5569 / 5592"
+    },
+    {
+      "case": "脏区为空就整段不画",
+      "behavior": "ViewRootImpl.draw 要求 dirty 非空或正在动画或有无障碍焦点变化，否则连 ThreadedRenderer.draw 都不会进",
+      "ref": "ViewRootImpl.java:6259"
+    },
+    {
+      "case": "跳帧 ≠ 丢 surface",
+      "behavior": "skippedFrameReason 只是本帧不画（didProduceBuffer=false）；LostSurfaceRewardIfFound 才要求 Java 下一帧 relayout",
+      "ref": "DrawFrameTask.cpp:199 / 212"
+    },
+    {
+      "case": "FrameInfo 由 JNI 拷贝，不是 RenderProxy 解析",
+      "behavior": "长度不等直接 LOG_ALWAYS_FATAL；RenderProxy::syncAndDrawFrame 只转发",
+      "ref": "android_graphics_HardwareRenderer.cpp:467 / RenderProxy.cpp:237"
+    },
+    {
+      "case": "根节点 display list 会缓存 onPreDraw 的副作用",
+      "behavior": "onPreDraw/onPostDraw 在根节点录制时执行，根节点不重建时它们的副作用不会重跑",
+      "ref": "ThreadedRenderer.java:774 / 780"
+    }
+  ],
+  "facts": [
+    "<b>一次刷新只有两个跨线程动作</b>：把录制产物写进 RenderNode staging，把 FrameInfo 推进 RT 队列；其余都在 UI 线程。",
+    "<b>同步屏障是 API 语义</b>：scheduleTraversals 里那段注释直接用 setText + post 举例说明为什么必须先立屏障。",
+    "<b>先拆屏障再遍历</b>：doTraversal 先 removeTraversalBarrier 再 performTraversals，遍历期间不会有同步消息插进 measure/layout/draw 中间。",
+    "<b>measure/layout/draw 可以整段跳过</b>：只 invalidate 通常只做 draw，只 requestLayout 通常三段都做，判据各自独立。",
+    "<b>「绘制完成」在 UI 侧 = 录制完成 + RT 同步完成</b>：draw op 的回放与 swap 发生在 RT，不在 UI 线程的视野内。"
+  ],
+  "glossary": [
+    { "term": "invalidate", "text": "把某个 View（或其部分区域）标记为需要重画，并沿 parent 冒泡到 ViewRootImpl 求脏区并集。" },
+    { "term": "requestLayout", "text": "表示尺寸/位置可能变了，需要重新 measure/layout；与 invalidate 走不同的判定但同样收敛到 scheduleTraversals。" },
+    { "term": "mWillDrawSoon", "text": "ViewRootImpl 里「本帧已有排队」的标志，用来合并同一帧内的多次 invalidate。" },
+    { "term": "同步屏障", "text": "MessageQueue.postSyncBarrier 挡住其后的同步消息，只放行异步消息；traversal 前立、doTraversal 里拆。" },
+    { "term": "CALLBACK_TRAVERSAL", "text": "Choreographer 五类回调之一，由 ViewRootImpl 通过 postVsyncCallback 注册。" },
+    { "term": "performTraversals", "text": "单帧总控方法：relayout、measure、layout、draw 的判据都在它里面。" },
+    { "term": "display list", "text": "一次绘制过程被录制下来的一组 draw op；UI 线程录，RenderThread 回放。" },
+    { "term": "staging display list", "text": "UI 线程刚录完、RT 还没同步的那份；存在 RenderNode 的 staging 槽。" },
+    { "term": "FrameInfo", "text": "UI 交给 RT 的一帧参数：vsyncId、frameDeadline、frameInterval、inputEventId 等，以 long[] 形式过 JNI。" },
+    { "term": "mSignal", "text": "DrawFrameTask 的条件变量：UI 在这里等同步完成，RT 在 unblockUiThread 里 signal。" },
+    { "term": "syncFrameState", "text": "RT 侧同步阶段：makeCurrent、unpinImages、prepareTree，返回能不能先放走 UI。" },
+    { "term": "prepareTree", "text": "CanvasContext 把 RenderNode 树从 staging 同步成 display list，并把脏区累加进 DamageAccumulator。" },
+    { "term": "unblockUiThread", "text": "RT 同步完成后放走 UI 线程的动作；此后 UI 线程可以开始下一帧。" },
+    { "term": "SyncResult", "text": "RT 写给 Java 的位掩码：surface 丢了、要求重画、context 已停等，由 ThreadedRenderer 消费。" },
+    { "term": "二次布局", "text": "layout 期间又有人 requestLayout 时的补偿：再跑一次 measure/layout，第二次期间的请求推到下一帧。" },
+    { "term": "didProduceBuffer", "text": "提交回调的布尔参数：本帧是否真的产出了 buffer；跳帧时为 false。" }
+  ],
+  "scenario": {
+    "title": "一次 setText 触发的刷新（60Hz，示数量级）",
+    "events": [
+      { "t": "0.0 ms", "label": "setText 置脏", "detail": "invalidate() → invalidateInternal → 冒泡到 ViewRootImpl" },
+      { "t": "0.02 ms", "label": "排队", "detail": "invalidateRectOnScreen 求交后 scheduleTraversals：立屏障 + 注册 TRAVERSAL" },
+      { "t": "0.1 ms", "label": "发 post", "detail": "紧随其后的 handler.post 被同步屏障挡住（这是 API 语义保证的部分）" },
+      { "t": "≈8.3 ms", "label": "vsync 到达", "detail": "Choreographer.doFrame → CALLBACK_TRAVERSAL → doTraversal" },
+      { "t": "8.4 ms", "label": "拆屏障 + 遍历", "detail": "removeTraversalBarrier 后进 performTraversals，被挡的 post 立刻获得执行机会" },
+      { "t": "8.5 ms", "label": "只做 draw", "detail": "本次没有 requestLayout，measure/layout 跳过" },
+      { "t": "8.8 ms", "label": "录制", "detail": "脏 TextView 重录进 staging，根节点按需重录" },
+      { "t": "9.0 ms", "label": "交棒", "detail": "syncAndDrawFrame → postAndWait，UI 停住" },
+      { "t": "9.3 ms", "label": "RT 同步", "detail": "syncFrameState + prepareTree，staging → display list" },
+      { "t": "9.4 ms", "label": "UI 放行", "detail": "unblockUiThread；UI 立刻可以做下一帧的事" }
+    ]
+  },
+  "learningPath": [
+    { "time": "5 分钟", "goal": "建立坐标：谁在哪、谁等谁", "route": "全景·架构 → 流程图 → 时序图前 12 条" },
+    { "time": "30 分钟", "goal": "打通主线：请求 → 遍历 → 录制 → 交棒", "route": "精读第 1→14 步（P0–P4）" },
+    { "time": "60 分钟", "goal": "补齐交棒与放行的线程语义", "route": "精读第 15→21 步 + 代码逐行 postAndWait" },
+    { "time": "半天", "goal": "能改代码 / 能抓现场", "route": "代码逐行 10 个 P0 函数 + 方法清单 + 降级与坑 + 诊断步骤 24" }
+  ],
+  "cards": [
+    {
+      "fn": "ViewRootImpl.performTraversals",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "line": 3924,
+      "size": 1476,
+      "thread": "UI",
+      "lock": "无（同步屏障不是互斥锁）",
+      "purpose": "单帧总控：relayout、measure、layout、draw 的判据与调用点都在这里。",
+      "risk": "判据写错会让该做的段被跳过（例如 relayout 被吞），表现为尺寸长期不更新。",
+      "status": "card"
+    },
+    {
+      "fn": "ViewRootImpl.draw",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "line": 6161,
+      "size": 205,
+      "thread": "UI",
+      "lock": "无",
+      "purpose": "脏区判定 + 软/硬件分流；决定本帧到底走 ThreadedRenderer.draw 还是 drawSoftware。",
+      "risk": "dirty 提前被 setEmpty 会让后面的绘制整段失效；两条分支的返回值语义不同（useAsyncReport）。",
+      "status": "card"
+    },
+    {
+      "fn": "ThreadedRenderer.updateRootDisplayList",
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "line": 730,
+      "size": 59,
+      "thread": "UI",
+      "lock": "无",
+      "purpose": "更新内容树的 display list，并决定根节点这张 display list 要不要重录。",
+      "risk": "onPreDraw 的副作用只在根节点重录时执行，缓存命中时不会重跑。",
+      "status": "card"
+    },
+    {
+      "fn": "View.updateDisplayListIfDirty",
+      "file": "base/core/java/android/view/View.java",
+      "line": 24306,
+      "size": 90,
+      "thread": "UI",
+      "lock": "无",
+      "purpose": "脏才重录的判定核心：三条件 → 录制或只是 dispatchGetDisplayList。",
+      "risk": "PFLAG_DRAWING_CACHE_VALID 与 PFLAG_DIRTY 的状态位维护错会造成「该重录不重录」（画面不更新）或「每次都重录」（掉帧）。",
+      "status": "card"
+    },
+    {
+      "fn": "DrawFrameTask.postAndWait",
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "line": 82,
+      "size": 6,
+      "thread": "UI（阻塞）→ RT（执行 run）",
+      "lock": "DrawFrameTask::mLock（只护 mSignal）",
+      "purpose": "把 run() 推进 RT 队列并在 mSignal 上等待同步完成。",
+      "risk": "无超时：RT 卡住时 UI 永久停在这里，表现为 ANR 而不是异常；新增成员访问要注意 run() 里 this 的生命周期。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s22",
+      "fn": "ViewRootImpl.invalidateRectOnScreen",
+      "ref": "ViewRootImpl.java:2917-2934",
+      "rows": [
+        { "cond": "mWillDrawSoon == true", "then": "不再 scheduleTraversals", "effect": "本次 invalidate 被合并进已排队的那一帧" },
+        { "cond": "intersected == false（脏区完全在窗口外）", "then": "localDirty.setEmpty()，不调度", "effect": "请求作废，屏幕上不会有任何变化" },
+        { "cond": "intersected == false 但 mIsAnimating", "then": "仍 scheduleTraversals", "effect": "动画期间即使脏区被裁也要继续排帧" },
+        { "cond": "默认", "then": "scheduleTraversals", "effect": "正常排队，等 vsync" }
+      ]
+    },
+    {
+      "step": "s12",
+      "fn": "View.updateDisplayListIfDirty",
+      "ref": "View.java:24313-24391",
+      "rows": [
+        { "cond": "!canHaveDisplayList()", "then": "直接返回 renderNode", "effect": "不录也不用录（无 bounds 等情况）" },
+        { "cond": "缓存有效 + 有 display list + 无 recreate", "then": "清脏位后返回", "effect": "零录制，只更新状态位" },
+        { "cond": "有 display list 但需要 recreate", "then": "dispatchGetDisplayList 后返回", "effect": "只让子节点自恢复，不重录自己" },
+        { "cond": "其余", "then": "beginRecording → draw → endRecording", "effect": "真正重建这张 display list" }
+      ]
+    },
+    {
+      "step": "s23",
+      "fn": "DrawFrameTask.syncFrameState / run",
+      "ref": "DrawFrameTask.cpp:196-217 / 140-167",
+      "rows": [
+        { "cond": "!hasOutputTarget", "then": "LostSurfaceRewardIfFound + NoOutputTarget", "effect": "Java 侧下一帧强制 relayout" },
+        { "cond": "makeCurrent 失败", "then": "ContextIsStopped", "effect": "本帧不画，等 surface 回来" },
+        { "cond": "skippedFrameReason 有值", "then": "mSyncResult |= FrameDropped", "effect": "didProduceBuffer=false" },
+        { "cond": "prepareTextures 为 false", "then": "canUnblockUiThread=false", "effect": "UI 继续等这个任务，不被提前放走" }
+      ]
+    },
+    {
+      "step": "s08",
+      "fn": "ViewRootImpl.performLayout",
+      "ref": "ViewRootImpl.java:5557-5607",
+      "rows": [
+        { "cond": "layout 期间无人 requestLayout", "then": "一次 layout 结束", "effect": "正常单次布局" },
+        { "cond": "第一次 layout 期间有请求", "then": "第二次 measure + layout", "effect": "同帧内补齐，避免画面抖动" },
+        { "cond": "第二次 layout 期间又有请求", "then": "getRunQueue().post 到下一帧", "effect": "防止无限循环，代价是多一帧" }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 40,
+    "minCards": 4,
+    "minPitfalls": 8
+  },
+  "scope": [
+    "base/core/java/android/view/ViewRootImpl.java",
+    "base/core/java/android/view/Choreographer.java",
+    "base/core/java/android/view/ThreadedRenderer.java",
+    "base/graphics/java/android/graphics/HardwareRenderer.java",
+    "base/graphics/java/android/graphics/RenderNode.java",
+    "base/graphics/java/android/graphics/RecordingCanvas.java",
+    "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+    "base/libs/hwui/renderthread/RenderProxy.cpp",
+    "base/libs/hwui/renderthread/CanvasContext.cpp"
+  ],
+  "inventorySpans": [
+    "scheduleTraversals", "unscheduleTraversals", "doTraversal", "performTraversals",
+    "performMeasure", "performLayout", "performDraw", "draw", "drawSoftware",
+    "invalidateChildInParent", "invalidateRectOnScreen", "requestLayoutDuringLayout",
+    "postTraversalBarrier", "removeTraversalBarrier", "getValidLayoutRequesters",
+    "postVsyncCallback", "doFrame", "doCallbacks", "getVsyncId", "getFrameDeadline",
+    "updateRootDisplayList", "updateViewTreeDisplayList", "invalidateRoot",
+    "syncAndDrawFrame", "setStopped", "fence", "setFrameCallback", "forceDrawNextFrame",
+    "beginRecording", "endRecording", "hasDisplayList", "drawRenderNode",
+    "obtain", "drawBitmap",
+    "drawFrame", "postAndWait", "run", "syncFrameState", "unblockUiThread",
+    "prepareTree", "makeCurrent", "unpinImages"
+  ],
+  "archGrid": {
+    "width": 1560,
+    "left": 150,
+    "rows": [
+      { "id": "r1", "label": "① 请求", "note": "置脏并冒泡，求脏区并集" },
+      { "id": "r2", "label": "② 排队", "note": "幂等闸门 + 同步屏障 + vsync 回调" },
+      { "id": "r3", "label": "③ 唤醒", "note": "doFrame 到 doTraversal，拆屏障" },
+      { "id": "r4", "label": "④ 布局", "note": "measure/layout 可按需跳过" },
+      { "id": "r5", "label": "⑤ 录制", "note": "脏节点重录，写 staging" },
+      { "id": "r6", "label": "⑥ 交棒", "note": "FrameInfo 过 JNI，任务入队" },
+      { "id": "r7", "label": "⑦ 同步与放行", "note": "prepareTree 后放走 UI" }
+    ],
+    "cols": [
+      { "id": "v", "label": "View 树", "color": "#7bd88f" },
+      { "id": "ui", "label": "App · UI 线程", "color": "#4c8dff" },
+      { "id": "ch", "label": "Choreographer", "color": "#ff9f43" },
+      { "id": "rt", "label": "App · RenderThread", "color": "#33d6c0" }
+    ],
+    "nodes": [
+      { "id": "v-invalidate", "row": "r1", "col": "v", "label": "View.invalidateInternal", "sub": "置 PFLAG_DIRTY / 清 PFLAG_DRAWN", "thread": "UI", "badge": "沿 parent 冒泡", "slot": 0 },
+      { "id": "ui-icp", "row": "r1", "col": "ui", "label": "invalidateChildInParent", "sub": "invalidateRectOnScreen", "thread": "UI", "badge": "mDirty |= dirty", "slot": 0 },
+      { "id": "ui-sched", "row": "r2", "col": "ui", "label": "scheduleTraversals", "sub": "mTraversalScheduled 幂等", "thread": "UI", "badge": "postSyncBarrier", "slot": 0 },
+      { "id": "ch-post", "row": "r2", "col": "ch", "label": "postVsyncCallback", "sub": "CALLBACK_TRAVERSAL", "thread": "UI", "badge": "注册到回调链", "slot": 0 },
+      { "id": "ch-doframe", "row": "r3", "col": "ch", "label": "Choreographer.doFrame", "sub": "INPUT → ANIMATION → TRAVERSAL", "thread": "UI", "badge": "vsyncId", "slot": 0 },
+      { "id": "ui-dotrav", "row": "r3", "col": "ui", "label": "doTraversal", "sub": "removeTraversalBarrier", "thread": "UI", "badge": "先拆屏障再遍历", "slot": 0 },
+      { "id": "ui-perform", "row": "r4", "col": "ui", "label": "performTraversals", "sub": "performMeasure / performLayout", "thread": "UI", "badge": "可按需跳过", "slot": 0 },
+      { "id": "v-layout", "row": "r4", "col": "v", "label": "View.measure / layout", "sub": "二次布局防护", "thread": "UI", "badge": "新 w/h", "slot": 0 },
+      { "id": "ui-draw", "row": "r5", "col": "ui", "label": "performDraw → draw", "sub": "ThreadedRenderer.draw", "thread": "UI", "badge": "dirty 非空才画", "slot": 0 },
+      { "id": "v-record", "row": "r5", "col": "v", "label": "updateDisplayListIfDirty", "sub": "beginRecording → endRecording", "thread": "UI", "badge": "staging display list", "slot": 0 },
+      { "id": "ui-sync", "row": "r6", "col": "ui", "label": "syncAndDrawFrame", "sub": "nSyncAndDrawFrame (JNI)", "thread": "UI", "badge": "FrameInfo long[]", "slot": 0 },
+      { "id": "rt-task", "row": "r6", "col": "rt", "label": "DrawFrameTask.postAndWait", "sub": "queue().post(run)", "thread": "RT", "badge": "UI 阻塞 mSignal", "slot": 0 },
+      { "id": "rt-run", "row": "r7", "col": "rt", "label": "DrawFrameTask.run", "sub": "syncFrameState → prepareTree", "thread": "RT", "badge": "staging → display list", "slot": 0 },
+      { "id": "rt-unblock", "row": "r7", "col": "rt", "label": "unblockUiThread", "sub": "mSignal.signal", "thread": "RT", "badge": "UI 从这里继续", "slot": 1 },
+      { "id": "ui-back", "row": "r7", "col": "ui", "label": "syncAndDrawFrame 返回", "sub": "SyncResult 位掩码", "thread": "UI", "badge": "可开始下一帧", "slot": 1 }
+    ],
+    "edges": [
+      { "from": "v-invalidate", "to": "ui-icp", "label": "冒泡", "kind": "call" },
+      { "from": "ui-icp", "to": "ui-sched", "label": "intersected", "kind": "call" },
+      { "from": "ui-sched", "to": "ch-post", "label": "postVsyncCallback", "kind": "call" },
+      { "from": "ch-post", "to": "ch-doframe", "label": "vsync 到达", "kind": "call" },
+      { "from": "ch-doframe", "to": "ui-dotrav", "label": "onVsync(frameTime)", "kind": "call" },
+      { "from": "ui-dotrav", "to": "ui-perform", "label": "performTraversals", "kind": "call" },
+      { "from": "ui-perform", "to": "v-layout", "label": "measure/layout", "kind": "call" },
+      { "from": "v-layout", "to": "ui-draw", "label": "新尺寸", "kind": "call" },
+      { "from": "ui-perform", "to": "ui-draw", "label": "performDraw", "kind": "call" },
+      { "from": "ui-draw", "to": "v-record", "label": "updateRootDisplayList", "kind": "call" },
+      { "from": "ui-draw", "to": "ui-sync", "label": "syncAndDrawFrame", "kind": "call" },
+      { "from": "ui-sync", "to": "rt-task", "label": "JNI 拷 FrameInfo", "kind": "call" },
+      { "from": "rt-task", "to": "rt-run", "label": "threadLoop 取出", "kind": "call" },
+      { "from": "v-record", "to": "rt-run", "label": "staging 槽", "data": "SkiaDisplayList", "kind": "call" },
+      { "from": "rt-run", "to": "rt-unblock", "label": "sync 完成", "kind": "call" },
+      { "from": "rt-unblock", "to": "ui-back", "label": "mSignal.signal", "kind": "oneway" }
+    ]
+  },
+  "seqDetail": {
+    "lanes": [
+      { "id": "v", "label": "View 树" },
+      { "id": "ui", "label": "UI 线程" },
+      { "id": "ch", "label": "Choreographer" },
+      { "id": "rt", "label": "RenderThread" }
+    ],
+    "phases": [
+      { "id": "p1", "label": "P1 请求与排队" },
+      { "id": "p2", "label": "P2 唤醒与解屏" },
+      { "id": "p3", "label": "P3 布局" },
+      { "id": "p4", "label": "P4 录制" },
+      { "id": "p5", "label": "P5 交棒" },
+      { "id": "p6", "label": "P6 同步与放行" }
+    ],
+    "messages": [
+      { "phase": "p1", "step": "s01", "from": "v", "to": "ui", "label": "invalidate → invalidateInternal", "data": "PFLAG_DIRTY", "kind": "call" },
+      { "phase": "p1", "step": "s02", "from": "ui", "to": "ui", "label": "invalidateRectOnScreen", "data": "mDirty 并集 + 求交", "kind": "call" },
+      { "phase": "p1", "step": "s03", "from": "ui", "to": "ui", "label": "postTraversalBarrier", "data": "sync barrier", "kind": "call", "block": "其后同步消息排队", "blockLane": "ui" },
+      { "phase": "p1", "step": "s03", "from": "ui", "to": "ch", "label": "postVsyncCallback", "data": "CALLBACK_TRAVERSAL", "kind": "call" },
+      { "phase": "p2", "step": "s04", "from": "ch", "to": "ch", "label": "doFrame → doCallbacks", "data": "frameTimeNanos", "kind": "call" },
+      { "phase": "p2", "step": "s04", "from": "ch", "to": "ui", "label": "TraversalCallback.onVsync", "kind": "call" },
+      { "phase": "p2", "step": "s05", "from": "ui", "to": "ui", "label": "doTraversal：拆屏障", "data": "removeTraversalBarrier", "kind": "state" },
+      { "phase": "p3", "step": "s06", "from": "ui", "to": "ui", "label": "performTraversals", "data": "判据：relayout/measure/layout/draw", "kind": "call" },
+      { "phase": "p3", "step": "s07", "from": "ui", "to": "v", "label": "performMeasure", "data": "MeasureSpec", "kind": "call" },
+      { "phase": "p3", "step": "s08", "from": "ui", "to": "v", "label": "performLayout", "data": "host.layout(0,0,w,h)", "kind": "call" },
+      { "phase": "p4", "step": "s09", "from": "ui", "to": "ui", "label": "performDraw", "data": "fullRedrawNeeded", "kind": "call" },
+      { "phase": "p4", "step": "s10", "from": "ui", "to": "ui", "label": "draw：脏区判定 + 分流", "data": "dirty / isHardwareEnabled", "kind": "state" },
+      { "phase": "p4", "step": "s11", "from": "ui", "to": "v", "label": "ThreadedRenderer.draw", "kind": "call" },
+      { "phase": "p4", "step": "s12", "from": "v", "to": "v", "label": "updateDisplayListIfDirty", "data": "三个重建条件", "kind": "call" },
+      { "phase": "p4", "step": "s13", "from": "v", "to": "v", "label": "RecordingCanvas 录 op", "data": "draw op 序列", "kind": "call" },
+      { "phase": "p4", "step": "s14", "from": "ui", "to": "v", "label": "根节点录制", "data": "inset + onPreDraw", "kind": "call" },
+      { "phase": "p5", "step": "s15", "from": "ui", "to": "rt", "label": "nSyncAndDrawFrame (JNI)", "data": "FrameInfo long[]", "kind": "call" },
+      { "phase": "p5", "step": "s16", "from": "ui", "to": "ui", "label": "postAndWait", "data": "queue().post(run)", "kind": "call", "block": "UI park 在 mSignal", "blockLane": "ui" },
+      { "phase": "p5", "step": "s16", "from": "ui", "to": "rt", "label": "mSignal.wait", "data": "无超时", "kind": "call" },
+      { "phase": "p6", "step": "s17", "from": "rt", "to": "rt", "label": "DrawFrameTask::run", "data": "trace DrawFrames <vsyncId>", "kind": "call" },
+      { "phase": "p6", "step": "s18", "from": "rt", "to": "rt", "label": "syncFrameState", "data": "makeCurrent / unpinImages", "kind": "call" },
+      { "phase": "p6", "step": "s19", "from": "rt", "to": "v", "label": "prepareTree → syncDisplayList", "data": "staging → display list", "kind": "call" },
+      { "phase": "p6", "step": "s20", "from": "rt", "to": "ui", "label": "unblockUiThread", "data": "mSignal.signal", "kind": "oneway" },
+      { "phase": "p6", "step": "s21", "from": "rt", "to": "rt", "label": "context->draw（边界外）", "data": "draw op 回放", "kind": "call" }
+    ]
+  },
+  "flowDetail": {
+    "width": 1500,
+    "height": 1120,
+    "regions": [
+      { "id": "ra", "label": "A 判定：这次请求要不要排帧", "x": 40, "y": 40, "w": 1420, "h": 330 },
+      { "id": "rb", "label": "B 布局与绘制：哪些段可以做", "x": 40, "y": 390, "w": 1420, "h": 330 },
+      { "id": "rc", "label": "C 交棒：入队、同步、放行", "x": 40, "y": 740, "w": 1420, "h": 340 }
+    ],
+    "nodes": [
+      { "id": "n0", "region": "ra", "kind": "start", "x": 300, "y": 110, "label": "invalidate / requestLayout" },
+      { "id": "n1", "region": "ra", "kind": "decision", "x": 300, "y": 210, "label": "脏区与窗口相交 且 本帧未排队？" },
+      { "id": "n2", "region": "ra", "kind": "process", "x": 300, "y": 300, "label": "scheduleTraversals：屏障 + vsync 回调" },
+      { "id": "n3", "region": "ra", "kind": "process", "x": 900, "y": 210, "label": "合并到已排队那一帧", "note": "mWillDrawSoon" },
+      { "id": "n4", "region": "ra", "kind": "process", "x": 1250, "y": 210, "label": "请求作废", "note": "intersected=false" },
+      { "id": "n5", "region": "rb", "kind": "process", "x": 300, "y": 460, "label": "doTraversal：拆屏障 → performTraversals" },
+      { "id": "n6", "region": "rb", "kind": "decision", "x": 300, "y": 570, "label": "需要 measure / layout 吗？" },
+      { "id": "n7", "region": "rb", "kind": "process", "x": 300, "y": 670, "label": "performMeasure / performLayout" },
+      { "id": "n8", "region": "rb", "kind": "decision", "x": 900, "y": 570, "label": "dirty 非空 或 动画 或 焦点变化？" },
+      { "id": "n9", "region": "rb", "kind": "process", "x": 900, "y": 670, "label": "performDraw → ThreadedRenderer.draw" },
+      { "id": "n10", "region": "rb", "kind": "process", "x": 1250, "y": 570, "label": "本帧不画", "note": "return without draw" },
+      { "id": "n11", "region": "rc", "kind": "process", "x": 300, "y": 810, "label": "脏才重录：staging display list" },
+      { "id": "n12", "region": "rc", "kind": "process", "x": 300, "y": 900, "label": "postAndWait：queue().post(run)" },
+      { "id": "n13", "region": "rc", "kind": "decision", "x": 300, "y": 1000, "label": "canUnblockUiThread ?" },
+      { "id": "n14", "region": "rc", "kind": "end", "x": 300, "y": 1075, "label": "UI 返回（RT 继续回放）" },
+      { "id": "n15", "region": "rc", "kind": "process", "x": 900, "y": 810, "label": "syncFrameState → prepareTree", "note": "staging → display list" },
+      { "id": "n16", "region": "rc", "kind": "process", "x": 900, "y": 900, "label": "unblockUiThread：mSignal.signal" },
+      { "id": "n17", "region": "rc", "kind": "process", "x": 900, "y": 1000, "label": "UI 继续等这个任务", "note": "纹理缓存不足等" }
+    ],
+    "edges": [
+      { "from": "n0", "to": "n1" },
+      { "from": "n1", "to": "n2", "label": "是" },
+      { "from": "n1", "to": "n3", "label": "已排队" },
+      { "from": "n1", "to": "n4", "label": "被裁掉" },
+      { "from": "n2", "to": "n5" },
+      { "from": "n5", "to": "n6" },
+      { "from": "n6", "to": "n7", "label": "是" },
+      { "from": "n6", "to": "n8", "label": "否" },
+      { "from": "n7", "to": "n8" },
+      { "from": "n8", "to": "n9", "label": "是" },
+      { "from": "n8", "to": "n10", "label": "否" },
+      { "from": "n9", "to": "n11" },
+      { "from": "n11", "to": "n12" },
+      { "from": "n12", "to": "n13" },
+      { "from": "n13", "to": "n14", "label": "是" },
+      { "from": "n13", "to": "n17", "label": "否", "route": "h" },
+      { "from": "n12", "to": "n15", "label": "RT 取出任务" },
+      { "from": "n15", "to": "n16" },
+      { "from": "n16", "to": "n14", "label": "signal", "route": "h" }
+    ]
+  }
+}

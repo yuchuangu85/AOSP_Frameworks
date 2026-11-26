@@ -1,0 +1,51 @@
+{
+  "step": "s14",
+  "title": "把数据交回上层",
+  "tldr": "BR_REPLY 正常路径用 ipcSetDataReference 把内核映射区挂到 reply Parcel（零拷贝）；status 路径直接读并释放。",
+  "why": "这是「一次拷贝」的另一半：接收方拿到的不是一份新拷贝的数组，而是一块由驱动映射进来的内存，Parcel 只是持有指针和释放函数。所以从收到回复到上层解析参数之间没有额外拷贝——这也是为什么大 Parcel 的接收侧开销主要在「解析」而不是「取数据」。",
+  "concepts": [
+    {
+      "term": "ipcSetDataReference",
+      "text": "把外部内存挂到 Parcel 上。"
+    },
+    {
+      "term": "freeBuffer",
+      "text": "Parcel 析构时的归还函数。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "reply->ipcSetDataReference(",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1215",
+      "what": "挂载映射区。"
+    },
+    {
+      "call": "status_t Parcel::ipcSetDataReference(",
+      "ref": "native/libs/binder/Parcel.cpp:1195",
+      "what": "实现。"
+    },
+    {
+      "call": "err = *reinterpret_cast<const status_t*>(tr.data.ptr.buffer);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1221",
+      "what": "status 路径。"
+    }
+  ],
+  "state": [
+    {
+      "field": "reply Parcel",
+      "before": "空",
+      "after": "指向内核映射",
+      "note": "析构时归还。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为 reply 是拷贝：是映射。",
+    "在 Parcel 生命周期外持有其数据指针：会悬空。"
+  ],
+  "debug": [
+    "大 Parcel 的接收耗时可对比 IPCThreadState 与业务解析的切片。",
+    "Parcel 的 print 显示映射地址。"
+  ],
+  "next": "oneway 怎么走？见第 15 步。"
+}

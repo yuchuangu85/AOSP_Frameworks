@@ -1,0 +1,306 @@
+{
+  "id": "tx-cache",
+  "title": "Transaction::cacheBuffers",
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "sig": "void SurfaceComposerClient::Transaction::cacheBuffers()",
+  "span": [
+    1055,
+    1103
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void SurfaceComposerClient::Transaction::cacheBuffers() {",
+      "kind": "note",
+      "text": "把事务里的 GraphicBuffer 换成本地缓存句柄。这样 binder 消息里只有小对象，图形内存靠缓存共享。"
+    },
+    {
+      "at": 2,
+      "quote": "if (!mMayContainBuffer) {",
+      "kind": "branch",
+      "text": "**快速路径**：本事务没有任何 buffer 变更就直接返回。"
+    },
+    {
+      "at": 3,
+      "quote": "return;",
+      "kind": "note",
+      "text": "返回。"
+    },
+    {
+      "at": 4,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "size_t count = 0;",
+      "kind": "data",
+      "text": "统计缓存了多少块。"
+    },
+    {
+      "at": 7,
+      "quote": "for (auto& cs : mState.mComposerStates) {",
+      "kind": "note",
+      "text": "遍历每层的状态。"
+    },
+    {
+      "at": 8,
+      "quote": "layer_state_t* s = &cs.state;",
+      "kind": "note",
+      "text": "逐层处理（见后续行）。"
+    },
+    {
+      "at": 9,
+      "quote": "if (!(s->what & layer_state_t::eBufferChanged)) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 10,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 11,
+      "quote": "} else if (s->bufferData &&",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 12,
+      "quote": "s->bufferData->flags.test(BufferData::BufferDataChange::cachedBufferChanged)) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 13,
+      "quote": "// If eBufferChanged and eCachedBufferChanged are both trued then that means",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 14,
+      "quote": "// we already cached the buffer in a previous call to cacheBuffers, perhaps",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 15,
+      "quote": "// from writeToParcel on a Transaction that was merged in to this one.",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 16,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 18,
+      "quote": "",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 19,
+      "quote": "// Don't try to cache a null buffer. Sending null buffers is cheap so we shouldn't waste",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 20,
+      "quote": "// time trying to cache them.",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 21,
+      "quote": "if (!s->bufferData || !s->bufferData->buffer) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 22,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 25,
+      "quote": "uint64_t cacheId = 0;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 26,
+      "quote": "status_t ret = BufferCache::getInstance().getCacheId(s->bufferData->buffer, &cacheId);",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 27,
+      "quote": "if (ret == NO_ERROR) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 28,
+      "quote": "// Cache-hit. Strip the buffer and send only the id.",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 29,
+      "quote": "s->bufferData->buffer = nullptr;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 30,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 31,
+      "quote": "// Cache-miss. Include the buffer and send the new cacheId.",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 32,
+      "quote": "std::optional<client_cache_t> uncacheBuffer;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 33,
+      "quote": "cacheId = BufferCache::getInstance().cache(s->bufferData->buffer, uncacheBuffer);",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 34,
+      "quote": "if (uncacheBuffer) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 35,
+      "quote": "mState.mUncacheBuffers.push_back(*uncacheBuffer);",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 38,
+      "quote": "s->bufferData->flags |= BufferData::BufferDataChange::cachedBufferChanged;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 39,
+      "quote": "s->bufferData->cachedBuffer.token = BufferCache::getInstance().getToken();",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 40,
+      "quote": "s->bufferData->cachedBuffer.id = cacheId;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 41,
+      "quote": "",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 42,
+      "quote": "// If we have more buffers than the size of the cache, we should stop caching so we don't",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 43,
+      "quote": "// evict other buffers in this transaction",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 44,
+      "quote": "count++;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 45,
+      "quote": "if (count >= BUFFER_CACHE_MAX_SIZE) {",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 46,
+      "quote": "break;",
+      "kind": "note",
+      "text": "见注释。"
+    },
+    {
+      "at": 47,
+      "quote": "}",
+      "kind": "note",
+      "text": "结束。"
+    },
+    {
+      "at": 48,
+      "quote": "}",
+      "kind": "note",
+      "text": "（EOF）"
+    },
+    {
+      "at": 49,
+      "quote": "}",
+      "kind": "note",
+      "text": "（EOF）"
+    }
+  ]
+}

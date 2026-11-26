@@ -1,0 +1,1050 @@
+{
+  "id": "wms-relayout",
+  "title": "WMS.relayoutWindow",
+  "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+  "sig": "public int relayoutWindow(Session session, IWindow client, LayoutParams attrs,",
+  "span": [
+    2548,
+    2720
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public int relayoutWindow(Session session, IWindow client, LayoutParams attrs,",
+      "kind": "note",
+      "text": "每帧客户端请求尺寸/可见性变更的入口，也是 WMS 回传 frames、配置、Insets 的唯一通道。"
+    },
+    {
+      "at": 2,
+      "quote": "int requestedWidth, int requestedHeight, int viewVisibility, int flags, int seq,",
+      "kind": "note",
+      "text": "续行参数：请求尺寸/可见性/flags/seq。"
+    },
+    {
+      "at": 3,
+      "quote": "int syncSeqId, WindowRelayoutResult outRelayoutResult,",
+      "kind": "note",
+      "text": "续行：syncSeqId 与两个输出结构。"
+    },
+    {
+      "at": 4,
+      "quote": "SurfaceControl outSurfaceControl) {",
+      "kind": "note",
+      "text": "续行：输出 SurfaceControl。"
+    },
+    {
+      "at": 5,
+      "quote": "final ClientWindowFrames outFrames;",
+      "kind": "data",
+      "text": "输出 frame。"
+    },
+    {
+      "at": 6,
+      "quote": "final MergedConfiguration outMergedConfiguration;",
+      "kind": "data",
+      "text": "输出合并配置。"
+    },
+    {
+      "at": 7,
+      "quote": "final InsetsState outInsetsState;",
+      "kind": "data",
+      "text": "输出 Insets 状态。"
+    },
+    {
+      "at": 8,
+      "quote": "final InsetsSourceControl.Array outActiveControls;",
+      "kind": "data",
+      "text": "输出 active controls。"
+    },
+    {
+      "at": 9,
+      "quote": "if (outRelayoutResult != null) {",
+      "kind": "branch",
+      "text": "调用方给了结果容器。"
+    },
+    {
+      "at": 10,
+      "quote": "outFrames = outRelayoutResult.frames;",
+      "kind": "data",
+      "text": "取内部 frame 引用。"
+    },
+    {
+      "at": 11,
+      "quote": "outMergedConfiguration = outRelayoutResult.mergedConfiguration;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 12,
+      "quote": "outInsetsState = outRelayoutResult.insetsState;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 13,
+      "quote": "outActiveControls = outRelayoutResult.activeControls;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 14,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 15,
+      "quote": "outFrames = null;",
+      "kind": "data",
+      "text": "全置空。"
+    },
+    {
+      "at": 16,
+      "quote": "outMergedConfiguration = null;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 17,
+      "quote": "outInsetsState = null;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 18,
+      "quote": "outActiveControls = null;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "if (outActiveControls != null) {",
+      "kind": "branch",
+      "text": "有 controls 输出。"
+    },
+    {
+      "at": 22,
+      "quote": "outActiveControls.set(null, false /* copyControls */);",
+      "kind": "state",
+      "text": "清空。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 24,
+      "quote": "int result = 0;",
+      "kind": "data",
+      "text": "累积的返回标志。"
+    },
+    {
+      "at": 25,
+      "quote": "boolean configChanged = false;",
+      "kind": "data",
+      "text": "配置是否变更。"
+    },
+    {
+      "at": 26,
+      "quote": "final int pid = Binder.getCallingPid();",
+      "kind": "data",
+      "text": "调用方 pid。"
+    },
+    {
+      "at": 27,
+      "quote": "final int uid = Binder.getCallingUid();",
+      "kind": "data",
+      "text": "调用方 uid。"
+    },
+    {
+      "at": 28,
+      "quote": "final long origId = Binder.clearCallingIdentity();",
+      "kind": "call",
+      "text": "清空 binder 身份。"
+    },
+    {
+      "at": 29,
+      "quote": "synchronized (mGlobalLock) {",
+      "kind": "lock",
+      "text": "**拿全局锁**。"
+    },
+    {
+      "at": 30,
+      "quote": "final WindowState win = windowForClient(session, client);",
+      "kind": "call",
+      "text": "按 session+client 找 WindowState。"
+    },
+    {
+      "at": 31,
+      "quote": "if (win == null) {",
+      "kind": "branch",
+      "text": "**窗口不存在**。"
+    },
+    {
+      "at": 32,
+      "quote": "return 0;",
+      "kind": "note",
+      "text": "返回 0。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 34,
+      "quote": "if (outRelayoutResult != null) {",
+      "kind": "branch",
+      "text": "有结果容器。"
+    },
+    {
+      "at": 35,
+      "quote": "outRelayoutResult.usesSyncedInsetsAnimation = win.isSyncedInsetsAnimationEnabled();",
+      "kind": "state",
+      "text": "告知是否启用同步 Insets 动画。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 37,
+      "quote": "if (win.mRelayoutSeq < seq) {",
+      "kind": "branch",
+      "text": "**序号是新的**。"
+    },
+    {
+      "at": 38,
+      "quote": "win.mRelayoutSeq = seq;",
+      "kind": "state",
+      "text": "记录序号。"
+    },
+    {
+      "at": 39,
+      "quote": "} else if (win.mRelayoutSeq > seq) {",
+      "kind": "note",
+      "text": "否则是旧请求。"
+    },
+    {
+      "at": 40,
+      "quote": "return 0;",
+      "kind": "note",
+      "text": "**直接丢弃**，防止乱序覆盖。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "if (win.cancelAndRedraw(syncSeqId)",
+      "kind": "branch",
+      "text": "客户端报告了同步绘制但服务端未完成。"
+    },
+    {
+      "at": 44,
+      "quote": "&& (mAlwaysSeqId || (win.mPrepareSyncSeqId <= syncSeqId))) {",
+      "kind": "note",
+      "text": "续行条件。"
+    },
+    {
+      "at": 45,
+      "quote": "// The client has reported the sync draw, but we haven't finished it yet.",
+      "kind": "note",
+      "text": "注释：此时不让客户端做非同步绘制。"
+    },
+    {
+      "at": 46,
+      "quote": "// Don't let the client perform a non-sync draw at this time.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 47,
+      "quote": "result |= RELAYOUT_RES_CANCEL_AND_REDRAW;",
+      "kind": "state",
+      "text": "**置 CANCEL_AND_REDRAW**。"
+    },
+    {
+      "at": 48,
+      "quote": "if (mAlwaysSeqId && Trace.isTagEnabled(TRACE_TAG_WINDOW_MANAGER)) {",
+      "kind": "branch",
+      "text": "trace 开关。"
+    },
+    {
+      "at": 49,
+      "quote": "Trace.instant(TRACE_TAG_WINDOW_MANAGER, \"earlyCancelDraw clientSeqId=\"",
+      "kind": "note",
+      "text": "打瞬时 trace，带三个 seq。"
+    },
+    {
+      "at": 50,
+      "quote": "+ syncSeqId + \" serverSeqId=\" + win.mSyncSeqId",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 51,
+      "quote": "+ \" bufferSeqId=\" + win.mBufferSeqId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 53,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 54,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 55,
+      "quote": "final DisplayContent displayContent = win.getDisplayContent();",
+      "kind": "data",
+      "text": "取 DisplayContent。"
+    },
+    {
+      "at": 56,
+      "quote": "final DisplayPolicy displayPolicy = displayContent.getDisplayPolicy();",
+      "kind": "data",
+      "text": "取其策略。"
+    },
+    {
+      "at": 57,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 58,
+      "quote": "WindowStateAnimator winAnimator = win.mWinAnimator;",
+      "kind": "data",
+      "text": "取 animator。"
+    },
+    {
+      "at": 59,
+      "quote": "if (viewVisibility != View.GONE) {",
+      "kind": "branch",
+      "text": "**不是 GONE**。"
+    },
+    {
+      "at": 60,
+      "quote": "win.setRequestedSize(requestedWidth, requestedHeight);",
+      "kind": "call",
+      "text": "记录请求尺寸。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 62,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 63,
+      "quote": "int attrChanges = 0;",
+      "kind": "data",
+      "text": "attr 变化计数。"
+    },
+    {
+      "at": 64,
+      "quote": "int flagChanges = 0;",
+      "kind": "data",
+      "text": "flag 变化计数。"
+    },
+    {
+      "at": 65,
+      "quote": "int privateFlagChanges = 0;",
+      "kind": "data",
+      "text": "private flag 变化计数。"
+    },
+    {
+      "at": 66,
+      "quote": "if (attrs != null) {",
+      "kind": "branch",
+      "text": "attrs 非空。"
+    },
+    {
+      "at": 67,
+      "quote": "displayPolicy.adjustWindowParamsLw(win, attrs);",
+      "kind": "call",
+      "text": "策略调整参数。"
+    },
+    {
+      "at": 68,
+      "quote": "attrs.privateFlags = sanitizePrivateFlags(attrs.privateFlags,",
+      "kind": "call",
+      "text": "**清洗 privateFlags**。"
+    },
+    {
+      "at": 69,
+      "quote": "win.mAttrs.privateFlags, win.getName(), uid, pid);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 70,
+      "quote": "attrs.flags = sanitizeFlagSlippery(attrs.flags, win.getName(), uid, pid);",
+      "kind": "call",
+      "text": "清洗 FLAG_SLIPPERY。"
+    },
+    {
+      "at": 71,
+      "quote": "attrs.inputFeatures = sanitizeInputFeatures(attrs.inputFeatures, win.getName(), uid,",
+      "kind": "call",
+      "text": "清洗 inputFeatures。"
+    },
+    {
+      "at": 72,
+      "quote": "pid, win.isTrustedOverlay());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 73,
+      "quote": "int disableFlags =",
+      "kind": "data",
+      "text": "系统 UI 相关 disable 标志。"
+    },
+    {
+      "at": 74,
+      "quote": "(attrs.systemUiVisibility | attrs.subtreeSystemUiVisibility) & DISABLE_MASK;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 75,
+      "quote": "if (disableFlags != 0 && !hasStatusBarPermission(pid, uid)) {",
+      "kind": "branch",
+      "text": "**无状态栏权限时清零**。"
+    },
+    {
+      "at": 76,
+      "quote": "disableFlags = 0;",
+      "kind": "note",
+      "text": "防止普通应用隐藏状态栏。"
+    },
+    {
+      "at": 77,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 78,
+      "quote": "win.mDisableFlags = disableFlags;",
+      "kind": "state",
+      "text": "记录 disable 标志。"
+    },
+    {
+      "at": 79,
+      "quote": "if (win.mAttrs.type != attrs.type) {",
+      "kind": "branch",
+      "text": "**试图改变窗口 type**。"
+    },
+    {
+      "at": 80,
+      "quote": "throw new IllegalArgumentException(",
+      "kind": "note",
+      "text": "**抛异常**：type 加窗后不可变。"
+    },
+    {
+      "at": 81,
+      "quote": "\"Window type can not be changed after the window is added.\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 82,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 83,
+      "quote": "if (!(win.mAttrs.providedInsets == null && attrs.providedInsets == null)) {",
+      "kind": "branch",
+      "text": "providedInsets 有变化。"
+    },
+    {
+      "at": 84,
+      "quote": "if (win.mAttrs.providedInsets == null || attrs.providedInsets == null",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 85,
+      "quote": "|| (win.mAttrs.providedInsets.length != attrs.providedInsets.length)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 86,
+      "quote": "throw new IllegalArgumentException(",
+      "kind": "note",
+      "text": "**抛异常**。"
+    },
+    {
+      "at": 87,
+      "quote": "\"Insets amount can not be changed after the window is added.\");",
+      "kind": "note",
+      "text": "消息：insets 数量不可变。"
+    },
+    {
+      "at": 88,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则数量一致。"
+    },
+    {
+      "at": 89,
+      "quote": "final int insetsTypes = attrs.providedInsets.length;",
+      "kind": "data",
+      "text": "insets 类型数。"
+    },
+    {
+      "at": 90,
+      "quote": "for (int i = 0; i < insetsTypes; i++) {",
+      "kind": "note",
+      "text": "逐个校验。"
+    },
+    {
+      "at": 91,
+      "quote": "if (!win.mAttrs.providedInsets[i].idEquals(attrs.providedInsets[i])) {",
+      "kind": "branch",
+      "text": "**insets id 变了**。"
+    },
+    {
+      "at": 92,
+      "quote": "throw new IllegalArgumentException(",
+      "kind": "note",
+      "text": "抛异常。"
+    },
+    {
+      "at": 93,
+      "quote": "\"Insets ID can not be changed after the window is added.\");",
+      "kind": "note",
+      "text": "消息：id 不可变。"
+    },
+    {
+      "at": 94,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 95,
+      "quote": "final InsetsFrameProvider.InsetsSizeOverride[] overrides =",
+      "kind": "data",
+      "text": "旧的 size overrides。"
+    },
+    {
+      "at": 96,
+      "quote": "win.mAttrs.providedInsets[i].getInsetsSizeOverrides();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 97,
+      "quote": "final InsetsFrameProvider.InsetsSizeOverride[] newOverrides =",
+      "kind": "data",
+      "text": "新的 size overrides。"
+    },
+    {
+      "at": 98,
+      "quote": "attrs.providedInsets[i].getInsetsSizeOverrides();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 99,
+      "quote": "if (!(overrides == null && newOverrides == null)) {",
+      "kind": "branch",
+      "text": "overrides 有变化。"
+    },
+    {
+      "at": 100,
+      "quote": "if (overrides == null || newOverrides == null",
+      "kind": "branch",
+      "text": "数量不一致。"
+    },
+    {
+      "at": 101,
+      "quote": "|| (overrides.length != newOverrides.length)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 102,
+      "quote": "throw new IllegalArgumentException(",
+      "kind": "note",
+      "text": "抛异常：override 类型不可变。"
+    },
+    {
+      "at": 103,
+      "quote": "\"Insets override types can not be changed after the \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "+ \"window is added.\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 105,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则数量一致。"
+    },
+    {
+      "at": 106,
+      "quote": "final int overrideTypes = overrides.length;",
+      "kind": "data",
+      "text": "override 数。"
+    },
+    {
+      "at": 107,
+      "quote": "for (int j = 0; j < overrideTypes; j++) {",
+      "kind": "note",
+      "text": "逐个校验。"
+    },
+    {
+      "at": 108,
+      "quote": "if (overrides[j].getWindowType()",
+      "kind": "branch",
+      "text": "**windowType 变了**。"
+    },
+    {
+      "at": 109,
+      "quote": "!= newOverrides[j].getWindowType()) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 110,
+      "quote": "throw new IllegalArgumentException(",
+      "kind": "note",
+      "text": "抛异常。"
+    },
+    {
+      "at": 111,
+      "quote": "\"Insets override types can not be changed after\"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 112,
+      "quote": "+ \" the window is added.\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 113,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 114,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 115,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 116,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 117,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 118,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 119,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 providedInsets 分支。"
+    },
+    {
+      "at": 120,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 121,
+      "quote": "final boolean wasTrustedOverlay = win.isWindowTrustedOverlay();",
+      "kind": "data",
+      "text": "记录之前是否可信 overlay。"
+    },
+    {
+      "at": 122,
+      "quote": "flagChanges = win.mAttrs.flags ^ attrs.flags;",
+      "kind": "data",
+      "text": "**flag 差异**（异或）。"
+    },
+    {
+      "at": 123,
+      "quote": "privateFlagChanges = win.mAttrs.privateFlags ^ attrs.privateFlags;",
+      "kind": "data",
+      "text": "privateFlag 差异。"
+    },
+    {
+      "at": 124,
+      "quote": "attrChanges = win.mAttrs.copyFrom(attrs);",
+      "kind": "call",
+      "text": "**写入新 attrs**，返回变化位。"
+    },
+    {
+      "at": 125,
+      "quote": "final boolean layoutChanged =",
+      "kind": "data",
+      "text": "是否涉及布局变化。"
+    },
+    {
+      "at": 126,
+      "quote": "(attrChanges & WindowManager.LayoutParams.LAYOUT_CHANGED) != 0;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 127,
+      "quote": "if (layoutChanged || (attrChanges",
+      "kind": "branch",
+      "text": "**布局或系统 UI 可见性变了**。"
+    },
+    {
+      "at": 128,
+      "quote": "& WindowManager.LayoutParams.SYSTEM_UI_VISIBILITY_CHANGED) != 0) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 129,
+      "quote": "win.mLayoutNeeded = true;",
+      "kind": "state",
+      "text": "**标记需要重新布局**。"
+    },
+    {
+      "at": 130,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 131,
+      "quote": "if (layoutChanged && win.providesDisplayDecorInsets()) {",
+      "kind": "branch",
+      "text": "布局变化且窗口提供 decor insets。"
+    },
+    {
+      "at": 132,
+      "quote": "configChanged = displayPolicy.updateDecorInsetsInfo();",
+      "kind": "state",
+      "text": "**重算 decor insets**。"
+    },
+    {
+      "at": 133,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 134,
+      "quote": "if (wasTrustedOverlay != win.isWindowTrustedOverlay()) {",
+      "kind": "branch",
+      "text": "可信 overlay 状态变了。"
+    },
+    {
+      "at": 135,
+      "quote": "win.updateTrustedOverlay();",
+      "kind": "call",
+      "text": "更新缓存。"
+    },
+    {
+      "at": 136,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 137,
+      "quote": "if (win.mActivityRecord != null && ((flagChanges & FLAG_SHOW_WHEN_LOCKED) != 0",
+      "kind": "branch",
+      "text": "有 ActivityRecord 且改了锁屏相关 flag。"
+    },
+    {
+      "at": 138,
+      "quote": "|| (flagChanges & FLAG_DISMISS_KEYGUARD) != 0)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 139,
+      "quote": "win.mActivityRecord.checkKeyguardFlagsChanged();",
+      "kind": "call",
+      "text": "**重新检查 keyguard flags**。"
+    },
+    {
+      "at": 140,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 141,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 142,
+      "quote": "if ((privateFlagChanges & SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS) != 0) {",
+      "kind": "branch",
+      "text": "改了「隐藏非系统 overlay」flag。"
+    },
+    {
+      "at": 143,
+      "quote": "updateNonSystemOverlayWindowsVisibilityIfNeeded(",
+      "kind": "call",
+      "text": "重新计算可见性。"
+    },
+    {
+      "at": 144,
+      "quote": "win, win.mWinAnimator.getShown());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 145,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 146,
+      "quote": "// See if the DisplayWindowPolicyController wants to keep the activity on the window",
+      "kind": "note",
+      "text": "注释：看 DisplayWindowPolicyController 是否要求留在本屏。"
+    },
+    {
+      "at": 147,
+      "quote": "if (displayContent.mDwpcHelper.hasController()",
+      "kind": "branch",
+      "text": "有控制器、有 ActivityRecord 且首次或 flag 有变。"
+    },
+    {
+      "at": 148,
+      "quote": "&& win.mActivityRecord != null && (!win.mRelayoutCalled || flagChanges != 0",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 149,
+      "quote": "|| privateFlagChanges != 0)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 150,
+      "quote": "int newOrChangedFlags = !win.mRelayoutCalled ? win.mAttrs.flags : flagChanges;",
+      "kind": "data",
+      "text": "首次用全部 flag，否则用差异。"
+    },
+    {
+      "at": 151,
+      "quote": "int newOrChangedPrivateFlags =",
+      "kind": "data",
+      "text": "privateFlag 同理。"
+    },
+    {
+      "at": 152,
+      "quote": "!win.mRelayoutCalled ? win.mAttrs.privateFlags : privateFlagChanges;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 153,
+      "quote": "",
+      "kind": "branch",
+      "text": "**控制器判定不能留在本屏**。"
+    },
+    {
+      "at": 154,
+      "quote": "if (!displayContent.mDwpcHelper.keepActivityOnWindowFlagsChanged(",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 155,
+      "quote": "win.mActivityRecord.info, newOrChangedFlags, newOrChangedPrivateFlags,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 156,
+      "quote": "win.mAttrs.flags,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 157,
+      "quote": "win.mAttrs.privateFlags)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 158,
+      "quote": "mH.sendMessage(mH.obtainMessage(H.REPARENT_TASK_TO_DEFAULT_DISPLAY,",
+      "kind": "call",
+      "text": "**异步迁到默认屏**。"
+    },
+    {
+      "at": 159,
+      "quote": "win.mActivityRecord.getTask()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 160,
+      "quote": "Slog.w(TAG_WM, \"Activity \" + win.mActivityRecord + \" window flag changed,\"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 161,
+      "quote": "+ \" can't remain on display \" + displayContent.getDisplayId());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 162,
+      "quote": "return 0;",
+      "kind": "note",
+      "text": "返回 0。"
+    },
+    {
+      "at": 163,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 164,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭控制器分支。"
+    },
+    {
+      "at": 165,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 attrs 分支。"
+    },
+    {
+      "at": 166,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 167,
+      "quote": "if (DEBUG_LAYOUT) {",
+      "kind": "branch",
+      "text": "布局调试开关。"
+    },
+    {
+      "at": 168,
+      "quote": "Slog.v(TAG_WM, \"Relayout \" + win + \": viewVisibility=\" + viewVisibility",
+      "kind": "note",
+      "text": "V 级日志。"
+    },
+    {
+      "at": 169,
+      "quote": "+ \" req=\" + requestedWidth + \"x\" + requestedHeight + \" \" + win.mAttrs);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 170,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 171,
+      "quote": "if ((attrChanges & WindowManager.LayoutParams.ALPHA_CHANGED) != 0) {",
+      "kind": "branch",
+      "text": "**alpha 变了**。"
+    },
+    {
+      "at": 172,
+      "quote": "winAnimator.mAlpha = attrs.alpha;",
+      "kind": "state",
+      "text": "**直接写进 animator**（不走布局）。"
+    },
+    {
+      "at": 173,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    }
+  ]
+}

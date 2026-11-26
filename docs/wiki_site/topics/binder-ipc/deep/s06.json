@@ -1,0 +1,55 @@
+{
+  "step": "s06",
+  "title": "talkWithDriver：一次 ioctl 同时收发",
+  "tldr": "组装 binder_write_read，write 是 mOut 待发数据，read 只在 mIn 读完时才给；一次 ioctl 同时完成。",
+  "why": "needRead 这个判断是理解 binder 并发语义的钥匙：如果 mIn 里还有没处理完的数据，就不会再去读新的。这保证了「一个线程同一时刻只有一个未完成事务」——也就是说，同步调用期间该线程不能再发起第二个同步调用（否则会破坏回复的配对）。这也是服务端必须多线程的原因。",
+  "concepts": [
+    {
+      "term": "binder_write_read",
+      "text": "一次 ioctl 的收发描述。"
+    },
+    {
+      "term": "needRead",
+      "text": "mIn 是否已读完。"
+    },
+    {
+      "term": "EINTR 重试",
+      "text": "信号中断时循环重试。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "const bool needRead = mIn.dataPosition() >= mIn.dataSize();",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1255",
+      "what": "缓冲是否读完。"
+    },
+    {
+      "call": "const size_t outAvail = (!doReceive || needRead) ? mOut.dataSize() : 0;",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1260",
+      "what": "还有未读数据时不写。"
+    },
+    {
+      "call": "if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1304",
+      "what": "**唯一的内核入口**。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mIn / mOut",
+      "before": "混合状态",
+      "after": "写清空、读填充",
+      "note": "见第 7 步。"
+    }
+  ],
+  "threads": "调用线程（阻塞在 ioctl 里）。",
+  "pitfalls": [
+    "以为可以并发发起两个同步调用：单缓冲不允许。",
+    "忽略 needRead 语义：会破坏回复配对。"
+  ],
+  "debug": [
+    "trace 里 binder transaction 的起止。",
+    "Perfetto binder 轨道显示 ioctl 时长。"
+  ],
+  "next": "ioctl 返回后做什么？见第 7 步。"
+}

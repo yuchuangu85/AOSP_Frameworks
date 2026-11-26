@@ -1,0 +1,51 @@
+{
+  "step": "s24",
+  "title": "边界：哪些不在本仓库",
+  "tldr": "SystemUI 的具体窗口、Shell/WMShell 的转场编排、vendor 显示策略都不在本仓库。",
+  "why": "划清边界是为了避免两类误判：一是把 Shell 的转场行为当成 WMS 逻辑去找实现（找不到），二是把 SystemUI 窗口的属性问题当成 WMS bug。本仓库能看到的是 WMS 的接口与容器结构，看不到具体窗口由谁、按什么策略创建。",
+  "concepts": [
+    {
+      "term": "Shell",
+      "text": "独立的系统 UI 模块，负责转场编排。"
+    },
+    {
+      "term": "SystemUI",
+      "text": "状态栏/导航栏的具体实现。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1672",
+      "what": "WMS 只提供接口，不管谁调用。"
+    },
+    {
+      "call": "public int addToDisplayAsUser(IWindow window, WindowManager.LayoutParams attrs,",
+      "ref": "base/services/core/java/com/android/server/wm/Session.java:272",
+      "what": "所有调用方共用同一入口。"
+    },
+    {
+      "call": "final ActionChain chain = mAtmService.mChainTracker.startTransit(\"addWin\");",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2025",
+      "what": "转场由外部模块参与，WMS 只做协调。"
+    }
+  ],
+  "state": [
+    {
+      "field": "职责边界",
+      "before": "模糊",
+      "after": "清晰",
+      "note": "WMS=窗口与布局，Shell=转场，SystemUI=具体窗口。"
+    }
+  ],
+  "threads": "跨进程多方协作。",
+  "pitfalls": [
+    "在 WMS 里找转场动画实现。",
+    "把 SystemUI 窗口问题当 WMS bug。"
+  ],
+  "debug": [
+    "dumpsys window 能看到所有窗口（含 SystemUI 的）。",
+    "Shell 有独立的转场日志。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 view-traversal 看窗口内容如何被绘制。"
+}

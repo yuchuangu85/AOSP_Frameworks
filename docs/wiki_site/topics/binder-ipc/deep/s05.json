@@ -1,0 +1,60 @@
+{
+  "step": "s05",
+  "title": "writeTransactionData：打包 BC_TRANSACTION",
+  "tldr": "填 binder_transaction_data 再写进 mOut；Parcel 有错则用 TF_STATUS_CODE 只回传错误。",
+  "why": "这个函数揭示了 binder 的鉴权基础：sender_pid 与 sender_euid **由驱动填写**，用户态即使赋了值也会被覆盖。所以「调用方身份」不可伪造。另一个细节是错误路径：如果 Parcel 编组期间出过错，不会发垃圾数据，而是打上 TF_STATUS_CODE 让对端直接读到错误码。",
+  "concepts": [
+    {
+      "term": "binder_transaction_data",
+      "text": "驱动的调用描述结构。"
+    },
+    {
+      "term": "TF_STATUS_CODE",
+      "text": "表示负载里只有 status 没有数据。"
+    },
+    {
+      "term": "offsets",
+      "text": "负载里哪些位置是 binder 对象。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "tr.target.handle = handle;",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1371",
+      "what": "目标句柄。"
+    },
+    {
+      "call": "tr.sender_euid = 0;",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1376",
+      "what": "留 0，由驱动填真实身份。"
+    },
+    {
+      "call": "tr.flags |= TF_STATUS_CODE;",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1385",
+      "what": "错误路径只回 status。"
+    },
+    {
+      "call": "mOut.write(&tr, sizeof(tr));",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1396",
+      "what": "写进线程本地缓冲。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mOut",
+      "before": "空",
+      "after": "含一条 BC_TRANSACTION",
+      "note": "等 ioctl 才真正交出。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为可以伪造 sender_uid：驱动会覆盖。",
+    "忽略 errorCheck：编组出错后仍继续发会污染对端。"
+  ],
+  "debug": [
+    "事务日志能看到写进去的 tr 内容。",
+    "hex dump 可看命令序列。"
+  ],
+  "next": "如何交给驱动？见第 6 步。"
+}

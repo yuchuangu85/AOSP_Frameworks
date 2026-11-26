@@ -1,0 +1,252 @@
+{
+  "id": "tx-merge",
+  "title": "Transaction::merge",
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "sig": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::merge(Transaction&& other)",
+  "span": [
+    981,
+    1020
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::merge(Transaction&& other) {",
+      "kind": "note",
+      "text": "把另一个事务并进来。要点是**回调要重新登记**，以及**被覆盖的 buffer 要立刻归还**。"
+    },
+    {
+      "at": 2,
+      "quote": "for (const auto& [listener, callbackInfo] : other.mListenerCallbacks) {",
+      "kind": "note",
+      "text": "先合并 listener 回调。"
+    },
+    {
+      "at": 3,
+      "quote": "auto& [callbackIds, surfaceControls] = callbackInfo;",
+      "kind": "note",
+      "text": "解构出 callbackIds 与 surfaceControls。"
+    },
+    {
+      "at": 4,
+      "quote": "mListenerCallbacks[listener].callbackIds.insert(std::make_move_iterator(",
+      "kind": "call",
+      "text": "把 other 的 callbackIds move 进来。"
+    },
+    {
+      "at": 5,
+      "quote": "callbackIds.begin()),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "std::make_move_iterator(callbackIds.end()));",
+      "kind": "note",
+      "text": "闭合。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "mListenerCallbacks[listener].surfaceControls.insert(surfaceControls.begin(),",
+      "kind": "call",
+      "text": "把绑定的 SurfaceControl 也并进来。"
+    },
+    {
+      "at": 9,
+      "quote": "surfaceControls.end());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 11,
+      "quote": "auto& currentProcessCallbackInfo =",
+      "kind": "data",
+      "text": "本进程自身的 TransactionCompletedListener 也要记录这些 SurfaceControl。"
+    },
+    {
+      "at": 12,
+      "quote": "mListenerCallbacks[TransactionCompletedListener::getIInstance()];",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 13,
+      "quote": "currentProcessCallbackInfo.surfaceControls",
+      "kind": "call",
+      "text": "插入 surfaceControls。"
+    },
+    {
+      "at": 14,
+      "quote": ".insert(std::make_move_iterator(surfaceControls.begin()),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 15,
+      "quote": "std::make_move_iterator(surfaceControls.end()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "// register all surface controls for all callbackIds for this listener that is merging",
+      "kind": "note",
+      "text": "注释：为合并进来的 listener 重新登记所有 SurfaceControl 到 callbackIds 的映射。"
+    },
+    {
+      "at": 18,
+      "quote": "for (const auto& surfaceControl : currentProcessCallbackInfo.surfaceControls) {",
+      "kind": "note",
+      "text": "遍历当前进程回调信息里的 SurfaceControl。"
+    },
+    {
+      "at": 19,
+      "quote": "mTransactionCompletedListener",
+      "kind": "call",
+      "text": "重新登记，避免合并后回调丢失。"
+    },
+    {
+      "at": 20,
+      "quote": "->addSurfaceControlToCallbacks(surfaceControl,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "currentProcessCallbackInfo.callbackIds);",
+      "kind": "note",
+      "text": "闭合。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 listener 循环。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "mState.merge(std::move(other.mState),",
+      "kind": "call",
+      "text": "**核心**：状态合并，并以回调的形式处理被覆盖的层。"
+    },
+    {
+      "at": 26,
+      "quote": "[this](const layer_state_t& state) { releaseBufferIfOverwriting(state); });",
+      "kind": "call",
+      "text": "回调里立刻释放被覆盖的旧 buffer——不释放就会泄漏槽位。"
+    },
+    {
+      "at": 27,
+      "quote": "mMayContainBuffer |= other.mMayContainBuffer;",
+      "kind": "state",
+      "text": "标记本事务可能含 buffer。"
+    },
+    {
+      "at": 28,
+      "quote": "mApplyToken = other.mApplyToken;",
+      "kind": "state",
+      "text": "继承 other 的 applyToken：合并后顺序域以被合并方为准。"
+    },
+    {
+      "at": 29,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "mLogCallPoints |= other.mLogCallPoints;",
+      "kind": "state",
+      "text": "合并调试标志。"
+    },
+    {
+      "at": 31,
+      "quote": "if (mLogCallPoints) {",
+      "kind": "branch",
+      "text": "开了调用点日志。"
+    },
+    {
+      "at": 32,
+      "quote": "ALOG(LOG_DEBUG, LOG_SURFACE_CONTROL_REGISTRY,",
+      "kind": "note",
+      "text": "打印合并关系。"
+    },
+    {
+      "at": 33,
+      "quote": "\"Transaction %\" PRIu64 \" merged with transaction %\" PRIu64, other.getId(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 34,
+      "quote": "mState.getId());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "闭合。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 37,
+      "quote": "other.clear();",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "",
+      "kind": "call",
+      "text": "清空 other，避免重复提交。"
+    },
+    {
+      "at": 39,
+      "quote": "return *this;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "返回自身，支持链式调用。"
+    }
+  ]
+}

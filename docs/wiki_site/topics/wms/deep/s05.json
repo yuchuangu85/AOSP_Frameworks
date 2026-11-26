@@ -1,0 +1,56 @@
+{
+  "step": "s05",
+  "title": "WindowToken：窗口的归属契约",
+  "tldr": "应用窗口的 token 来自 ActivityRecord；系统窗口用新建 WindowToken 挂在 DisplayArea 上。",
+  "why": "token 同时决定三件事：窗口属于哪个容器（决定布局与裁剪）、继承什么策略（type 检查按 rootType）、以及生命周期（token 死亡时其下所有窗口一起移除）。addWindow 里大段的分支其实都在做同一件事——搞清楚「这个 token 是不是一个合法的宿主」。",
+  "concepts": [
+    {
+      "term": "WindowToken",
+      "text": "窗口归属契约，本身是 WindowContainer。"
+    },
+    {
+      "term": "rootType",
+      "text": "有父窗口取父的 type，否则取自己的。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "WindowToken token = displayContent.getWindowToken(",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1718",
+      "what": "按 token 找。"
+    },
+    {
+      "call": "if (!unprivilegedAppCanCreateTokenWith(parentWindow, callingUid, type,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1729",
+      "what": "无特权应用不得乱建 token。"
+    },
+    {
+      "call": "token = new WindowToken.Builder(this, binder, type)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1750",
+      "what": "系统窗口新建 token。"
+    },
+    {
+      "call": "win.mToken.addWindow(win);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2053",
+      "what": "最后挂进 token。"
+    }
+  ],
+  "state": [
+    {
+      "field": "WindowToken 的窗口列表",
+      "before": "不含新窗口",
+      "after": "含",
+      "note": "token 移除时整批清理。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "用 Activity 的 token 加系统窗口：会被重建为新 token。",
+    "忽略 rootType：子窗口按父 type 检查权限。"
+  ],
+  "debug": [
+    "dumpsys window tokens 能看到每个 token 下的窗口。",
+    "日志 Non-null activity for system window。"
+  ],
+  "next": "输入通道何时建立？见第 6 步。"
+}

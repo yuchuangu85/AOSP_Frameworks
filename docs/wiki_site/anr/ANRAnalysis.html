@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Android ANR（Application Not Responding）流程分析 · ANR</title>
+<script>
+(function(){try{
+  var s=localStorage.getItem('st-theme');
+  var sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+  var f=null;try{f=new URLSearchParams(location.search).get('theme');}catch(e){}
+  document.documentElement.dataset.theme=(f==='light'||f==='dark')?f:(s||sys);
+}catch(e){document.documentElement.dataset.theme='dark';}})();
+</script>
+<style>:root {
+  --bg: #23262b;
+  --bg-2: #2a2e34;
+  --panel: #2d3138;
+  --panel-2: #363b43;
+  --line: rgba(255, 255, 255, 0.16);
+  --line-2: rgba(255, 255, 255, 0.30);
+  --tx: #f5f8fc;
+  --tx-2: #c8d1dd;
+  --tx-3: #98a5b5;
+  --wms: #ffb454;
+  --shell: #33d6c0;
+  --app: #4c8dff;
+  --sf: #c792ea;
+  --code: #dbe4ee;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --panel-solid: #2d3138;
+  --accent: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--tx);
+  font: 14px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bg-grid {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* ---------------- header ---------------- */
+.hdr {
+  position: relative; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 28px;
+  padding: 30px 40px 22px;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.kicker { font: 11px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--wms); }
+.hdr h1 { margin: 10px 0 6px; font-size: 30px; line-height: 1.25; letter-spacing: -0.01em; }
+.sub { margin: 0; color: var(--tx-2); font-size: 13.5px; max-width: 760px; }
+.hdr-stats { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.stat {
+  min-width: 86px; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: 10px; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+}
+.stat b { display: block; font: 600 20px/1.2 var(--mono); color: var(--tx); }
+.stat span { font-size: 11px; color: var(--tx-3); }
+
+/* ---------------- layout ---------------- */
+.app { position: relative; z-index: 1; display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: calc(100vh - 210px); }
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 18px 10px 40px 14px;
+  position: sticky; top: 0; align-self: start;
+  max-height: 100vh; overflow-y: auto;
+}
+.rail::-webkit-scrollbar, .code-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.rail::-webkit-scrollbar-thumb, .code-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+.phase { margin: 16px 0 6px; font: 10.5px/1.5 var(--mono); letter-spacing: 0.04em; color: var(--tx-3); }
+.phase span { letter-spacing: 0; opacity: .7; }
+.phase:first-child { margin-top: 2px; }
+.step {
+  position: relative; display: grid; grid-template-columns: 26px 1fr; gap: 9px;
+  padding: 8px 10px 8px 8px; margin: 2px 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.step:hover { background: rgba(255,255,255,0.035); }
+.step.is-on { background: rgba(255,255,255,0.055); border-color: var(--line-2); }
+.step .n { font: 600 11px/1.5 var(--mono); color: var(--tx-3); text-align: right; padding-top: 2px; }
+.step .t { font-size: 12.5px; line-height: 1.45; color: var(--tx-2); }
+.step.is-on .t { color: var(--tx); }
+.step .lane-dot { position: absolute; left: 0; top: 12px; width: 3px; height: 16px; border-radius: 2px; opacity: 0.85; }
+.step .p0tag { display: inline-block; margin-left: 6px; padding: 0 5px; font: 10px/16px var(--mono); border-radius: 4px;
+  color: var(--wms); border: 1px solid rgba(255,180,84,0.35); background: rgba(255,180,84,0.08); }
+
+/* ---------------- stage ---------------- */
+.stage { padding: 18px 34px 60px 26px; min-width: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+.tab {
+  appearance: none; border: 0; background: transparent; color: var(--tx-3);
+  font: 500 13px/1 inherit; padding: 12px 14px; cursor: pointer; position: relative;
+}
+.tab:hover { color: var(--tx-2); }
+.tab.is-on { color: var(--tx); }
+.tab.is-on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--wms); border-radius: 2px; }
+.view { display: none; }
+.view.is-on { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+.panel { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); margin-bottom: 16px; overflow: hidden; }
+.panel-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.panel-hd h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+.hint { font-size: 11.5px; color: var(--tx-3); }
+.grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+.diagram-wrap { padding: 12px 16px 18px; overflow: auto; }
+
+/* 图缩放/拖拽容器：盖住原有 padding，控件浮在右上角 */
+.zoom-wrap { position: relative; overflow: hidden; padding: 0; touch-action: none; height: 62vh; min-height: 360px; }
+.zoom-wrap > svg {
+  display: block; position: absolute; left: 0; top: 0;
+  max-width: none; user-select: none;
+  /* 放大是改布局尺寸，文字与描边会重新栅格化，因此放大后依然锐利 */
+}
+.zoom-wrap.is-dragging { cursor: grabbing; }
+.zoom-wrap.grab { cursor: grab; }
+.zoom-ui {
+  position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 4px;
+  padding: 4px; border-radius: 9px; z-index: 3;
+  border: 1px solid var(--line); background: var(--panel-solid, rgba(12,16,22,0.82));
+  backdrop-filter: blur(6px);
+}
+.zoom-ui button {
+  min-width: 26px; height: 24px; padding: 0 7px; cursor: pointer;
+  font: 12px/1 var(--mono); color: var(--tx-2);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.zoom-ui button:hover { color: var(--tx); border-color: var(--accent, #4c8dff); }
+.zoom-ui .zoom-val { min-width: 46px; text-align: center; font: 11.5px/1 var(--mono); color: var(--tx-3); }
+.zoom-hint { position: absolute; left: 12px; bottom: 8px; z-index: 3; font: 10.5px/1.4 var(--mono); color: var(--tx-3); opacity: 0.75; pointer-events: none; }
+.zoom-wrap.is-zoomed .zoom-hint { opacity: 0; }
+
+.diagram { width: 100%; height: auto; display: block; }
+
+/* svg text */
+.grp { fill: rgba(255,255,255,0.012); stroke-dasharray: 4 5; stroke-opacity: 0.45; }
+.grp-label { font: 11px/1 var(--mono); letter-spacing: 0.1em; opacity: 0.85; }
+.box rect { fill: rgba(255,255,255,0.04); stroke: rgba(255,255,255,0.14); }
+.bx { fill: var(--tx); font-size: 12.5px; font-weight: 600; }
+.bs { fill: var(--tx-3); font-size: 10.5px; }
+.edge { fill: none; stroke-width: 1.4; opacity: 0.95; }
+.el { fill: var(--tx-2); font-size: 10px; }
+.halo { paint-order: stroke; stroke: #26292e; stroke-width: 4px; stroke-linejoin: round; }
+.band { fill: rgba(255,255,255,0.014); }
+.lane-hd { fill: rgba(255,255,255,0.035); }
+.lane-t { font: 600 12px/1 -apple-system, sans-serif; }
+.lane-vl { stroke-width: 1.1; stroke-dasharray: 3 6; opacity: 0.5; }
+.msg { cursor: pointer; }
+.msg line, .msg path { stroke-width: 1.4; }
+.msg:hover line, .msg:hover path { stroke-width: 2.2; }
+.ml { fill: var(--tx-2); font-size: 11px; }
+.msg.is-on .ml { fill: var(--tx); font-weight: 600; }
+.mn { fill: var(--tx-3); font: 10px/1 var(--mono); }
+.tier { fill: var(--tx-3); font: 11px/1 var(--mono); letter-spacing: 0.1em; }
+.cls rect { fill: rgba(255,255,255,0.035); }
+.cn { font-size: 13px; font-weight: 600; }
+.cs { fill: var(--tx-3); font-size: 10.5px; }
+.cm { fill: var(--tx-2); font: 11px/1.4 var(--mono); }
+.rel { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 1.2; }
+.rl { fill: var(--tx-3); font-size: 9.5px; }
+.fproc { fill: rgba(255,255,255,0.045); stroke: rgba(255,255,255,0.14); }
+.fterm { fill: rgba(255,180,84,0.10); stroke: rgba(255,180,84,0.45); }
+.fd { fill: rgba(51,214,192,0.07); stroke: rgba(51,214,192,0.45); }
+.fn { fill: var(--tx); font-size: 12px; }
+.fedge { fill: none; stroke: rgba(255,255,255,0.34); stroke-width: 1.4; }
+.fl { fill: var(--tx-3); font-size: 10.5px; }
+
+/* ---------------- step card ---------------- */
+.step-card { display: none; border: 1px solid var(--line-2); border-left: 3px solid var(--wms); border-radius: 12px; padding: 14px 18px; margin-bottom: 16px; background: linear-gradient(90deg, rgba(255,180,84,0.06), transparent 60%); }
+.step-card.is-on { display: block; }
+.step-card .sc-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-card .sc-n { font: 600 11px/1 var(--mono); color: var(--wms); }
+.step-card h3 { margin: 0; font-size: 15px; }
+.step-card p { margin: 6px 0 10px; color: var(--tx-2); font-size: 13px; }
+.refs { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref { font: 11px/1.6 var(--mono); color: var(--tx-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: rgba(255,255,255,0.03); }
+.ref b { color: var(--shell); font-weight: 600; }
+
+/* ---------------- p0 list ---------------- */
+.p0-list { padding: 6px 0 10px; }
+.p0-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 9px 18px; border-bottom: 1px dashed rgba(255,255,255,0.06); cursor: pointer; }
+.p0-item:last-child { border-bottom: 0; }
+.p0-item:hover { background: rgba(255,255,255,0.03); }
+.p0-item .nm { font: 12.5px/1.4 var(--mono); color: var(--tx); }
+.p0-item .wh { font-size: 11.5px; color: var(--tx-3); margin-top: 3px; }
+.cov { font: 11px/1 var(--mono); color: var(--shell); white-space: nowrap; padding-top: 4px; }
+.cov.low { color: #ff9f43; }
+
+/* ---------------- code ---------------- */
+.code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font: 11.5px/1 var(--mono); padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); color: var(--tx-2); background: rgba(255,255,255,0.02); cursor: pointer; }
+.chip:hover { border-color: var(--line-2); color: var(--tx); }
+.chip.is-on { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.code-tools { display: flex; align-items: center; gap: 10px; }
+.code-tools input[type="search"] { width: 210px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+.code-tools input[type="search"]:focus { border-color: var(--shell); }
+.sw { font-size: 11.5px; color: var(--tx-3); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.step-hint { display: none; margin-bottom: 10px; font-size: 12px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 10px; }
+.step-hint.is-on { display: block; }
+.code-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: auto; max-height: calc(100vh - 260px); background: #191c21; }
+.code { min-width: 900px; font: 12px/1.85 var(--mono); }
+.crow { display: grid; grid-template-columns: 58px minmax(0, 1fr) 360px; align-items: start; border-bottom: 1px solid rgba(255,255,255,0.024); }
+.crow:hover { background: rgba(255,255,255,0.035); }
+.crow.has-note { background: rgba(255,255,255,0.017); }
+.crow.is-focus { background: rgba(255,180,84,0.09); }
+.crow .ln { color: #4b5869; text-align: right; padding: 0 10px 0 0; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); }
+.crow .lc { padding: 0 14px; white-space: pre; overflow-x: auto; color: var(--code); }
+.crow .la { padding: 1px 12px 3px 12px; font: 11.5px/1.6 -apple-system, "PingFang SC", sans-serif; color: var(--tx-2); border-left: 1px solid rgba(255,255,255,0.05); }
+.crow .la .k { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.crow.hidden { display: none; }
+.code-empty { padding: 40px; text-align: center; color: var(--tx-3); }
+
+/* ---------------- risk ---------------- */
+.risk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.risk-table th, .risk-table td { text-align: left; padding: 11px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.risk-table th { font: 11px/1 var(--mono); letter-spacing: 0.08em; color: var(--tx-3); text-transform: uppercase; }
+.risk-table td:first-child { color: var(--tx); width: 30%; }
+.risk-table td:nth-child(2) { color: var(--tx-2); }
+.risk-table code { color: var(--sf); font-size: 11.5px; }
+
+.facts { margin: 0; padding: 14px 18px 14px 36px; color: var(--tx-2); font-size: 12.5px; }
+.facts li { margin: 8px 0; }
+.facts b { color: var(--tx); }
+
+/* ---------------- footer ---------------- */
+.ftr { position: relative; z-index: 1; border-top: 1px solid var(--line); padding: 14px 40px 26px; color: var(--tx-3); font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+.ftr code { color: var(--tx-2); }
+.dot { opacity: 0.5; }
+
+@media (max-width: 1180px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { position: relative; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  .grid-2 { grid-template-columns: 1fr; }
+  .crow { grid-template-columns: 46px minmax(0, 1fr) 240px; }
+  .hdr { flex-direction: column; align-items: flex-start; }
+}
+
+/* code tokens */
+.crow .lc .k { color: #ff9e64; }
+.crow .lc .s { color: #9ece6a; }
+.crow .lc .c1 { color: #5f6b7a; font-style: italic; }
+.crow .lc .n { color: #7dcfff; }
+.crow .lc .a { color: #bb9af7; }
+
+
+.msg.is-on .band { fill: rgba(255,180,84,0.06); }
+.line-hd { fill: none; }
+
+/* ---------------- inventory ---------------- */
+.inv-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.inv-bar select, .inv-bar input[type="search"] {
+  padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none;
+}
+.inv-bar input[type="search"] { width: 220px; }
+.inv-bar select:focus, .inv-bar input:focus { border-color: var(--shell); }
+.inv-wrap { max-height: calc(100vh - 300px); overflow: auto; }
+.inv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv-table th { position: sticky; top: 0; background: #0a0e15; text-align: left; padding: 9px 14px;
+  font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; color: var(--tx-3); border-bottom: 1px solid var(--line); }
+.inv-table td { padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.inv-table tr.row:hover { background: rgba(255,255,255,0.035); cursor: pointer; }
+.inv-table .fn { font: 12px/1.5 var(--mono); color: var(--tx); }
+.inv-table .fl { color: var(--tx-3); font: 10.5px/1.5 var(--mono); }
+.inv-table .rg { font: 11px/1.5 var(--mono); color: var(--tx-2); white-space: nowrap; }
+.inv-table .act-hd { width: 82px; }
+.inv-table td.act { text-align: right; }
+.inv-table button.go-code, .inv-table button.go-card {
+  appearance: none; cursor: pointer; white-space: nowrap;
+  font: 11px/1 var(--mono); padding: 5px 9px; border-radius: 6px;
+  border: 1px solid rgba(255,180,84,0.45); background: rgba(255,180,84,0.10); color: var(--wms);
+}
+.inv-table button.go-code:hover { background: rgba(255,180,84,0.20); }
+.inv-table button.go-card {
+  border-color: var(--line-2); background: rgba(255,255,255,0.03); color: var(--tx-2);
+}
+.inv-table button.go-card:hover { color: var(--tx); border-color: var(--wms); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font: 10.5px/1.6 var(--mono); border: 1px solid; }
+.badge.covered { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.badge.partial { color: var(--wms); border-color: rgba(255,180,84,0.4); background: rgba(255,180,84,0.08); }
+.badge.uncovered { color: var(--tx-3); border-color: var(--line); }
+.card-row td { background: rgba(255,255,255,0.02); }
+.card-box { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px 18px; font-size: 12px; color: var(--tx-2); }
+.card-box .k { color: var(--tx-3); font: 10px/1.4 var(--mono); letter-spacing: 0.08em; display: block; }
+.card-box .wide { grid-column: 1 / -1; }
+.card-box b { color: var(--tx); font-weight: 600; }
+@media (max-width: 1180px) { .card-box { grid-template-columns: 1fr 1fr; } }
+
+#diagram-seq { max-height: 78vh; overflow: auto; }
+
+/* ---------------- deep read ---------------- */
+.scenario { display: flex; gap: 0; align-items: stretch; overflow-x: auto; border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 14px; background: linear-gradient(90deg, rgba(255,180,84,0.05), transparent 55%); }
+.scenario .ev { min-width: 150px; padding: 10px 14px; border-right: 1px dashed rgba(255,255,255,0.06); }
+.scenario .ev:last-child { border-right: 0; }
+.scenario .t { font: 11px/1.4 var(--mono); color: var(--wms); }
+.scenario .l { font-size: 12px; color: var(--tx); margin-top: 3px; }
+.scenario .d { font-size: 10.5px; color: var(--tx-3); margin-top: 2px; line-height: 1.45; }
+
+.deep-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.navbtn { appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,0.03); color: var(--tx-2);
+  border-radius: 7px; padding: 7px 12px; font: 12px/1 var(--mono); cursor: pointer; }
+.navbtn:hover { border-color: var(--line-2); color: var(--tx); }
+.deep-progress { font: 11.5px/1 var(--mono); color: var(--tx-3); flex: 1; text-align: center; }
+
+.deep-wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+.deep-body { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 26px 30px 34px; }
+.deep-body .kicker { font: 11px/1.4 var(--mono); letter-spacing: 0.1em; color: var(--wms); }
+.deep-body h1 { margin: 8px 0 6px; font-size: 25px; letter-spacing: -0.01em; }
+.deep-body .tldr { margin: 0 0 22px; font-size: 15px; line-height: 1.75; color: var(--tx); border-left: 2px solid var(--wms); padding-left: 14px; }
+.deep-body h2 { margin: 26px 0 10px; font-size: 13px; letter-spacing: 0.06em; color: var(--tx-3); font-weight: 600;
+  text-transform: uppercase; font-family: var(--mono); }
+.deep-body p { margin: 8px 0; color: var(--tx-2); line-height: 1.85; }
+.deep-body .why { font-size: 14px; color: var(--tx); line-height: 1.85; }
+.deep-body ol.walk { margin: 6px 0 0; padding-left: 0; list-style: none; counter-reset: w; }
+.deep-body ol.walk li { position: relative; padding: 10px 0 12px 38px; border-bottom: 1px dashed rgba(255,255,255,0.06); counter-increment: w; }
+.deep-body ol.walk li::before { content: counter(w); position: absolute; left: 0; top: 10px; width: 22px; height: 22px;
+  border-radius: 50%; border: 1px solid var(--line-2); color: var(--wms); font: 11px/22px var(--mono); text-align: center; }
+.deep-body ol.walk .call { font: 12.5px/1.6 var(--mono); color: var(--tx); }
+.deep-body ol.walk .ref { display: inline-block; margin-left: 8px; font: 10.5px/1.6 var(--mono); color: var(--shell);
+  border: 1px solid rgba(51,214,192,0.25); background: rgba(51,214,192,0.06); border-radius: 5px; padding: 0 6px; }
+.deep-body ol.walk .what { margin-top: 4px; font-size: 13px; color: var(--tx-2); }
+.deep-body table.state { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.deep-body table.state th, .deep-body table.state td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.deep-body table.state th { font: 10.5px/1.4 var(--mono); color: var(--tx-3); letter-spacing: 0.06em; }
+.deep-body table.state code { color: var(--tx); font: 11.5px/1.5 var(--mono); }
+.deep-body .threads { font-size: 13px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 12px; }
+.deep-body ul.plain { margin: 6px 0; padding-left: 18px; color: var(--tx-2); font-size: 13px; }
+.deep-body ul.plain li { margin: 6px 0; line-height: 1.7; }
+.deep-body .next { margin-top: 26px; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,180,84,0.25);
+  background: rgba(255,180,84,0.06); color: var(--tx); font-size: 13px; }
+.deep-body .concept { display: inline-block; margin: 4px 8px 0 0; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.03); font-size: 12px; color: var(--tx-2); }
+.deep-body .concept b { color: var(--tx); font-weight: 600; }
+.deep-body .missing { color: var(--tx-3); font-size: 13px; }
+.deep-body abbr.term { text-decoration: none; border-bottom: 1px dotted var(--shell); cursor: help; }
+.deep-side { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px; position: sticky; top: 10px; }
+.deep-side .side-hd { font-size: 12px; color: var(--tx); margin-bottom: 8px; }
+.deep-side dl { margin: 0; }
+.deep-side dt { font: 11.5px/1.6 var(--mono); color: var(--shell); margin-top: 8px; }
+.deep-side dd { margin: 2px 0 0; font-size: 11.5px; color: var(--tx-3); line-height: 1.6; }
+.branch-tbl { margin-top: 8px; font-size: 12.5px; }
+.branch-tbl .row { display: grid; grid-template-columns: 1.1fr 1.2fr 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); }
+.branch-tbl .row.head { color: var(--tx-3); font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; }
+.branch-tbl .cond { color: var(--tx); font: 11.5px/1.6 var(--mono); }
+.branch-tbl .then { color: var(--tx-2); }
+.branch-tbl .eff { color: var(--tx-3); }
+@media (max-width: 1180px) { .deep-wrap { grid-template-columns: 1fr; } .deep-side { position: relative; } }
+
+/* learning path */
+.lp { padding: 8px 18px 14px; }
+.lp-row { display: grid; grid-template-columns: 80px 1fr 1.4fr; gap: 12px; padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); font-size: 12.5px; }
+.lp-row:last-child { border-bottom: 0; }
+.lp-t { font: 11px/1.6 var(--mono); color: var(--wms); }
+.lp-g { color: var(--tx); }
+.lp-r { color: var(--tx-3); }
+
+
+/* ============================ light theme ============================ */
+[data-theme="light"] {
+  --bg: #f3efe5;
+  --bg-2: #e9e2d4;
+  --panel: #fcf9f1;
+  --panel-2: #f4ede0;
+  --line: rgba(62, 50, 34, 0.15);
+  --line-2: rgba(62, 50, 34, 0.28);
+  --tx: #2b2620;
+  --tx-2: #564f42;
+  --tx-3: #7d7362;
+  --wms: #9a5900;
+  --shell: #0a7365;
+  --app: #24589f;
+  --sf: #61419c;
+  --code: #2f2a22;
+  --panel-solid: rgba(251, 247, 238, 0.92);
+  --accent: #24589f;
+}
+[data-theme="light"] body {
+  background: radial-gradient(1100px 520px at 16% -12%, rgba(176, 116, 30, 0.075), transparent 62%),
+              radial-gradient(900px 460px at 92% 0%, rgba(10, 115, 101, 0.05), transparent 58%),
+              var(--bg);
+}
+[data-theme="light"] .bg-grid {
+  background-image: linear-gradient(rgba(62, 50, 34, 0.055) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(62, 50, 34, 0.055) 1px, transparent 1px);
+}
+[data-theme="light"] .hdr { background: rgba(243, 239, 229, 0.78); }
+[data-theme="light"] .stat {
+  background: linear-gradient(180deg, #fdfaf3, #f1eada);
+  box-shadow: 0 1px 0 rgba(62, 50, 34, 0.06);
+}
+[data-theme="light"] .step:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .step.is-on { background: #fdfaf3; border-color: var(--line-2); box-shadow: 0 1px 3px rgba(62, 50, 34, 0.10); }
+[data-theme="light"] .step .n { color: var(--tx-3); }
+[data-theme="light"] .step .t { color: var(--tx-2); }
+[data-theme="light"] .chip { background: #fdfaf3; }
+[data-theme="light"] .chip.is-on { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .navbtn { background: #fdfaf3; }
+[data-theme="light"] .code-tools input[type="search"],
+[data-theme="light"] .inv-bar select,
+[data-theme="light"] .inv-bar input[type="search"] { background: #fdfaf3; }
+[data-theme="light"] .code-wrap { background: #faf6eb; }
+[data-theme="light"] .crow:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .crow.has-note { background: rgba(62, 50, 34, 0.026); }
+[data-theme="light"] .crow.is-focus { background: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .crow .ln { color: #a9a08c; border-right-color: var(--line); }
+[data-theme="light"] .crow .la { border-left-color: var(--line); color: var(--tx-2); }
+[data-theme="light"] .crow .lc .k { color: #9a3f00; }
+[data-theme="light"] .crow .lc .s { color: #2c6f2c; }
+[data-theme="light"] .crow .lc .c1 { color: #948b78; }
+[data-theme="light"] .crow .lc .n { color: #0a6c9e; }
+[data-theme="light"] .crow .lc .a { color: #7133a8; }
+[data-theme="light"] .inv-table th { background: #efe8d8; }
+[data-theme="light"] .inv-table tr.row:hover { background: rgba(62, 50, 34, 0.045); }
+[data-theme="light"] .card-row td { background: #f9f4e8; }
+[data-theme="light"] .badge.covered { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code { background: rgba(154,89,0,0.10); border-color: rgba(154,89,0,0.42); color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code:hover { background: rgba(154,89,0,0.18); }
+[data-theme="light"] .inv-table button.go-card { background: rgba(14,24,38,0.04); border-color: var(--line-2); }
+[data-theme="light"] .badge.partial { color: #8a5200; background: rgba(154, 89, 0, 0.10); }
+[data-theme="light"] .scenario { background: linear-gradient(90deg, rgba(176, 116, 30, 0.06), transparent 55%); }
+[data-theme="light"] .scenario .ev { border-right-color: var(--line); }
+[data-theme="light"] .deep-body .concept { background: #f7f1e4; }
+[data-theme="light"] .ref { background: #f7f1e4; }
+[data-theme="light"] .deep-body .next { background: rgba(196, 124, 22, 0.08); }
+[data-theme="light"] .theme-toggle { background: #fdfaf3; }
+[data-theme="light"] .theme-toggle .ico-moon { display: none; }
+[data-theme="light"] .theme-toggle .ico-sun { display: block; }
+
+/* SVG 在亮色下的适配 */
+[data-theme="light"] .halo { stroke: #f3efe5; }
+[data-theme="light"] .band { fill: rgba(14, 24, 38, 0.022); }
+[data-theme="light"] .msg.is-on .band { fill: rgba(196, 124, 22, 0.09); }
+[data-theme="light"] .grp { fill: rgba(253, 249, 241, 0.65); stroke-opacity: 0.7; }
+[data-theme="light"] .box rect { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .bx { fill: var(--tx); }
+[data-theme="light"] .bs { fill: var(--tx-3); }
+[data-theme="light"] .lane-hd { fill: #fdfaf3; }
+[data-theme="light"] .lane-vl { opacity: 0.28; }
+[data-theme="light"] .cls rect { fill: #fdfaf3; }
+[data-theme="light"] .cm { fill: var(--tx-2); }
+[data-theme="light"] .rel { stroke: rgba(14, 24, 38, 0.22); }
+[data-theme="light"] .fproc { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .fterm { fill: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .fd { fill: rgba(10, 115, 101, 0.07); }
+[data-theme="light"] .fedge { stroke: rgba(14, 24, 38, 0.30); }
+[data-theme="light"] .edge.edge-binder, [data-theme="light"] .msg.msg-binder line,
+[data-theme="light"] .msg.msg-binder path { stroke: #a86400; }
+[data-theme="light"] .edge.edge-oneway, [data-theme="light"] .msg.msg-oneway line,
+[data-theme="light"] .msg.msg-oneway path { stroke: #6f44a8; }
+[data-theme="light"] .edge.edge-callback, [data-theme="light"] .msg.msg-callback line,
+[data-theme="light"] .msg.msg-callback path { stroke: #0a7365; }
+[data-theme="light"] .edge.edge-call, [data-theme="light"] .msg.msg-call line,
+[data-theme="light"] .msg.msg-call path { stroke: #5f6b7a; }
+[data-theme="light"] .msg.msg-state line, [data-theme="light"] .msg.msg-state path { stroke: #8a5200; }
+[data-theme="light"] .ml { fill: var(--tx-2); }
+[data-theme="light"] .el { fill: var(--tx-2); }
+[data-theme="light"] .fn { fill: var(--tx); }
+
+/* 语义色在亮色下加深（只作用于文字，避免染到容器矩形） */
+[data-theme="light"] .grp-label.grp-wms, [data-theme="light"] .lane-t.lane-WMS,
+[data-theme="light"] .cn.side-WMS { fill: #8a5200; }
+[data-theme="light"] .grp-label.grp-app, [data-theme="light"] .lane-t.lane-APP,
+[data-theme="light"] .cn.side-APP { fill: #24589f; }
+[data-theme="light"] .grp-label.grp-shell, [data-theme="light"] .lane-t.lane-SHELL,
+[data-theme="light"] .cn.side-SHELL { fill: #0a7365; }
+[data-theme="light"] .grp-label.grp-sf, [data-theme="light"] .lane-t.lane-SF,
+[data-theme="light"] .cn.side-SF { fill: #61419c; }
+[data-theme="light"] .cn.side-AIDL { fill: #4c5766; }
+[data-theme="light"] .grp.grp-wms, [data-theme="light"] .lane-hd.lane-WMS { stroke: #9a5900; }
+[data-theme="light"] .grp.grp-app, [data-theme="light"] .lane-hd.lane-APP { stroke: #24589f; }
+[data-theme="light"] .grp.grp-shell, [data-theme="light"] .lane-hd.lane-SHELL { stroke: #0a7365; }
+[data-theme="light"] .grp.grp-sf, [data-theme="light"] .lane-hd.lane-SF { stroke: #61419c; }
+[data-theme="light"] .cls.side-WMS rect { stroke: #9a5900; }
+[data-theme="light"] .cls.side-SHELL rect { stroke: #0a7365; }
+[data-theme="light"] .cls.side-AIDL rect { stroke: #7b8798; }
+[data-theme="light"] .cls.side-APP rect { stroke: #24589f; }
+[data-theme="light"] .cls.side-SF rect { stroke: #61419c; }
+
+/* header 上的主题按钮 */
+.hdr-right { display: flex; align-items: flex-end; gap: 14px; }
+.theme-toggle {
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--tx-2);
+  background: rgba(255, 255, 255, 0.04); cursor: pointer; font: 12px/1 inherit;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.theme-toggle:hover { border-color: var(--line-2); color: var(--tx); }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .ico-moon { display: block; }
+.theme-toggle .ico-sun { display: none; }
+.theme-toggle svg path, .theme-toggle svg circle { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.theme-toggle .ico-moon path { fill: currentColor; stroke: none; }
+@media (max-width: 1180px) { .hdr-right { width: 100%; justify-content: space-between; } }
+
+/* ---------------- file tree ---------------- */
+.files-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.files-bar input[type="search"] { width: 260px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+[data-theme="light"] .files-bar input[type="search"] { background: #fdfaf3; }
+.files-wrap { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: 0; }
+.tree { padding: 10px 8px 18px 14px; font: 12px/1.9 var(--mono); max-height: calc(100vh - 300px); overflow: auto; }
+.tnode { white-space: nowrap; }
+.tnode .row { display: flex; align-items: center; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; }
+.tnode .row:hover { background: rgba(255,255,255,0.05); }
+[data-theme="light"] .tnode .row:hover { background: rgba(14,24,38,0.05); }
+.tnode .caret { width: 12px; color: var(--tx-3); flex: none; }
+.tnode .ico { width: 14px; height: 14px; flex: none; opacity: .85; }
+.tnode .nm { color: var(--tx); }
+.tnode.dir > .row .nm { color: var(--tx-2); }
+.tnode .meta { color: var(--tx-3); font-size: 10.5px; }
+.tnode .badge-mini { font: 10px/1.6 var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--tx-3); }
+.tnode .badge-mini.hit { color: var(--wms); border-color: rgba(255,180,84,0.35); }
+.tnode .badge-mini.p0 { color: var(--shell); border-color: rgba(51,214,192,0.35); }
+.tnode .children { margin-left: 16px; border-left: 1px dashed rgba(255,255,255,0.10); padding-left: 8px; }
+[data-theme="light"] .tnode .children { border-left-color: rgba(14,24,38,0.12); }
+.tnode.collapsed > .children { display: none; }
+.tnode.sel > .row { background: rgba(255,180,84,0.12); }
+[data-theme="light"] .tnode.sel > .row { background: rgba(196,124,22,0.12); }
+.tnode.hidden { display: none; }
+.file-detail { border-left: 1px solid var(--line); padding: 14px 18px; max-height: calc(100vh - 300px); overflow: auto; font-size: 12.5px; }
+.file-detail h3 { margin: 0 0 4px; font-size: 13.5px; font-family: var(--mono); word-break: break-all; }
+.file-detail .fp { color: var(--tx-3); font: 10.5px/1.6 var(--mono); word-break: break-all; margin-bottom: 10px; }
+.file-detail dt { color: var(--tx-3); font: 10px/1.6 var(--mono); letter-spacing: .08em; margin-top: 12px; }
+.file-detail dd { margin: 2px 0 0; color: var(--tx-2); }
+.file-detail .chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.file-detail .stepchip { font: 11px/1.6 var(--mono); padding: 1px 8px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: rgba(255,255,255,0.035); color: var(--tx-2); cursor: pointer; }
+[data-theme="light"] .file-detail .stepchip { background: #fdfaf3; }
+.file-detail .stepchip:hover { border-color: var(--wms); color: var(--wms); }
+.file-detail .meth { font: 11.5px/1.7 var(--mono); color: var(--tx-2); }
+.file-detail .meth b { color: var(--tx); font-weight: 500; }
+@media (max-width: 1180px) { .files-wrap { grid-template-columns: 1fr; } .file-detail { border-left: 0; border-top: 1px solid var(--line); } }
+
+/* ---------------- detailed diagrams ---------------- */
+.rowband { fill: rgba(255,255,255,0.035); }
+[data-theme="light"] .rowband { fill: rgba(14,24,38,0.028); }
+.rn { font: 600 12px/1 var(--mono); fill: var(--tx); letter-spacing: .04em; }
+.rnote { font-size: 10.5px; fill: var(--tx-3); }
+.colhd { fill: rgba(255,255,255,0.055); }
+[data-theme="light"] .colhd { fill: #fdfaf3; }
+.colt { font: 600 11.5px/1.2 -apple-system, sans-serif; }
+.colseam { stroke: rgba(255,255,255,0.12); stroke-dasharray: 3 7; }
+[data-theme="light"] .colseam { stroke: rgba(14,24,38,0.10); }
+.anode rect { fill: rgba(255,255,255,0.07); }
+[data-theme="light"] .anode rect { fill: #fdfaf3; }
+.anl { font-size: 11.5px; fill: var(--tx); font-family: var(--mono); }
+.ans { font-size: 10px; fill: var(--tx-3); }
+.ant { font: 9.5px/1 var(--mono); fill: var(--tx-3); text-anchor: end; }
+.anb { font: 9.5px/1 var(--mono); fill: var(--wms); }
+.aedge { fill: none; stroke-width: 1.4; opacity: 1; }
+.ael { font-size: 10px; fill: var(--tx-2); }
+.aed { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.lg { font: 9.5px/1 var(--mono); fill: var(--tx-3); }
+.phasebar { fill: rgba(255,255,255,0.05); }
+[data-theme="light"] .phasebar { fill: rgba(62, 50, 34, 0.06); }
+.phasebar-t { font: 600 10.5px/1 var(--mono); fill: var(--tx-2); letter-spacing: .04em; }
+.md { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.blockmark { fill: rgba(255,107,107,0.10); stroke: rgba(255,107,107,0.45); }
+.blockmark-t { font-size: 9.5px; fill: #ff8b8b; text-anchor: middle; }
+[data-theme="light"] .blockmark { fill: rgba(200,40,40,0.07); }
+[data-theme="light"] .blockmark-t { fill: #b03030; }
+.region { fill: rgba(255,255,255,0.012); stroke: rgba(255,255,255,0.10); stroke-dasharray: 5 6; }
+[data-theme="light"] .region { fill: rgba(253, 249, 241, 0.65); stroke: rgba(62, 50, 34, 0.18); }
+.region-t { font: 600 11.5px/1 var(--mono); fill: var(--tx-3); letter-spacing: .04em; }
+.fnote { font-size: 9.5px; fill: var(--tx-3); }
+
+
+/* ---------- ANR 文档：沿用 wiki 的 hdr/rail/stage/panel，只补正文排版 ---------- */
+.anr-toc { padding: 4px 0 40px; }
+.anr-toc a { display: block; padding: 5px 10px 5px 12px; border-left: 2px solid transparent;
+  color: var(--tx-2); font-size: 12.5px; line-height: 1.55; text-decoration: none;
+  overflow-wrap: anywhere; word-break: break-word; }
+.anr-toc a:hover { color: var(--tx); background: rgba(255,255,255,.04); }
+[data-theme="light"] .anr-toc a:hover { background: rgba(62,50,34,.05); }
+.anr-toc a.lv3 { padding-left: 24px; font-size: 12px; color: var(--tx-3); }
+.anr-toc a.active { border-left-color: var(--wms); color: var(--tx); background: rgba(255,180,84,.08); }
+.anr-doc { padding: 24px 30px 30px; }
+.anr-doc > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.anr-doc h2 { margin: 30px 0 10px; padding-top: 20px; border-top: 1px solid var(--line);
+  font-size: 20px; letter-spacing: 0; color: var(--tx); text-transform: none; }
+.anr-doc h3 { margin: 22px 0 8px; font-size: 15.5px; color: var(--tx); letter-spacing: 0; text-transform: none; }
+.anr-doc h4 { margin: 16px 0 6px; font-size: 13.5px; color: var(--tx-2); }
+.anr-doc p { margin: 9px 0; color: var(--tx-2); line-height: 1.85; }
+.anr-doc strong { color: var(--tx); }
+.anr-doc ul, .anr-doc ol { margin: 8px 0; padding-left: 22px; color: var(--tx-2); }
+.anr-doc li { margin: 4px 0; line-height: 1.75; }
+.anr-doc blockquote { margin: 14px 0; padding: 10px 16px; border-left: 3px solid var(--wms);
+  background: rgba(255,180,84,.07); border-radius: 0 8px 8px 0; color: var(--tx-2); }
+[data-theme="light"] .anr-doc blockquote { background: rgba(138,82,0,.07); }
+.anr-doc code { font: 12.5px/1.6 var(--mono); background: #191c21; padding: 1px 5px; border-radius: 4px; color: var(--tx); }
+[data-theme="light"] .anr-doc code { background: #f3ecdf; }
+.anr-doc pre { position: relative; background: #191c21; border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; overflow: auto; margin: 14px 0; }
+[data-theme="light"] .anr-doc pre { background: #faf6eb; }
+.anr-doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.75; }
+.anr-doc hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+.anr-doc a { color: var(--wms); }
+.anr-doc img { max-width: 100%; }
+.anr-doc .table-wrap { overflow: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; }
+.anr-doc table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.anr-doc th, .anr-doc td { border-bottom: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+.anr-doc th { background: var(--panel-2); color: var(--tx); font-weight: 600; white-space: nowrap; }
+.anr-doc tr:last-child td { border-bottom: 0; }
+.mermaid-box { margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); overflow: hidden; }
+.mermaid-hd { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font: 10.5px/1.6 var(--mono); color: var(--tx-3); letter-spacing: .06em; }
+.mermaid { padding: 16px; margin: 0; background: none; border: 0; overflow: auto; text-align: center; }
+pre.mermaid { white-space: pre-wrap; text-align: left; font: 12px/1.7 var(--mono); color: var(--tx-3); }
+.mermaid svg { max-width: 100%; height: auto; }
+.anr-pager { display: flex; justify-content: space-between; gap: 14px; margin: 4px 0 40px; font-size: 12.5px; }
+.anr-pager a { color: var(--tx-2); text-decoration: none; border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 14px; background: var(--panel); }
+.anr-pager a:hover { border-color: var(--line-2); color: var(--tx); }
+.anr-cards { display: grid; gap: 12px; margin-top: 18px; }
+.anr-card { display: block; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: inherit; text-decoration: none; transition: border-color .16s, transform .16s; }
+.anr-card:hover { border-color: var(--wms); transform: translateY(-1px); }
+.anr-card .hd { display: flex; align-items: baseline; gap: 12px; }
+.anr-card .no { font: 600 11px/1 var(--mono); color: var(--tx-3); }
+.anr-card h2 { margin: 0; font-size: 16px; letter-spacing: 0; text-transform: none; border: 0; padding: 0; }
+.anr-card .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.anr-card .pill { font: 10.5px/1.8 var(--mono); padding: 0 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--tx-3); }
+</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <div class="kicker">AOSP · android17-release · ANR</div>
+    <h1>Android ANR（Application Not Responding）流程分析</h1>
+    <p class="sub">ANRAnalysis.md · 14 个小节 · 2 张 mermaid 图 · 0 行表格 · 20K 字</p>
+  </div>
+  <div class="hdr-right">
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" title="切换亮/暗色">
+      <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span class="tt-label">亮色</span>
+    </button>
+    <div class="hdr-stats"><div class="stat"><b>14</b><span>小节</span></div><div class="stat"><b>2</b><span>mermaid 图</span></div><div class="stat"><b>0</b><span>表格行</span></div><div class="stat"><b>20K</b><span>字数</span></div></div>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="rail">
+    <div class="phase">返回 <a href="../dist/index.html">站点索引</a> · <a href="index.html">ANR 索引</a></div>
+    <nav class="anr-toc" id="toc"><a class="lv2" href="#anr概述">ANR概述</a>
+<a class="lv2" href="#anr触发条件">ANR触发条件</a>
+<a class="lv2" href="#完整anr流程调用链">完整ANR流程调用链</a>
+<a class="lv2" href="#详细调用序列图">详细调用序列图</a>
+<a class="lv2" href="#核心代码分析">核心代码分析</a>
+<a class="lv3" href="#1-inputdispatcherprocessanrslocked---anr检测入口">1. InputDispatcher.processAnrsLocked() - ANR检测入口</a>
+<a class="lv3" href="#2-inputdispatcheronanrlocked---anr处理核心">2. InputDispatcher.onAnrLocked() - ANR处理核心</a>
+<a class="lv3" href="#3-inputdispatcherprocessconnectionunresponsivelocked---连接无响应处理">3. InputDispatcher.processConnectionUnresponsiveLocked() - 连接无响应处理</a>
+<a class="lv3" href="#4-inputdispatchersendwindowunresponsivecommandlocked---发送anr通知">4. InputDispatcher.sendWindowUnresponsiveCommandLocked() - 发送ANR通知</a>
+<a class="lv3" href="#5-inputmanagercallbacknotifywindowunresponsive---java层anr入口">5. InputManagerCallback.notifyWindowUnresponsive() - Java层ANR入口</a>
+<a class="lv3" href="#6-anrcontrollernotifywindowunresponsive---anr控制器处理">6. AnrController.notifyWindowUnresponsive() - ANR控制器处理</a>
+<a class="lv3" href="#7-anrcontrollernotifywindowunresponsive私有方法">7. AnrController.notifyWindowUnresponsive()私有方法</a>
+<a class="lv3" href="#8-activityrecordinputdispatchingtimedout---activity层anr处理">8. ActivityRecord.inputDispatchingTimedOut() - Activity层ANR处理</a>
+<a class="lv2" href="#关键类和组件">关键类和组件</a>
+<a class="lv3" href="#1-inputdispatcher-c层">1. InputDispatcher (C++层)</a>
+<a class="lv3" href="#2-inputmanagercallback-java层">2. InputManagerCallback (Java层)</a>
+<a class="lv3" href="#3-anrcontroller-java层">3. AnrController (Java层)</a>
+<a class="lv3" href="#4-activityrecord-java层">4. ActivityRecord (Java层)</a>
+<a class="lv3" href="#5-activitymanagerservice-java层">5. ActivityManagerService (Java层)</a>
+<a class="lv2" href="#anr超时时间配置">ANR超时时间配置</a>
+<a class="lv3" href="#默认超时时间">默认超时时间</a>
+<a class="lv3" href="#超时时间计算">超时时间计算</a>
+<a class="lv2" href="#anr检测机制">ANR检测机制</a>
+<a class="lv3" href="#1-等待队列检查">1. 等待队列检查</a>
+<a class="lv3" href="#2-anr跟踪器">2. ANR跟踪器</a>
+<a class="lv3" href="#3-定期检查">3. 定期检查</a>
+<a class="lv3" href="#4-monitor与window区分">4. Monitor与Window区分</a>
+<a class="lv2" href="#anr恢复机制">ANR恢复机制</a>
+<a class="lv3" href="#1-响应性检查">1. 响应性检查</a>
+<a class="lv3" href="#2-事件取消">2. 事件取消</a>
+<a class="lv3" href="#3-恢复通知">3. 恢复通知</a>
+<a class="lv2" href="#性能优化和调试">性能优化和调试</a>
+<a class="lv3" href="#1-预转储机制">1. 预转储机制</a>
+<a class="lv3" href="#2-延迟跟踪">2. 延迟跟踪</a>
+<a class="lv3" href="#3-状态转储">3. 状态转储</a>
+<a class="lv2" href="#异常处理">异常处理</a>
+<a class="lv3" href="#1-连接不存在处理">1. 连接不存在处理</a>
+<a class="lv3" href="#2-pid未知处理">2. PID未知处理</a>
+<a class="lv3" href="#3-锁竞争处理">3. 锁竞争处理</a>
+<a class="lv3" href="#4-连接恢复检测">4. 连接恢复检测</a>
+<a class="lv2" href="#anr类型分类">ANR类型分类</a>
+<a class="lv3" href="#1-输入分发超时anr">1. 输入分发超时ANR</a>
+<a class="lv3" href="#2-无焦点窗口anr">2. 无焦点窗口ANR</a>
+<a class="lv2" href="#总结">总结</a>
+<a class="lv2" href="#关键调用链总结">关键调用链总结</a></nav>
+  </aside>
+  <section class="stage">
+    <div class="panel">
+      <div class="panel-hd"><h2>正文</h2><span class="hint">ANRAnalysis.md · 14 个小节 · 2 张 mermaid 图 · 0 行表格 · 20K 字</span></div>
+      <article class="deep-body anr-doc"><h2 id="anr概述">ANR概述</h2>
+<p>ANR（Application Not Responding）是Android系统中检测应用无响应的机制。当应用的主线程在特定时间内未能响应输入事件或执行关键操作时，系统会触发ANR流程，显示ANR对话框并记录相关信息。</p>
+<h2 id="anr触发条件">ANR触发条件</h2>
+<p>根据提供的ANR信息：</p>
+<pre><code>01-09 13:57:58.201  2279  2755 I WindowManager: ANR in input window owned by pid=32065. 
+Reason: Input dispatching timed out ([Gesture Monitor] swipe-up is not responding. Waited 5001ms for MotionEvent).</code></pre>
+<p>这是一个典型的输入分发超时ANR，窗口pid为32065，超时时间为5001ms。</p>
+<h2 id="完整anr流程调用链">完整ANR流程调用链</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>graph TB
+    A[InputDispatcher线程] --&gt; B[processAnrsLocked]
+    B --&gt; C{检查连接超时}
+    C --&gt;|超时| D[&quot;onAnrLocked(connection)&quot;]
+    C --&gt;|未超时| E[返回下次检查时间]
+    D --&gt; F[构建ANR原因字符串]
+    F --&gt; G[processConnectionUnresponsiveLocked]
+    G --&gt; H[sendWindowUnresponsiveCommandLocked]
+    H --&gt; I[postCommandLocked]
+    I --&gt; J[InputManagerCallback.notifyWindowUnresponsive]
+    J --&gt; K[AnrController.notifyWindowUnresponsive]
+    K --&gt; L[ActivityRecord.inputDispatchingTimedOut]
+    L --&gt; M[ActivityManagerService.inputDispatchingTimedOut]
+    M --&gt; N[显示ANR对话框]
+    M --&gt; O[记录ANR信息]</code></pre></div>
+<h2 id="详细调用序列图">详细调用序列图</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    participant ID as InputDispatcher
+    participant IM as InputManagerCallback
+    participant AC as AnrController
+    participant AR as ActivityRecord
+    participant AMS as ActivityManagerService
+    participant WMS as WindowManagerService
+    
+    Note over ID,AMS: ANR检测阶段
+    ID-&gt;&gt;ID: processAnrsLocked() - 定期检查ANR
+    ID-&gt;&gt;ID: 检查连接等待队列超时
+    alt 检测到超时
+        ID-&gt;&gt;ID: onAnrLocked(connection)
+        ID-&gt;&gt;ID: 构建ANR原因字符串
+        ID-&gt;&gt;ID: processConnectionUnresponsiveLocked(reason)
+        ID-&gt;&gt;ID: sendWindowUnresponsiveCommandLocked(token, pid, reason)
+        ID-&gt;&gt;ID: postCommandLocked() - 异步执行
+    end
+    
+    Note over ID,AMS: ANR通知阶段
+    ID-&gt;&gt;IM: notifyWindowUnresponsive(token, pid, reason)
+    IM-&gt;&gt;AC: notifyWindowUnresponsive(token, pid, timeoutRecord)
+    
+    Note over AC,AMS: ANR处理阶段
+    AC-&gt;&gt;AC: preDumpIfLockTooSlow() - 预dump堆栈
+    AC-&gt;&gt;AC: 获取WindowState和ActivityRecord
+    alt 有ActivityRecord
+        AC-&gt;&gt;AR: inputDispatchingTimedOut(timeoutRecord, pid)
+        AR-&gt;&gt;AMS: inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord)
+    else 无ActivityRecord
+        AC-&gt;&gt;AMS: inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord)
+    end
+    
+    Note over AMS,AMS: ANR显示阶段
+    AMS-&gt;&gt;AMS: 显示ANR对话框
+    AMS-&gt;&gt;AMS: 记录ANR日志和堆栈
+    AMS-&gt;&gt;AMS: 可能终止应用进程</code></pre></div>
+<h2 id="核心代码分析">核心代码分析</h2>
+<h3 id="1-inputdispatcherprocessanrslocked---anr检测入口">1. InputDispatcher.processAnrsLocked() - ANR检测入口</h3>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1032-L1069">InputDispatcher.cpp:1032-1069</a></p>
+<pre><code>nsecs_t InputDispatcher::processAnrsLocked() {
+    const nsecs_t currentTime = now();
+    nsecs_t nextAnrCheck = LLONG_MAX;
+    // Check if we are waiting for a focused window to appear. Raise ANR if waited too long
+    if (mNoFocusedWindowTimeoutTime.has_value() &amp;&amp; mAwaitedFocusedApplication != nullptr) {
+        if (currentTime &gt;= *mNoFocusedWindowTimeoutTime) {
+            processNoFocusedWindowAnrLocked();
+            mAwaitedFocusedApplication.reset();
+            mNoFocusedWindowTimeoutTime = std::nullopt;
+            return LLONG_MIN;
+        } else {
+            // Keep waiting. We will drop the event when mNoFocusedWindowTimeoutTime comes.
+            nextAnrCheck = *mNoFocusedWindowTimeoutTime;
+        }
+    }
+
+    // Check if any connection ANRs are due
+    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
+    if (currentTime &lt; nextAnrCheck) { // most likely scenario
+        return nextAnrCheck;          // everything is normal. Let&#39;s check again at nextAnrCheck
+    }
+
+    // If we reached here, we have an unresponsive connection.
+    std::shared_ptr&lt;Connection&gt; connection =
+            mConnectionManager.getConnection(mAnrTracker.firstToken());
+    if (connection == nullptr) {
+        ALOGE(&quot;Could not find connection for entry %&quot; PRId64, mAnrTracker.firstTimeout());
+        mAnrTracker.eraseToken(mAnrTracker.firstToken());
+        return nextAnrCheck;
+    }
+    connection-&gt;responsive = false;
+    // Stop waking up for this unresponsive connection
+    mAnrTracker.eraseToken(connection-&gt;getToken());
+    onAnrLocked(connection);
+    return LLONG_MIN;
+}</code></pre>
+<h3 id="2-inputdispatcheronanrlocked---anr处理核心">2. InputDispatcher.onAnrLocked() - ANR处理核心</h3>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6620-L6648">InputDispatcher.cpp:6620-6648</a></p>
+<pre><code>void InputDispatcher::onAnrLocked(const std::shared_ptr&lt;Connection&gt;&amp; connection) {
+    if (connection == nullptr) {
+        LOG_ALWAYS_FATAL(&quot;Caller must check for nullness&quot;);
+    }
+    // Since we are allowing the policy to extend the timeout, maybe the waitQueue
+    // is already healthy again. Don&#39;t raise ANR in this situation
+    if (connection-&gt;waitQueue.empty()) {
+        ALOGI(&quot;Not raising ANR because the connection %s has recovered&quot;,
+              connection-&gt;getInputChannelName().c_str());
+        return;
+    }
+    /**
+     * The &quot;oldestEntry&quot; is the entry that was first sent to the application. That entry, however,
+     * may not be the one that caused the timeout to occur. One possibility is that window timeout
+     * has changed. This could cause newer entries to time out before the already dispatched
+     * entries. In that situation, the newest entries caused ANR. But in all likelihood, the app
+     * processes the events linearly. So providing information about the oldest entry seems to be
+     * most useful.
+     */
+    DispatchEntry&amp; oldestEntry = *connection-&gt;waitQueue.front();
+    ATRACE_NAME_IF(ATRACE_ENABLED(),
+                   StringPrintf(&quot;onAnrLocked(inputChannel=%s, id=0x%&quot; PRIx32 &quot;)&quot;,
+                                connection-&gt;getInputChannelName().c_str(),
+                                oldestEntry.eventEntry-&gt;id));
+    const nsecs_t currentWait = now() - oldestEntry.deliveryTime;
+    std::string reason =
+            android::base::StringPrintf(&quot;%s is not responding. Waited %&quot; PRId64 &quot;ms for %s&quot;,
+                                        connection-&gt;getInputChannelName().c_str(),
+                                        ns2ms(currentWait),
+                                        oldestEntry.eventEntry-&gt;getDescription().c_str());
+    sp&lt;IBinder&gt; connectionToken = connection-&gt;getToken();
+    updateLastAnrStateLocked(mWindowInfos.findWindowHandle(connectionToken), reason);
+
+    processConnectionUnresponsiveLocked(*connection, std::move(reason));
+
+    // Stop waking up for events on this connection, it is already unresponsive
+    cancelEventsForAnrLocked(connection);
+}</code></pre>
+<h3 id="3-inputdispatcherprocessconnectionunresponsivelocked---连接无响应处理">3. InputDispatcher.processConnectionUnresponsiveLocked() - 连接无响应处理</h3>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6750-L6770">InputDispatcher.cpp:6750-6770</a></p>
+<pre><code>/**
+ * Tell the policy that a connection has become unresponsive so that it can start ANR.
+ * Check whether the connection of interest is a monitor or a window, and add the corresponding
+ * command entry to the command queue.
+ */
+void InputDispatcher::processConnectionUnresponsiveLocked(const Connection&amp; connection,
+                                                          std::string reason) {
+    const sp&lt;IBinder&gt;&amp; connectionToken = connection.getToken();
+    std::optional&lt;gui::Pid&gt; pid;
+    if (connection.isFocusMonitor) {
+        ALOGW(&quot;Monitor %s is unresponsive: %s&quot;, connection.getInputChannelName().c_str(),
+              reason.c_str());
+        pid = mConnectionManager.findMonitorPidByToken(connectionToken);
+    } else {
+        // The connection is a window
+        ALOGW(&quot;Window %s is unresponsive: %s&quot;, connection.getInputChannelName().c_str(),
+              reason.c_str());
+        const sp&lt;WindowInfoHandle&gt; handle = mWindowInfos.findWindowHandle(connectionToken);
+        if (handle != nullptr) {
+            pid = handle-&gt;getInfo()-&gt;ownerPid;
+        }
+    }
+    sendWindowUnresponsiveCommandLocked(connectionToken, pid, std::move(reason));
+}</code></pre>
+<h3 id="4-inputdispatchersendwindowunresponsivecommandlocked---发送anr通知">4. InputDispatcher.sendWindowUnresponsiveCommandLocked() - 发送ANR通知</h3>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6727-L6734">InputDispatcher.cpp:6727-6734</a></p>
+<pre><code>void InputDispatcher::sendWindowUnresponsiveCommandLocked(const sp&lt;IBinder&gt;&amp; token,
+                                                          std::optional&lt;gui::Pid&gt; pid,
+                                                          std::string reason) {
+    auto command = [this, token, pid, r = std::move(reason)]() REQUIRES(mLock) {
+        scoped_unlock unlock(mLock);
+        mPolicy.notifyWindowUnresponsive(token, pid, r);
+    };
+    postCommandLocked(std::move(command));
+}</code></pre>
+<h3 id="5-inputmanagercallbacknotifywindowunresponsive---java层anr入口">5. InputManagerCallback.notifyWindowUnresponsive() - Java层ANR入口</h3>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/InputManagerCallback.java#L97-L101">InputManagerCallback.java:97-101</a></p>
+<pre><code>@Override
+public void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
+        String reason) {
+    TimeoutRecord timeoutRecord = TimeoutRecord.forInputDispatchWindowUnresponsive(
+            timeoutMessage(pid, reason));
+    mService.mAnrController.notifyWindowUnresponsive(token, pid, timeoutRecord);
+}</code></pre>
+<h3 id="6-anrcontrollernotifywindowunresponsive---anr控制器处理">6. AnrController.notifyWindowUnresponsive() - ANR控制器处理</h3>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/AnrController.java#L143-L157">AnrController.java:143-157</a></p>
+<pre><code>/**
+ * Notify a window was unresponsive.
+ *
+ * @param token         - the input token of the window
+ * @param pid           - the pid of the window, if known
+ * @param timeoutRecord - details for the timeout
+ */
+void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
+        @NonNull TimeoutRecord timeoutRecord) {
+    try {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveStarted();
+        if (notifyWindowUnresponsive(token, timeoutRecord)) {
+            return;
+        }
+        if (!pid.isPresent()) {
+            Slog.w(TAG_WM, &quot;Failed to notify that window token=&quot; + token
+                    + &quot; was unresponsive.&quot;);
+            return;
+        }
+        notifyWindowUnresponsive(pid.getAsInt(), timeoutRecord);
+    } finally {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveEnded();
+    }
+}</code></pre>
+<h3 id="7-anrcontrollernotifywindowunresponsive私有方法">7. AnrController.notifyWindowUnresponsive()私有方法</h3>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/AnrController.java#L164-L202">AnrController.java:164-202</a></p>
+<pre><code>/**
+ * Notify a window identified by its input token was unresponsive.
+ *
+ * @return true if the window was identified by the given input token and the request was
+ *         handled, false otherwise.
+ */
+private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
+        TimeoutRecord timeoutRecord) {
+    timeoutRecord.mLatencyTracker.preDumpIfLockTooSlowStarted();
+    preDumpIfLockTooSlow(timeoutRecord);
+    timeoutRecord.mLatencyTracker.preDumpIfLockTooSlowEnded();
+    final int pid;
+    final boolean aboveSystem;
+    final ActivityRecord activity;
+    final WindowState windowState;
+    timeoutRecord.mLatencyTracker.waitingOnGlobalLockStarted();
+    synchronized (mService.mGlobalLock) {
+        timeoutRecord.mLatencyTracker.waitingOnGlobalLockEnded();
+        InputTarget target = mService.getInputTargetFromToken(inputToken);
+        if (target == null) {
+            return false;
+        }
+        windowState = target.getWindowState();
+        pid = target.getPid();
+        if (windowState != null) {
+            // Blame the activity if the input token belongs to the window. If the target is
+            // embedded, then we will blame the pid instead.
+            activity = (windowState.mInputChannelToken == inputToken)
+                    ? windowState.mActivityRecord : null;
+            aboveSystem = isWindowAboveSystem(windowState);
+        } else {
+            // Embedded windows without a host window state are assumed to be above 
+            // system layers
+            activity = null;
+            aboveSystem = true;
+        }
+        Slog.i(TAG_WM, &quot;ANR in &quot; + target + &quot;. Reason:&quot; + timeoutRecord.mReason);
+    }
+    if (activity != null) {
+        activity.inputDispatchingTimedOut(timeoutRecord, pid);
+    } else {
+        mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);
+    }
+    dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);
+    return true;
+}</code></pre>
+<h3 id="8-activityrecordinputdispatchingtimedout---activity层anr处理">8. ActivityRecord.inputDispatchingTimedOut() - Activity层ANR处理</h3>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/ActivityRecord.java#L6749-L6779">ActivityRecord.java:6749-6779</a></p>
+<pre><code>/**
+ * Called when input dispatching has timed out.
+ *
+ * @param reason The reason for input dispatching time out.
+ * @param windowPid The pid of the window input dispatching timed out on.
+ * @return True if input dispatching should be aborted.
+ */
+public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {
+    try {
+        Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                &quot;ActivityRecord#inputDispatchingTimedOut()&quot;);
+        ActivityRecord anrActivity;
+        WindowProcessController anrApp;
+        boolean blameActivityProcess;
+        timeoutRecord.mLatencyTracker.waitingOnGlobalLockStarted();
+        synchronized (mAtmService.mGlobalLock) {
+            timeoutRecord.mLatencyTracker.waitingOnGlobalLockEnded();
+            anrActivity = getWaitingHistoryRecord();
+            anrApp = app;
+            blameActivityProcess =  hasProcess()
+                    &amp;&amp; (app.getPid() == windowPid || windowPid == INVALID_PID);
+        }
+
+        if (blameActivityProcess) {
+            return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,
+                    anrActivity.shortComponentName, anrActivity.info.applicationInfo,
+                    shortComponentName, app, false, timeoutRecord);
+        } else {
+            // In this case another process added windows using this activity token.
+            // So, we call the generic service input dispatch timed out method so
+            // that the right process is blamed.
+            long timeoutMillis = mAtmService.mAmInternal.inputDispatchingTimedOut(
+                    windowPid, false /* aboveSystem */, timeoutRecord);
+            return timeoutMillis &lt;= 0;
+        }
+    } finally {
+        Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+    }
+}</code></pre>
+<h2 id="关键类和组件">关键类和组件</h2>
+<h3 id="1-inputdispatcher-c层">1. InputDispatcher (C++层)</h3>
+<ul>
+<li><strong>位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp">InputDispatcher.cpp</a></li>
+<li><strong>职责</strong>: 输入事件分发和ANR检测</li>
+<li><strong>关键方法</strong>:
+<ul>
+<li><code>processAnrsLocked()</code>: 定期检查ANR</li>
+<li><code>onAnrLocked()</code>: 处理检测到的ANR</li>
+<li><code>processConnectionUnresponsiveLocked()</code>: 处理连接无响应</li>
+<li><code>sendWindowUnresponsiveCommandLocked()</code>: 发送ANR通知</li>
+</ul></li>
+</ul>
+<h3 id="2-inputmanagercallback-java层">2. InputManagerCallback (Java层)</h3>
+<ul>
+<li><strong>位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/InputManagerCallback.java">InputManagerCallback.java</a></li>
+<li><strong>职责</strong>: InputManager和WindowManager之间的桥梁</li>
+<li><strong>关键方法</strong>: <code>notifyWindowUnresponsive()</code></li>
+</ul>
+<h3 id="3-anrcontroller-java层">3. AnrController (Java层)</h3>
+<ul>
+<li><strong>位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/AnrController.java">AnrController.java</a></li>
+<li><strong>职责</strong>: 管理ANR通知和状态转储</li>
+<li><strong>关键方法</strong>:
+<ul>
+<li><code>notifyWindowUnresponsive()</code>: 处理窗口无响应</li>
+<li><code>preDumpIfLockTooSlow()</code>: 预转储堆栈信息</li>
+</ul></li>
+</ul>
+<h3 id="4-activityrecord-java层">4. ActivityRecord (Java层)</h3>
+<ul>
+<li><strong>位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/ActivityRecord.java">ActivityRecord.java</a></li>
+<li><strong>职责</strong>: 表示Activity实例</li>
+<li><strong>关键方法</strong>: <code>inputDispatchingTimedOut()</code></li>
+</ul>
+<h3 id="5-activitymanagerservice-java层">5. ActivityManagerService (Java层)</h3>
+<ul>
+<li><strong>职责</strong>: 最终处理ANR，显示对话框，记录日志</li>
+<li><strong>关键方法</strong>: <code>inputDispatchingTimedOut()</code></li>
+</ul>
+<h2 id="anr超时时间配置">ANR超时时间配置</h2>
+<h3 id="默认超时时间">默认超时时间</h3>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L78-L80">InputDispatcher.cpp:78-80</a></p>
+<pre><code>const std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(
+        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *
+        HwTimeoutMultiplier());</code></pre>
+<h3 id="超时时间计算">超时时间计算</h3>
+<ul>
+<li><strong>基础超时</strong>: 5秒（5000ms）</li>
+<li><strong>硬件超时乘数</strong>: 根据设备性能调整</li>
+<li><strong>最终超时</strong>: 通常为5001ms（如示例所示）</li>
+</ul>
+<h2 id="anr检测机制">ANR检测机制</h2>
+<h3 id="1-等待队列检查">1. 等待队列检查</h3>
+<p>InputDispatcher维护每个连接的等待队列，检查队列中最旧事件的等待时间：</p>
+<pre><code>DispatchEntry&amp; oldestEntry = *connection-&gt;waitQueue.front();
+const nsecs_t currentWait = now() - oldestEntry.deliveryTime;</code></pre>
+<h3 id="2-anr跟踪器">2. ANR跟踪器</h3>
+<p>使用<code>mAnrTracker</code>跟踪所有连接的ANR状态：</p>
+<pre><code>nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());</code></pre>
+<h3 id="3-定期检查">3. 定期检查</h3>
+<p>InputDispatcher线程定期调用<code>processAnrsLocked()</code>检查ANR状态。</p>
+<h3 id="4-monitor与window区分">4. Monitor与Window区分</h3>
+<p><code>processConnectionUnresponsiveLocked()</code>方法会区分处理Monitor和Window：</p>
+<pre><code>if (connection.isFocusMonitor) {
+    ALOGW(&quot;Monitor %s is unresponsive: %s&quot;, ...);
+    pid = mConnectionManager.findMonitorPidByToken(connectionToken);
+} else {
+    // The connection is a window
+    ALOGW(&quot;Window %s is unresponsive: %s&quot;, ...);
+    const sp&lt;WindowInfoHandle&gt; handle = mWindowInfos.findWindowHandle(connectionToken);
+    if (handle != nullptr) {
+        pid = handle-&gt;getInfo()-&gt;ownerPid;
+    }
+}</code></pre>
+<h2 id="anr恢复机制">ANR恢复机制</h2>
+<h3 id="1-响应性检查">1. 响应性检查</h3>
+<p>连接对象维护<code>responsive</code>标志：</p>
+<pre><code>connection-&gt;responsive = false; // 标记为无响应</code></pre>
+<h3 id="2-事件取消">2. 事件取消</h3>
+<p>检测到ANR后取消该连接的所有待处理事件：</p>
+<pre><code>cancelEventsForAnrLocked(connection);</code></pre>
+<h3 id="3-恢复通知">3. 恢复通知</h3>
+<p>当窗口恢复响应时，通过<code>notifyWindowResponsive()</code>通知系统。</p>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/AnrController.java#L217-L246">AnrController.java:217-246</a></p>
+<h2 id="性能优化和调试">性能优化和调试</h2>
+<h3 id="1-预转储机制">1. 预转储机制</h3>
+<p><strong>源码位置</strong>: <a href="../../../base/services/core/java/com/android/server/wm/AnrController.java#L289-L298">AnrController.java:289-298</a></p>
+<pre><code>/**
+ * Pre-dump stack trace if the locks of activity manager or window manager (they may be locked
+ * in the path of reporting ANR) cannot be acquired in time. That provides the stack traces
+ * before the real blocking symptom has gone.
+ * &lt;p&gt;
+ * Do not hold the {@link WindowManagerGlobalLock} while calling this method.
+ */
+private void preDumpIfLockTooSlow(TimeoutRecord timeoutRecord) {
+    if (!Build.IS_DEBUGGABLE)  {
+        return;
+    }
+    final long now = SystemClock.uptimeMillis();
+    if (mLastPreDumpTimeMs &gt; 0 &amp;&amp; now - mLastPreDumpTimeMs &lt; PRE_DUMP_MIN_INTERVAL_MS) {
+        return;
+    }
+    // ...
+}</code></pre>
+<h3 id="2-延迟跟踪">2. 延迟跟踪</h3>
+<p>使用<code>TimeoutRecord.mLatencyTracker</code>跟踪ANR处理各阶段的延迟。</p>
+<h3 id="3-状态转储">3. 状态转储</h3>
+<p>ANR发生时异步转储系统状态：</p>
+<pre><code>dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);</code></pre>
+<h2 id="异常处理">异常处理</h2>
+<h3 id="1-连接不存在处理">1. 连接不存在处理</h3>
+<pre><code>InputTarget target = mService.getInputTargetFromToken(inputToken);
+if (target == null) {
+    return false;
+}</code></pre>
+<h3 id="2-pid未知处理">2. PID未知处理</h3>
+<pre><code>if (!pid.isPresent()) {
+    Slog.w(TAG_WM, &quot;Failed to notify that window token=&quot; + token
+            + &quot; was unresponsive.&quot;);
+    return;
+}</code></pre>
+<h3 id="3-锁竞争处理">3. 锁竞争处理</h3>
+<p>使用<code>preDumpIfLockTooSlow()</code>避免因锁竞争导致的诊断信息丢失。</p>
+<h3 id="4-连接恢复检测">4. 连接恢复检测</h3>
+<p>在<code>onAnrLocked()</code>中检查waitQueue是否已恢复：</p>
+<pre><code>if (connection-&gt;waitQueue.empty()) {
+    ALOGI(&quot;Not raising ANR because the connection %s has recovered&quot;,
+          connection-&gt;getInputChannelName().c_str());
+    return;
+}</code></pre>
+<h2 id="anr类型分类">ANR类型分类</h2>
+<h3 id="1-输入分发超时anr">1. 输入分发超时ANR</h3>
+<ul>
+<li><strong>触发条件</strong>: 窗口在超时时间内未响应输入事件</li>
+<li><strong>处理流程</strong>: <code>processAnrsLocked()</code> → <code>onAnrLocked(connection)</code></li>
+</ul>
+<h3 id="2-无焦点窗口anr">2. 无焦点窗口ANR</h3>
+<ul>
+<li><strong>触发条件</strong>: 应用没有焦点窗口</li>
+<li><strong>处理流程</strong>: <code>processNoFocusedWindowAnrLocked()</code> → <code>onAnrLocked(application)</code></li>
+</ul>
+<p><strong>源码位置</strong>: <a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6659-L6668">InputDispatcher.cpp:6659-6668</a></p>
+<pre><code>void InputDispatcher::onAnrLocked(std::shared_ptr&lt;InputApplicationHandle&gt; application) {
+    std::string reason =
+            StringPrintf(&quot;%s does not have a focused window&quot;, application-&gt;getName().c_str());
+    updateLastAnrStateLocked(*application, reason);
+
+    auto command = [this, app = std::move(application)]() REQUIRES(mLock) {
+        scoped_unlock unlock(mLock);
+        mPolicy.notifyNoFocusedWindowAnr(app);
+    };
+    postCommandLocked(std::move(command));
+}</code></pre>
+<h2 id="总结">总结</h2>
+<p>Android的ANR检测机制是一个复杂的多层级系统：</p>
+<ol type="1">
+<li><strong>C++层</strong>（InputDispatcher）负责底层的事件分发和超时检测</li>
+<li><strong>Java层</strong>（InputManagerCallback、AnrController）负责ANR通知和状态管理</li>
+<li><strong>应用层</strong>（ActivityManagerService）负责最终的ANR处理和用户界面显示</li>
+</ol>
+<p>整个流程通过异步命令和回调机制实现高效的ANR检测和响应，确保系统能够及时处理应用无响应的情况，同时最小化对正常操作的影响。</p>
+<h2 id="关键调用链总结">关键调用链总结</h2>
+<pre><code>InputDispatcher.processAnrsLocked()
+    └── InputDispatcher.onAnrLocked(connection)
+            ├── 构建ANR原因字符串
+            ├── updateLastAnrStateLocked()
+            ├── processConnectionUnresponsiveLocked()
+            │       └── sendWindowUnresponsiveCommandLocked()
+            │               └── postCommandLocked()
+            └── cancelEventsForAnrLocked()
+                    
+InputManagerCallback.notifyWindowUnresponsive()
+    └── AnrController.notifyWindowUnresponsive()
+            ├── preDumpIfLockTooSlow()
+            └── notifyWindowUnresponsive(inputToken)
+                    ├── 获取InputTarget/WindowState/ActivityRecord
+                    └── ActivityRecord.inputDispatchingTimedOut()
+                            └── AMS.inputDispatchingTimedOut()</code></pre>
+</article>
+    </div>
+    <div class="anr-pager"><span></span>
+<a class="nxt" href="ANR原理及渲染流程中的ANR风险点全面分析.html">Android ANR原理及渲染流程中的ANR风险点全面分析 →</a></div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <span>docs/ANR/ANRAnalysis.md</span><span class="dot">·</span>
+  <span>由 docs/ANR/tools/md2html.py 生成，样式复用 wiki（docs/wiki_site/src/app.css）</span>
+</footer>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>
+(function(){
+  var srcs=[];
+  document.querySelectorAll('pre.mermaid').forEach(function(el,i){ srcs[i]=el.textContent; });
+  function themeName(){ return document.documentElement.dataset.theme==='light'?'default':'dark'; }
+  function render(){
+    if(!window.mermaid) return;
+    document.querySelectorAll('pre.mermaid').forEach(function(el,i){
+      el.removeAttribute('data-processed'); el.textContent = srcs[i];
+    });
+    var dark = themeName()==='dark';
+    try{
+      mermaid.initialize({startOnLoad:false,theme:themeName(),securityLevel:'loose',
+        themeVariables: dark ? {
+          background:'transparent', primaryColor:'#30343a', primaryTextColor:'#f5f8fc',
+          primaryBorderColor:'#5a6068', lineColor:'#9aa4b2', secondaryColor:'#2a2e34',
+          tertiaryColor:'#2a2e34', textColor:'#e8eef6', mainBkg:'#30343a',
+          nodeBorder:'#5a6068', clusterBkg:'#2a2e34', clusterBorder:'#4a5058',
+          edgeLabelBackground:'#23262b', actorBkg:'#30343a', actorBorder:'#5a6068',
+          signalColor:'#9aa4b2'
+        } : {},
+        flowchart:{htmlLabels:true,useMaxWidth:true},sequence:{useMaxWidth:true}});
+      mermaid.run({nodes:document.querySelectorAll('pre.mermaid')});
+    }catch(e){ console.warn('mermaid render failed', e); }
+  }
+  render();
+
+  var btn=document.getElementById('theme-toggle');
+  function apply(){
+    var light=document.documentElement.dataset.theme==='light';
+    btn.setAttribute('aria-pressed',String(light));
+    var lab=btn.querySelector('.tt-label'); if(lab) lab.textContent = light?'暗色':'亮色';
+  }
+  btn.addEventListener('click',function(){
+    var root=document.documentElement;
+    root.dataset.theme = root.dataset.theme==='light'?'dark':'light';
+    try{ localStorage.setItem('st-theme',root.dataset.theme); }catch(e){}
+    apply(); render();
+  });
+  apply();
+
+  var links=[].slice.call(document.querySelectorAll('#toc a'));
+  var heads=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){
+        links.forEach(function(a){a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id);});
+      }});
+    },{rootMargin:'-8% 0px -82% 0px'});
+    heads.forEach(function(h){io.observe(h);});
+  }
+})();
+</script>
+</body>
+</html>

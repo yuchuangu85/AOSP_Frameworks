@@ -1,0 +1,222 @@
+{
+  "id": "bp-write",
+  "title": "writeTransactionData",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::writeTransactionData(",
+  "span": [
+    1365,
+    1399
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::writeTransactionData(int32_t cmd, uint32_t binderFlags,",
+      "kind": "note",
+      "text": "把一次调用编码成「驱动能读的字节」：先填 binder_transaction_data，再追加到 mOut。"
+    },
+    {
+      "at": 2,
+      "quote": "int32_t handle, uint32_t code, const Parcel& data, status_t* statusBuffer)",
+      "kind": "note",
+      "text": "续行：handle 是目标，code 是方法号，data 是编组后的参数。"
+    },
+    {
+      "at": 3,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 4,
+      "quote": "binder_transaction_data tr;",
+      "kind": "data",
+      "text": "驱动的数据结构。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "tr.target.ptr = 0; /* Don't pass uninitialized stack data to a remote process */",
+      "kind": "note",
+      "text": "注释点明安全要求：不要把未初始化的栈数据传给别的进程。"
+    },
+    {
+      "at": 7,
+      "quote": "tr.target.handle = handle;",
+      "kind": "data",
+      "text": "**目标**：本地实体用 ptr（这里为 0），跨进程用 handle。"
+    },
+    {
+      "at": 8,
+      "quote": "tr.code = code;",
+      "kind": "data",
+      "text": "方法号，对应 Stub 里的 switch(code)。"
+    },
+    {
+      "at": 9,
+      "quote": "tr.flags = binderFlags;",
+      "kind": "data",
+      "text": "标志：TF_ONE_WAY、TF_ACCEPT_FDS、TF_CLEAR_BUF 等。"
+    },
+    {
+      "at": 10,
+      "quote": "tr.cookie = 0;",
+      "kind": "data",
+      "text": "cookie 由驱动填写。"
+    },
+    {
+      "at": 11,
+      "quote": "tr.sender_pid = 0;",
+      "kind": "data",
+      "text": "sender_pid 由驱动填，不接受用户态伪造。"
+    },
+    {
+      "at": 12,
+      "quote": "tr.sender_euid = 0;",
+      "kind": "data",
+      "text": "sender_euid 同上——这是 binder 鉴权的基础。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "const status_t err = data.errorCheck();",
+      "kind": "data",
+      "text": "**先检查 Parcel 是否有错**：编组期间一旦出错就不要再把垃圾发出去。"
+    },
+    {
+      "at": 15,
+      "quote": "if (err == NO_ERROR) {",
+      "kind": "branch",
+      "text": "正常路径。"
+    },
+    {
+      "at": 16,
+      "quote": "tr.data_size = data.ipcDataSize();",
+      "kind": "data",
+      "text": "负载大小。"
+    },
+    {
+      "at": 17,
+      "quote": "tr.data.ptr.buffer = data.ipcData();",
+      "kind": "data",
+      "text": "**数据指针**：指向线程本地 Parcel 的缓冲，稍后由驱动读取。"
+    },
+    {
+      "at": 18,
+      "quote": "tr.offsets_size = data.ipcObjectsCount()*sizeof(binder_size_t);",
+      "kind": "data",
+      "text": "offsets 描述负载里哪些位置是 binder 对象。"
+    },
+    {
+      "at": 19,
+      "quote": "tr.data.ptr.offsets = data.ipcObjects();",
+      "kind": "data",
+      "text": "偏移表指针。"
+    },
+    {
+      "at": 20,
+      "quote": "} else if (statusBuffer) {",
+      "kind": "note",
+      "text": "否则（有错误）但调用方给了 status 缓冲。"
+    },
+    {
+      "at": 21,
+      "quote": "tr.flags |= TF_STATUS_CODE;",
+      "kind": "state",
+      "text": "**打 TF_STATUS_CODE**：告诉对端「这次只有 status，没有数据」。"
+    },
+    {
+      "at": 22,
+      "quote": "*statusBuffer = err;",
+      "kind": "state",
+      "text": "把错误码写进 status 缓冲。"
+    },
+    {
+      "at": 23,
+      "quote": "tr.data_size = sizeof(status_t);",
+      "kind": "data",
+      "text": "负载就是 status 的大小。"
+    },
+    {
+      "at": 24,
+      "quote": "tr.data.ptr.buffer = reinterpret_cast<uintptr_t>(statusBuffer);",
+      "kind": "data",
+      "text": "指向 status 缓冲。"
+    },
+    {
+      "at": 25,
+      "quote": "tr.offsets_size = 0;",
+      "kind": "data",
+      "text": "没有 binder 对象。"
+    },
+    {
+      "at": 26,
+      "quote": "tr.data.ptr.offsets = 0;",
+      "kind": "data",
+      "text": "偏移表为空。"
+    },
+    {
+      "at": 27,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（有错误且没有 status 缓冲）。"
+    },
+    {
+      "at": 28,
+      "quote": "return (mLastError = err);",
+      "kind": "note",
+      "text": "直接返回错误，不写 mOut。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭三分支。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "mOut.writeInt32(cmd);",
+      "kind": "call",
+      "text": "写命令字（BC_TRANSACTION / BC_REPLY）。"
+    },
+    {
+      "at": 32,
+      "quote": "mOut.write(&tr, sizeof(tr));",
+      "kind": "call",
+      "text": "写结构体本体。"
+    },
+    {
+      "at": 33,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 34,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "成功。此时数据还在用户态，等 talkWithDriver 的 ioctl 才真正交给驱动。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

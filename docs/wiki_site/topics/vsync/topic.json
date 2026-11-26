@@ -1,0 +1,1014 @@
+{
+  "meta": {
+    "slug": "vsync",
+    "title": "VSYNC：HWC 上报 → 预测 → 两相分发 → Choreographer",
+    "subtitle": "从 composer HAL 上报硬件 vsync 开始：VSyncReactor 校准、VSyncPredictor 预测网格、VSyncDispatchTimerQueue 武装 timerfd，把 app 与 sf 两相唤醒算成两个 workDuration，最后落到 EventThread/MessageQueue 与 Choreographer 的 doFrame",
+    "version": "android17-release",
+    "built": "2026-11-26",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲 VSYNC 这条：HAL 的 onComposerHalVsync 进 SF（持 mStateLock），HWComposer::onVsync 去重后交给 VsyncSchedule，VSyncReactor 做周期确认与 present fence 采样，VSyncPredictor 用线性回归给出目标 vsync 网格；VSyncDispatch 把 (vsync, workDuration, readyDuration) 折算成 timerfd 唤醒，TimerDispatch 线程在同一窗口内批量回调；app 侧 EventThread 按连接限流（phases/rate）后经 BitTube 投递，Java 侧 Choreographer 收包、修 jitter、按 CALLBACK_INPUT→ANIMATION→TRAVERSAL→COMMIT 分发；sf 侧 MessageQueue 生成 vsyncId 后交给 Scheduler::onFrameSignal。相位差被折算成两个 duration，不存在独立的 phaseOffset 参与调度。",
+    "kicker": "AOSP · android17-release · VSync pipeline"
+  },
+  "lanes": [
+    {
+      "id": "HW",
+      "label": "composer HAL（仓库外）",
+      "color": "#ff9f43"
+    },
+    {
+      "id": "SF",
+      "label": "SurfaceFlinger 主线程",
+      "color": "#c792ea"
+    },
+    {
+      "id": "DSP",
+      "label": "TimerDispatch / VSyncDispatch",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "ET",
+      "label": "EventThread(app) / MessageQueue(sf)",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "APP",
+      "label": "app UI 线程（Choreographer）",
+      "color": "#7bd88f"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "上报与去重",
+      "hint": "HAL → HWComposer"
+    },
+    {
+      "id": "P1",
+      "label": "校准与预测",
+      "hint": "Reactor / Predictor"
+    },
+    {
+      "id": "P2",
+      "label": "相位与时序",
+      "hint": "offset → duration"
+    },
+    {
+      "id": "P3",
+      "label": "武装定时器",
+      "hint": "timerfd 与批量回调"
+    },
+    {
+      "id": "P4",
+      "label": "两相分发",
+      "hint": "EventThread / MessageQueue"
+    },
+    {
+      "id": "P5",
+      "label": "app 消费",
+      "hint": "BitTube → Choreographer"
+    },
+    {
+      "id": "P6",
+      "label": "sf 消费",
+      "hint": "vsyncId → onFrameSignal"
+    },
+    {
+      "id": "P7",
+      "label": "分支与诊断",
+      "hint": "丢样本、抖动、掉帧判定"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "HW",
+      "title": "面板 vsync 由 HAL 上报（仓库外）",
+      "brief": "显示控制器在每帧的垂直消隐点产生 vsync，composer HAL 通过回调把它送给 SF。上报的线程、优先级与抖动特性都不在本仓库，页面里按「回调带 monotonic 时间戳」这一接口假设处理。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2535,
+          "symbol": "onComposerHalVsync"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "SF",
+      "title": "onComposerHalVsync：进 SF 并去重",
+      "brief": "SF 侧入口先持 mStateLock 再取 scheduler 锁；时间戳非法直接返回。HWComposer::onVsync 负责丢掉同一时间戳的重复上报——这是「同一个 vsync 被报两次」的唯一防线。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 155,
+          "symbol": "HWComposer::onVsync"
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "line": 2541,
+          "symbol": "timestamp 校验"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "addResyncSample：进入校准器",
+      "brief": "Scheduler::addResyncSample 校验时间源（present fence 走另一个入口，传错直接 FATAL），再转给 VsyncSchedule，由它持 mHwVsyncLock 推进 VSyncReactor。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 978,
+          "symbol": "addResyncSample"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp",
+          "line": 168,
+          "symbol": "VsyncSchedule::addResyncSample"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "VSyncReactor：周期确认与样本接受",
+      "brief": "用 10% 容差判断 HWC 上报的周期是否可信；未确认时把时间戳存进 mLastHwVsync 继续要样本，确认后打开 tracker 并结束过渡态。是否需要继续要硬件 vsync 由预测器决定。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+          "line": 201,
+          "symbol": "addHwVsyncTimestamp"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+          "line": 166,
+          "symbol": "periodConfirmed"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P1",
+      "lane": "SF",
+      "title": "present fence 也能校准",
+      "brief": "除了硬件 vsync，present fence 的信号时间也会喂给同一套模型（Scheduler::addPresentFence）。fence 未 signal 时先挂起，最多 20 个，超限丢最旧；样本被拒时模型进入重校准，外部表现是唤醒点整体偏移。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 999,
+          "symbol": "addPresentFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+          "line": 71,
+          "symbol": "addPresentFence"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp",
+          "line": 152,
+          "symbol": "kMaxPendingFences"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P1",
+      "lane": "DSP",
+      "title": "VSyncPredictor：给出下一个 vsync",
+      "brief": "预测器维护 vsync 网格（周期 + 相位），nextAnticipatedVSyncTimeFrom 回答「在给定时间之后的第一拍是什么时候」。调用方把 max(lastVsync, now+work+ready) 传进去，所以赶不上这一拍就会自动顺延到下一拍。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+          "line": 380,
+          "symbol": "nextAnticipatedVSyncTimeFrom"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 93,
+          "symbol": "调用点"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P2",
+      "lane": "SF",
+      "title": "相位被折算成两个 duration",
+      "brief": "VsyncConfig 里的 sfOffset/appOffset 并不直接参与调度，而是换算成 sfWorkDuration / appWorkDuration：sf = P − sfOffset，app = P + sfOffset − appOffset。进入调度器的只有这两个时长。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+          "line": 146,
+          "symbol": "sfOffsetToDuration"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+          "line": 150,
+          "symbol": "appOffsetToDuration"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+          "line": 182,
+          "symbol": "构造三套配置"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P2",
+      "lane": "SF",
+      "title": "setVsyncConfig：把时长下发两条线",
+      "brief": "Scheduler::setVsyncConfig 把 (appWorkDuration, sfWorkDuration) 给 app 的 EventThread，把 sfWorkDuration 给 sf 的 MessageQueue。两条注册的 update 会立刻重算已武装的唤醒时间。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 802,
+          "symbol": "setVsyncConfig"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 353,
+          "symbol": "EventThread::setDuration"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          "line": 138,
+          "symbol": "MessageQueue::setDuration"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P2",
+      "lane": "SF",
+      "title": "VsyncModulator：动态切换三套配置",
+      "brief": "early/earlyGpu/late 三套配置由 VsyncModulator 依「是否有事务在等、是否走 GPU 合成、刷新率是否在切换」切换。事务提交后会从 early 回到 late；刷新率切换期间会额外前移。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp",
+          "line": 107,
+          "symbol": "onTransactionCommit"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp",
+          "line": 120,
+          "symbol": "onRefreshRateChangeCompleted"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp",
+          "line": 126,
+          "symbol": "onDisplayRefresh"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P3",
+      "lane": "DSP",
+      "title": "schedule：把时长折算成唤醒点",
+      "brief": "VSyncDispatchTimerQueueEntry::schedule 算出三件事：目标 vsync（不早于 now+work+ready）、唤醒时刻（vsync − work − ready）、ready 时刻。若算出的 vsync 比已武装目标晚太多就保留旧目标，避免为同一拍重复唤醒。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 90,
+          "symbol": "VSyncDispatchTimerQueueEntry::schedule"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 414,
+          "symbol": "scheduleLocked"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P3",
+      "lane": "DSP",
+      "title": "timerCallback：一次唤醒服务多条回调",
+      "brief": "TimerDispatch 线程按 timerfd 醒来，收集所有「wakeupTime 落在同一窗口」的 entry，先标记 executing 再出锁逐个回调。回调本身跑在 timer 线程上，因此不允许阻塞。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 334,
+          "symbol": "timerCallback"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/src/Timer.cpp",
+          "line": 40,
+          "symbol": "TimerDispatch 线程"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P4",
+      "lane": "ET",
+      "title": "EventThread::threadMain：状态机选路",
+      "brief": "app 侧的 EventThread 唤醒后统计 vsyncRequested，在 Idle / VSync / SyntheticVSync 间选路；只有 VSync 状态才重新武装定时器。无事件时超时会伪造一个 vsync，避免驱动卡死导致 app 冻结。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 530,
+          "symbol": "threadMain"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 585,
+          "symbol": "updateState(SyntheticVSync/VSync)"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P4",
+      "lane": "ET",
+      "title": "shouldConsumeEvent：按连接限流",
+      "brief": "先看 vsyncRequest（Single/Periodic/None/数字 rate），再对限流类请求检查相位：app 要求 30Hz 时只在隔拍的相位上唤醒。这是「app 帧率低于屏幕帧率」的实现。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 637,
+          "symbol": "shouldConsumeEvent"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 519,
+          "symbol": "isVsyncValid"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P4",
+      "lane": "ET",
+      "title": "dispatchEvent：生成 frame timeline 并投递",
+      "brief": "对每个 consumer 按 uid 取 frameInterval，生成若干候选 timeline（第 i 个的 expectedPresentationTime = preferred + i·P），用 TokenManager 分配 vsyncId，再写 BitTube。分发完记下 preferred 时间并回调。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 769,
+          "symbol": "dispatchEvent"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 712,
+          "symbol": "generateFrameTimeline"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+          "line": 1294,
+          "symbol": "generateTokenForPredictions"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P5",
+      "lane": "APP",
+      "title": "app 收包：DisplayEventReceiver → Choreographer",
+      "brief": "BitTube 的 fd 挂在 app 的 Looper 上，JNI 侧把事件交给 Java 的 DisplayEventReceiver，再由 FrameDisplayEventReceiver 投一条异步消息。时间戳会被钳到「不晚于 now」，避免用它当未来时间。",
+      "refs": [
+        {
+          "file": "native/libs/gui/DisplayEventReceiver.cpp",
+          "line": 36,
+          "symbol": "DisplayEventReceiver"
+        },
+        {
+          "file": "base/core/jni/android_view_DisplayEventReceiver.cpp",
+          "line": 203,
+          "symbol": "dispatchVsync"
+        },
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1594,
+          "symbol": "FrameDisplayEventReceiver.onVsync"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P5",
+      "lane": "APP",
+      "title": "doFrame：修 jitter 并分发五类回调",
+      "brief": "doFrame 先算 now − frameTime 的偏差，超过一个帧间隔就把 frameTime 拉回 vsync 网格并打 Skipped N frames；然后把 vsyncId/deadline 写进 FrameInfo，依次跑 INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1074,
+          "symbol": "doFrame"
+        },
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1209,
+          "symbol": "CALLBACK_TRAVERSAL"
+        },
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1123,
+          "symbol": "jitter 修正"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P6",
+      "lane": "ET",
+      "title": "sf 侧：MessageQueue::vsyncCallback",
+      "brief": "sf 相位的回调跑在 timer 线程：生成 vsyncId（同一个 TokenManager），记录 lastCallbackTime，然后把帧丢给 SF 主线程的 Handler。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          "line": 59,
+          "symbol": "vsyncCallback"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          "line": 118,
+          "symbol": "MessageQueue::vsyncCallback 注册"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P6",
+      "lane": "SF",
+      "title": "onFrameSignal：sf 相位消费",
+      "brief": "SF 主线程收到帧信号后调 FrameTargeter::beginFrame 定 expectedPresentTime，再驱动 commit/composite。这与 sfWorkDuration 对齐：sf 的唤醒点就是 app 的 deadline。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 411,
+          "symbol": "onFrameSignal"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          "line": 74,
+          "symbol": "dispatchFrame"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P7",
+      "lane": "SF",
+      "title": "分支：样本被拒与重新校准",
+      "brief": "周期不确认、模式切换中、预测器要更多样本时，样本会被拒：mMoreSamplesNeeded / mLimitReached / mModeChangeInProgress 三个布尔描述过渡态。期间外部表现是唤醒点抖动变大。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+          "line": 130,
+          "symbol": "过渡态布尔"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+          "line": 219,
+          "symbol": "needsMoreSamples"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P7",
+      "lane": "DSP",
+      "title": "分支：重复唤醒与迟到",
+      "brief": "若新算出的 vsync 比已武装目标晚，或目标已在 mMinVsyncDistance 内，会保留旧目标；定时器即将触发时改为登记 pending workload，由回调侧合并，避免取消一个马上要跑的定时器。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 101,
+          "symbol": "mMinVsyncDistance"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          "line": 425,
+          "symbol": "pending workload"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P7",
+      "lane": "APP",
+      "title": "分支：Choreographer 跳过帧",
+      "brief": "当回调晚于 frameTime 超过一个帧间隔，Choreographer 会把 frameTime 拉回最近的网格并打印 Skipped N frames；帧过晚时还会用 getLatestVsyncEventData 回查 SF 换一组 timeline。",
+      "refs": [
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1133,
+          "symbol": "Skipped N frames"
+        },
+        {
+          "file": "base/core/java/android/view/Choreographer.java",
+          "line": 1517,
+          "symbol": "getLatestVsyncEventData"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P7",
+      "lane": "SF",
+      "title": "掉帧判定：三套并行判据",
+      "brief": "SF 自身按 FrameTargeter 的 missed 判定；FrameTimeline 按 presentDelay 与 deadlineDelta 分类；刷新率选择按层历史投票。三者口径不同，混用会得出错误结论。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/src/FrameTargeter.cpp",
+          "line": 162,
+          "symbol": "mFrameMissed"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+          "line": 829,
+          "symbol": "classifyJankLocked"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "SF",
+      "title": "诊断：dumpsys 与 trace 打点",
+      "brief": "dumpsys SurfaceFlinger --vsync 能看到每个 entry 的 work/ready/lastVsync/committed 与 armed 信息；Perfetto 里 HW_VSYNC_<id>、VSYNC-app、Choreographer#doFrame 是最常用的三个锚点。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          "line": 1311,
+          "symbol": "dumpVsync"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          "line": 317,
+          "symbol": "VSYNC-app"
+        },
+        {
+          "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          "line": 181,
+          "symbol": "HW_VSYNC_<id>"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "HW",
+      "title": "仓库外：驱动与面板时序",
+      "brief": "面板的 vsync 精度、HAL 的上报线程与抖动、DRM 驱动的时序补偿都不在本仓库。所以「实际 vsync 时刻」只能靠 present fence 与 HW_VSYNC 打点间接观察，不能靠代码推断。",
+      "refs": [
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp",
+          "line": 55,
+          "symbol": "VSYNC-predicted"
+        },
+        {
+          "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+          "line": 380,
+          "symbol": "预测点"
+        }
+      ]
+    }
+  ],
+  "extends": [
+    "topic_render.json"
+  ],
+  "pitfalls": [
+    {
+      "case": "没有第二个 EventThread 给 sf",
+      "behavior": "Scheduler 只创建一个名为 app 的 EventThread；sf 是同一个 VSyncDispatch 上的第二回调，相位差来自各自的 duration 而不是线程",
+      "ref": "Scheduler.cpp:583 / MessageQueue.cpp:122"
+    },
+    {
+      "case": "相位不是独立变量",
+      "behavior": "sfOffset/appOffset 只用于换算成 sfWorkDuration/appWorkDuration，进入调度的只有两个时长",
+      "ref": "VsyncConfiguration.cpp:146 / 150"
+    },
+    {
+      "case": "header 时间戳是唤醒时刻",
+      "behavior": "DISPLAY_EVENT_VSYNC 的 header timestamp 不是硬件 vsync，硬件时刻在 expectedPresentationTime",
+      "ref": "EventThread.cpp:478"
+    },
+    {
+      "case": "赶不上同一拍就顺延",
+      "behavior": "schedule 用 nextAnticipatedVSyncTimeFrom(max(lastVsync, now+work+ready))，算出的 vsync 已过就落到下一拍",
+      "ref": "VSyncDispatchTimerQueue.cpp:93 / VSyncPredictor.cpp:380"
+    },
+    {
+      "case": "回调跑在 timer 线程",
+      "behavior": "timerCallback 出锁后直接调各 entry 的 callback，函数里阻塞会拖垮所有注册者",
+      "ref": "VSyncDispatchTimerQueue.cpp:334"
+    },
+    {
+      "case": "present fence 是第二校准通道",
+      "behavior": "fence 未 signal 时挂起（最多 20 个，超限丢最旧），所以 present 延迟也会影响唤醒点",
+      "ref": "VSyncReactor.cpp:71 / VsyncSchedule.cpp:152"
+    },
+    {
+      "case": "样本被拒会重新校准",
+      "behavior": "mMoreSamplesNeeded / mPeriodConfirmationInProgress / mModeChangeInProgress 期间模型重算，外部表现为唤醒点偏移",
+      "ref": "VSyncReactor.cpp:101 / 128"
+    },
+    {
+      "case": "SyntheticVSync 是兜底",
+      "behavior": "无事件时超时（1000ms，Synthetic 16ms）会伪造 vsync，避免驱动卡死导致 app 冻结",
+      "ref": "EventThread.cpp:616"
+    },
+    {
+      "case": "app 帧率低于屏幕时只在自己的相位唤醒",
+      "behavior": "shouldConsumeEvent 对 rate 类请求用 count % rate 与 isVSyncInPhase 限流",
+      "ref": "EventThread.cpp:669 / Scheduler.cpp:519"
+    },
+    {
+      "case": "掉帧判定有三套口径",
+      "behavior": "SF 的 FrameTargeter missed、FrameTimeline 的 presentDelay/deadlineDelta、LayerHistory 的刷新率投票互不等价",
+      "ref": "FrameTargeter.cpp:162 / FrameTimeline.cpp:829"
+    }
+  ],
+  "facts": [
+    "<b>一条 vsync 走两条线</b>：同一个 VSyncDispatch 上注册两个回调（app 与 sf），靠 workDuration 拉开相位。",
+    "<b>predictor 是网格不是时钟</b>：它回答「某时刻之后的第一拍」，所以晚到会自动顺延，不需要额外判断。",
+    "<b>硬件 vsync 只是校准源</b>：校准完成且预测稳定后 SF 会关掉硬件 vsync（enableHardwareVsync 由预测器决定）。",
+    "<b>app 与 sf 的时间基准不同</b>：app 的 deadline 等于 sf 的唤醒点（V − sfWorkDuration），两者共用同一预测网格。",
+    "<b>vsyncId 由 TokenManager 统一发</b>：app 与 sf 两条线的 vsyncId 都来自它，这是跨进程对账的唯一键。"
+  ],
+  "glossary": [
+    {
+      "term": "workDuration",
+      "text": "从唤醒到目标 vsync 的预算；app/sf 各一个。"
+    },
+    {
+      "term": "readyDuration",
+      "text": "从 ready 到 vsync 的时长，决定 deadline。"
+    },
+    {
+      "term": "expectedPresentationTime",
+      "text": "事件里携带的计划上屏时刻（硬件 vsync）。"
+    },
+    {
+      "term": "VSyncReactor",
+      "text": "校准器，负责周期确认与样本接受。"
+    },
+    {
+      "term": "VSyncPredictor",
+      "text": "预测器，维护 vsync 网格。"
+    },
+    {
+      "term": "VSyncDispatch",
+      "text": "注册与定时接口，实现在 TimerQueue。"
+    },
+    {
+      "term": "EventThread",
+      "text": "app 侧分发线程（名为 app）。"
+    },
+    {
+      "term": "MessageQueue",
+      "text": "sf 侧同一条 dispatch 上的回调。"
+    },
+    {
+      "term": "SyntheticVSync",
+      "text": "无硬件事件时伪造的 vsync，兜底防止冻结。"
+    },
+    {
+      "term": "vsyncRequest",
+      "text": "连接请求模式：None/Single/Periodic/数字 rate。"
+    },
+    {
+      "term": "phase",
+      "text": "本分支里折算成 duration，没有独立的偏移变量参与调度。"
+    },
+    {
+      "term": "tokens",
+      "text": "TokenManager 分配的 vsyncId，用于 FrameTimeline 对账。"
+    },
+    {
+      "term": "early/late",
+      "text": "VsyncModulator 的三套配置，按事务与 GPU 合成状态切换。"
+    },
+    {
+      "term": "hwcMinWorkDuration",
+      "text": "HWC 要求的最小工作时长，参与 sf 侧预算。"
+    },
+    {
+      "term": "presentDelay",
+      "text": "FrameTimeline 判 jank 的量：实际 present 与预测 present 之差。"
+    },
+    {
+      "term": "deadlineDelta",
+      "text": "实现完成时间与预测 endTime 之差，判 AppDeadlineMissed 用。"
+    }
+  ],
+  "scenario": {
+    "title": "一帧 vsync 的传播（60Hz，示数量级）",
+    "events": [
+      {
+        "t": "0.00 ms",
+        "label": "面板 vsync",
+        "detail": "HAL 上报硬件 vsync 时间戳"
+      },
+      {
+        "t": "0.02 ms",
+        "label": "去重",
+        "detail": "HWComposer::onVsync 丢掉重复时间戳"
+      },
+      {
+        "t": "0.05 ms",
+        "label": "校准",
+        "detail": "VSyncReactor 判断周期是否确认"
+      },
+      {
+        "t": "0.10 ms",
+        "label": "预测",
+        "detail": "Predictor 给出目标 vsync V"
+      },
+      {
+        "t": "0.15 ms",
+        "label": "武装",
+        "detail": "timerfd 设到 V − (work+ready)"
+      },
+      {
+        "t": "≈ V−appWork−sfWork",
+        "label": "app 唤醒",
+        "detail": "EventThread.onVsync → BitTube"
+      },
+      {
+        "t": "≈ V−sfWork",
+        "label": "app deadline / sf 唤醒",
+        "detail": "两者是同一个时刻"
+      },
+      {
+        "t": "V−sfWork 之后",
+        "label": "sf 工作",
+        "detail": "onFrameSignal → commit/composite"
+      },
+      {
+        "t": "≈ V",
+        "label": "上屏",
+        "detail": "HWC present 对齐到 V"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：一条 vsync 怎么变成两次唤醒",
+      "route": "全景·架构 → 流程图 → 时序图"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：上报 → 校准 → 预测 → 武装 → 分发",
+      "route": "精读第 1→18 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "理解相位与限流",
+      "route": "精读第 7→13 步 + 第 19→21 步"
+    },
+    {
+      "time": "半天",
+      "goal": "能调相位 / 能抓现场",
+      "route": "代码逐行 12 个 P0 函数 + dumpsys SurfaceFlinger --vsync"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "VSyncReactor::addHwVsyncTimestamp",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+      "line": 201,
+      "size": 45,
+      "thread": "HAL 回调线程",
+      "lock": "mMutex",
+      "purpose": "周期确认与样本接受。",
+      "risk": "容差或过渡态处理错会导致模型长期不收敛。",
+      "status": "card"
+    },
+    {
+      "fn": "VSyncPredictor::nextAnticipatedVSyncTimeFrom",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+      "line": 380,
+      "size": 41,
+      "thread": "调用方线程",
+      "lock": "mMutex",
+      "purpose": "给出某时刻之后的第一拍。",
+      "risk": "算错会直接体现为唤醒点抖动或整体偏移。",
+      "status": "card"
+    },
+    {
+      "fn": "VSyncDispatchTimerQueueEntry::schedule",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "line": 90,
+      "size": 29,
+      "thread": "注册方线程",
+      "lock": "调用方持队列锁",
+      "purpose": "把 work/ready 折算成 wakeup 与 ready 时刻。",
+      "risk": "保留旧目标与顺延的判定写错会重复唤醒或漏唤醒。",
+      "status": "card"
+    },
+    {
+      "fn": "EventThread::threadMain",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "line": 530,
+      "size": 106,
+      "thread": "EventThread(app)",
+      "lock": "mMutex",
+      "purpose": "三态选路与重新武装。",
+      "risk": "状态判断错会让 app 收不到 vsync（冻结）或收到过量。",
+      "status": "card"
+    },
+    {
+      "fn": "EventThread::shouldConsumeEvent",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "line": 637,
+      "size": 65,
+      "thread": "EventThread(app)",
+      "lock": "mMutex",
+      "purpose": "按请求模式与相位限流。",
+      "risk": "rate 计算错会让低帧率 app 的唤醒间隔不均。",
+      "status": "card"
+    },
+    {
+      "fn": "Scheduler::setVsyncConfig",
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "line": 802,
+      "size": 5,
+      "thread": "SF 主线程",
+      "lock": "mVsyncConfigLock",
+      "purpose": "把两条线的时长下发。",
+      "risk": "两条线用到同一个值会造成相位塌陷。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s04",
+      "fn": "VSyncReactor::periodConfirmed",
+      "ref": "VSyncReactor.cpp:166-200",
+      "rows": [
+        {
+          "cond": "HWC 给的周期与记录值差在 10% 内",
+          "then": "周期确认",
+          "effect": "打开 tracker，结束过渡态"
+        },
+        {
+          "cond": "未确认",
+          "then": "存 mLastHwVsync 继续要样本",
+          "effect": "这段时间预测不可信"
+        },
+        {
+          "cond": "预测器 needsMoreSamples",
+          "then": "继续要硬件 vsync",
+          "effect": "不关硬件 vsync"
+        },
+        {
+          "cond": "预测稳定",
+          "then": "可 disableHardwareVsync",
+          "effect": "省电"
+        }
+      ]
+    },
+    {
+      "step": "s10",
+      "fn": "schedule",
+      "ref": "VSyncDispatchTimerQueue.cpp:90-118",
+      "rows": [
+        {
+          "cond": "算出的 vsync 已过 now+work+ready",
+          "then": "顺延到下一拍",
+          "effect": "自动落一帧"
+        },
+        {
+          "cond": "新 vsync 比已武装目标晚超过 mMinVsyncDistance",
+          "then": "保留旧目标",
+          "effect": "避免为同一拍重复唤醒"
+        },
+        {
+          "cond": "timer 即将触发",
+          "then": "登记 pending workload",
+          "effect": "由回调侧合并"
+        }
+      ]
+    },
+    {
+      "step": "s13",
+      "fn": "shouldConsumeEvent",
+      "ref": "EventThread.cpp:637-701",
+      "rows": [
+        {
+          "cond": "vsyncRequest = None",
+          "then": "丢弃",
+          "effect": "该连接不唤醒"
+        },
+        {
+          "cond": "Single",
+          "then": "消费一次后降为 SingleSuppressCallback",
+          "effect": "requestNextVsync 的语义"
+        },
+        {
+          "cond": "数字 rate",
+          "then": "count % rate 决定是否消费",
+          "effect": "低帧率只隔拍唤醒"
+        },
+        {
+          "cond": "throttleVsync 判相位不匹配",
+          "then": "丢弃",
+          "effect": "与刷新率相位对齐"
+        }
+      ]
+    },
+    {
+      "step": "s21",
+      "fn": "Choreographer jitter 修正",
+      "ref": "Choreographer.java:1123-1136",
+      "rows": [
+        {
+          "cond": "now − frameTime > frameInterval",
+          "then": "frameTime 拉回最近网格 + Skipped N frames",
+          "effect": "避免用过期时间基准"
+        },
+        {
+          "cond": "帧过晚",
+          "then": "getLatestVsyncEventData 回查 SF",
+          "effect": "resynced 日志来源"
+        },
+        {
+          "cond": "正常",
+          "then": "直接执行五类回调",
+          "effect": "常规路径"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 6
+  },
+  "scope": [
+    "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+    "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+    "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+    "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+    "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+    "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+    "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+    "native/services/surfaceflinger/Scheduler/VsyncModulator.cpp",
+    "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp",
+    "base/core/java/android/view/Choreographer.java"
+  ],
+  "inventorySpans": [
+    "addHwVsyncTimestamp",
+    "addPresentFence",
+    "periodConfirmed",
+    "nextAnticipatedVSyncTimeFrom",
+    "needsMoreSamples",
+    "schedule",
+    "timerCallback",
+    "scheduleLocked",
+    "registerCallback",
+    "threadMain",
+    "shouldConsumeEvent",
+    "dispatchEvent",
+    "generateFrameTimeline",
+    "setDuration",
+    "vsyncCallback",
+    "setVsyncConfig",
+    "onFrameSignal",
+    "isVsyncValid",
+    "onTransactionCommit",
+    "onRefreshRateChangeCompleted",
+    "onDisplayRefresh",
+    "sfOffsetToDuration",
+    "appOffsetToDuration",
+    "doFrame",
+    "postVsyncCallback",
+    "doCallbacks"
+  ]
+}

@@ -1,0 +1,366 @@
+{
+  "id": "tr-rootdl",
+  "title": "ThreadedRenderer::updateRootDisplayList",
+  "file": "base/core/java/android/view/ThreadedRenderer.java",
+  "sig": "private void updateRootDisplayList(",
+  "span": [
+    730,
+    788
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void updateRootDisplayList(View view, DrawCallbacks callbacks) {",
+      "kind": "note",
+      "text": "根节点录制。它做两件事：更新内容树，以及决定根节点这张 display list 要不要重录。"
+    },
+    {
+      "at": 2,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"Record View#draw()\");",
+      "kind": "trace",
+      "text": "atrace 名为 Record View#draw()；与 measure/layout 切片并列，可一眼看出录制占了多少时间。"
+    },
+    {
+      "at": 3,
+      "quote": "updateViewTreeDisplayList(view);",
+      "kind": "call",
+      "text": "先更新内容树：置 PFLAG_DRAWN、按 PFLAG_INVALIDATED 决定 mRecreateDisplayList，再调 updateDisplayListIfDirty。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "// Consume and set the frame callback after we dispatch draw to the view above, but before",
+      "kind": "note",
+      "text": "帧回调的时机说明：必须在上面的 draw 之后、下面的 onPostDraw 之前。"
+    },
+    {
+      "at": 6,
+      "quote": "// onPostDraw below which may reset the callback for the next frame.  This ensures that",
+      "kind": "note",
+      "text": "onPostDraw 可能会为下一帧重置回调，所以顺序不能反。"
+    },
+    {
+      "at": 7,
+      "quote": "// updates to the frame callback during scroll handling will also apply in this frame.",
+      "kind": "note",
+      "text": "目标是：滚动过程中设置的帧回调，本帧就生效，而不是延后一帧。"
+    },
+    {
+      "at": 8,
+      "quote": "if (mNextRtFrameCallbacks != null) {",
+      "kind": "branch",
+      "text": "有等待下发给 RT 的回调。"
+    },
+    {
+      "at": 9,
+      "quote": "final ArrayList<FrameDrawingCallback> frameCallbacks = mNextRtFrameCallbacks;",
+      "kind": "data",
+      "text": "取本地引用，便于下面置空字段。"
+    },
+    {
+      "at": 10,
+      "quote": "mNextRtFrameCallbacks = null;",
+      "kind": "state",
+      "text": "一次性消费：本帧取走，下一帧不会重复执行。"
+    },
+    {
+      "at": 11,
+      "quote": "setFrameCallback(new FrameDrawingCallback() {",
+      "kind": "call",
+      "text": "把一组回调包装成一个 RT 帧回调交给原生侧。"
+    },
+    {
+      "at": 12,
+      "quote": "@Override",
+      "kind": "note",
+      "text": "覆写注解。"
+    },
+    {
+      "at": 13,
+      "quote": "public void onFrameDraw(long frame) {",
+      "kind": "note",
+      "text": "RT 真正开始画这一帧时的回调。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "这里留空：只借用 onFrameDraw(syncResult, frame) 那个重载。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "@Override",
+      "kind": "note",
+      "text": "覆写注解。"
+    },
+    {
+      "at": 17,
+      "quote": "public FrameCommitCallback onFrameDraw(int syncResult, long frame) {",
+      "kind": "note",
+      "text": "RT 同步完成后回调，返回一个「buffer 提交完成」回调。"
+    },
+    {
+      "at": 18,
+      "quote": "ArrayList<FrameCommitCallback> frameCommitCallbacks = new ArrayList<>();",
+      "kind": "data",
+      "text": "收集每个子回调返回的提交回调。"
+    },
+    {
+      "at": 19,
+      "quote": "for (int i = 0; i < frameCallbacks.size(); ++i) {",
+      "kind": "note",
+      "text": "逐个调用。"
+    },
+    {
+      "at": 20,
+      "quote": "FrameCommitCallback frameCommitCallback = frameCallbacks.get(i)",
+      "kind": "call",
+      "text": "调用子回调的同步阶段。"
+    },
+    {
+      "at": 21,
+      "quote": ".onFrameDraw(syncResult, frame);",
+      "kind": "note",
+      "text": "把 RT 的 syncResult 与本帧句柄透传下去。"
+    },
+    {
+      "at": 22,
+      "quote": "if (frameCommitCallback != null) {",
+      "kind": "branch",
+      "text": "子回调可能不关心提交阶段。"
+    },
+    {
+      "at": 23,
+      "quote": "frameCommitCallbacks.add(frameCommitCallback);",
+      "kind": "data",
+      "text": "收集起来，等 buffer 真正提交时统一回调。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭空判断。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "if (frameCommitCallbacks.isEmpty()) {",
+      "kind": "branch",
+      "text": "没人关心提交阶段：返回 null 让原生侧省掉一次回调。"
+    },
+    {
+      "at": 28,
+      "quote": "return null;",
+      "kind": "note",
+      "text": "短路。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭空集合判断。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "return didProduceBuffer -> {",
+      "kind": "note",
+      "text": "返回的 lambda 就是提交回调；参数说明本帧到底有没有产出 buffer（跳帧时为 false）。"
+    },
+    {
+      "at": 32,
+      "quote": "for (int i = 0; i < frameCommitCallbacks.size(); ++i) {",
+      "kind": "note",
+      "text": "逐个通知。"
+    },
+    {
+      "at": 33,
+      "quote": "frameCommitCallbacks.get(i).onFrameCommit(didProduceBuffer);",
+      "kind": "call",
+      "text": "注意这里可能在 RT 线程执行，回调里不要直接改 View 状态。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "for 结束。"
+    },
+    {
+      "at": 35,
+      "quote": "};",
+      "kind": "note",
+      "text": "lambda 结束。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 onFrameDraw 重载。"
+    },
+    {
+      "at": 37,
+      "quote": "});",
+      "kind": "note",
+      "text": "setFrameCallback 调用结束。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭帧回调处理。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 40,
+      "quote": "if (mRootNodeNeedsUpdate || !mRootNode.hasDisplayList()) {",
+      "kind": "branch",
+      "text": "根节点只在「需要更新」或「还没有 display list」时重录——这是本方法唯一的缓存闸门。"
+    },
+    {
+      "at": 41,
+      "quote": "RecordingCanvas canvas = mRootNode.beginRecording(mSurfaceWidth, mSurfaceHeight);",
+      "kind": "call",
+      "text": "用 surface 尺寸录制根节点；这里进的是 staging 槽。"
+    },
+    {
+      "at": 42,
+      "quote": "try {",
+      "kind": "note",
+      "text": "保证 endRecording 一定会被调用，否则该 RenderNode 后续无法再 beginRecording。"
+    },
+    {
+      "at": 43,
+      "quote": "final int saveCount = canvas.save();",
+      "kind": "note",
+      "text": "保护现场，最后按 saveCount 还原，避免影响其它录制。"
+    },
+    {
+      "at": 44,
+      "quote": "canvas.translate(mInsetLeft, mInsetTop);",
+      "kind": "data",
+      "text": "把 inset 偏移烘进根节点：内容树本身的坐标系不需要知道窗口留白。"
+    },
+    {
+      "at": 45,
+      "quote": "callbacks.onPreDraw(canvas);",
+      "kind": "call",
+      "text": "预绘制回调（ViewRootImpl 实现）在这里往根节点里画额外内容，例如窗口背景/装饰。"
+    },
+    {
+      "at": 46,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 47,
+      "quote": "canvas.enableZ();",
+      "kind": "state",
+      "text": "开启 Z 轴排序，让子节点的 elevation/shadow 能被正确处理。"
+    },
+    {
+      "at": 48,
+      "quote": "canvas.drawRenderNode(view.updateDisplayListIfDirty());",
+      "kind": "call",
+      "text": "把内容树的根 RenderNode 作为「一条 draw op」塞进根节点——这就是两层 display list 结构。"
+    },
+    {
+      "at": 49,
+      "quote": "canvas.disableZ();",
+      "kind": "state",
+      "text": "恢复，避免后续绘制被意外排序。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 51,
+      "quote": "callbacks.onPostDraw(canvas);",
+      "kind": "call",
+      "text": "后绘制回调：例如焦点框、调试叠层。"
+    },
+    {
+      "at": 52,
+      "quote": "canvas.restoreToCount(saveCount);",
+      "kind": "state",
+      "text": "还原到本段录制开始时的状态。"
+    },
+    {
+      "at": 53,
+      "quote": "mRootNodeNeedsUpdate = false;",
+      "kind": "state",
+      "text": "清标志。注意：这里只是在 try 内清，若 endRecording 抛异常会在 finally 里再执行一次录制。"
+    },
+    {
+      "at": 54,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "无论如何都要闭合录制。"
+    },
+    {
+      "at": 55,
+      "quote": "mRootNode.endRecording();",
+      "kind": "call",
+      "text": "产物落进 staging；RT 下次 syncDisplayList 时才会看到新内容。"
+    },
+    {
+      "at": 56,
+      "quote": "}",
+      "kind": "note",
+      "text": "try/finally 结束。"
+    },
+    {
+      "at": 57,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭根节点录制分支：不满足条件时完全不录，这就是「根节点 display list 可以跨帧复用」的实现。"
+    },
+    {
+      "at": 58,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合 Record View#draw() 切片。"
+    },
+    {
+      "at": 59,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

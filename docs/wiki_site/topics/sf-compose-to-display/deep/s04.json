@@ -1,0 +1,32 @@
+{
+  "step": "s04",
+  "title": "updateLayerSnapshots：把事务变成快照",
+  "tldr": "flush 事务 → 应用到 LayerLifecycleManager → 建不可变快照；合成阶段只读快照。",
+  "why": "快照机制是 SF 能做并行合成的前提：一旦 commit 阶段把每层的状态拍成不可变副本，后续 Output/HWC 的读写就不会与 app 的新事务竞争，甚至可以卸载到其他线程。反过来，如果以为合成阶段读的是「活」的 Layer 对象，就会误判很多竞态问题。这一阶段的锁顺序也很讲究：事务副本要在 mStateLock 之外保留，新建层与事务要用不同的队列并保持先后，否则会出现「应用到还没注册的层」。",
+  "concepts": [
+    { "term": "LayerLifecycleManager", "text": "层的请求状态机；事务先作用在 RequestedLayerState 上，commitChanges 时才提升为当前状态。" },
+    { "term": "LayerSnapshotBuilder", "text": "把每层请求状态与全局配置组合成不可变快照。" },
+    { "term": "flushTransactions", "text": "把积压的事务一次性取出；不是每拍都有。" }
+  ],
+  "walk": [
+    { "call": "bool SurfaceFlinger::updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs,", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2771", "what": "入口，返回 mustComposite。" },
+    { "call": "mTransactionHandler.collectTransactions();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2789", "what": "先收集事务，再提交新建层（锁顺序要求）。" },
+    { "call": "update.transactions = mTransactionHandler.flushTransactions();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2807", "what": "取出本拍全部事务。" },
+    { "call": "mLayerLifecycleManager.applyTransactions(update.transactions);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2824", "what": "把 setBuffer 等指令写进请求状态。" },
+    { "call": "mLayerSnapshotBuilder.update(args);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2883", "what": "生成本拍快照。" }
+  ],
+  "state": [
+    { "field": "RequestedLayerState", "before": "上一拍的请求状态", "after": "本拍事务应用后的请求状态", "note": "尚未提升为当前状态。" },
+    { "field": "LayerSnapshot", "before": "上一拍快照", "after": "本拍快照", "note": "合成阶段只读它。" }
+  ],
+  "threads": "SF 主线程；进入 mStateLock 后一直持到函数结束（包括 latch）。",
+  "pitfalls": [
+    "以为快照是「活的」：合成阶段改动它不会影响下一拍。",
+    "在持 mStateLock 时调用外部回调：注释里明确说明这会死锁。"
+  ],
+  "debug": [
+    "trace 子切片：Transaction Handling / LayerSnapshotBuilder:update。",
+    "Perfetto 的瞬时事件会打出「Layers: +N -M txns:K」，一眼看出本拍做了什么。"
+  ],
+  "next": "事务里的 setBuffer 具体写到哪里？见第 5 步。"
+}

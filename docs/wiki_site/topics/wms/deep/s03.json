@@ -1,0 +1,55 @@
+{
+  "step": "s03",
+  "title": "addWindow：权限与 type 校验",
+  "tldr": "WindowManagerPolicy.checkAddPermission 按 type 与 uid 判断，失败直接返回 ADD_* 错误码。",
+  "why": "这是整个窗口系统的安全边界。普通应用只能加 APPLICATION_WINDOW 与少数几个 type；系统窗口（状态栏、导航栏、Toast 之外的 overlay）需要对应权限。返回码也被客户端用来抛不同异常——所以「BadTokenException」与「permission denied」背后其实是不同的 ADD_* 分支。",
+  "concepts": [
+    {
+      "term": "ADD_OKAY",
+      "text": "通过。"
+    },
+    {
+      "term": "ADD_PERMISSION_DENIED",
+      "text": "无权限。"
+    },
+    {
+      "term": "ADD_INVALID_TYPE",
+      "text": "该 uid 不允许此 type。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "int res = mPolicy.checkAddPermission(attrs.type, isRoundedCornerOverlay, attrs.packageName,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1679",
+      "what": "校验入口。"
+    },
+    {
+      "call": "if (res != ADD_OKAY) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1681",
+      "what": "失败即返回。"
+    },
+    {
+      "call": "return res;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1682",
+      "what": "错误码回到客户端。"
+    }
+  ],
+  "state": [
+    {
+      "field": "无副作用",
+      "before": "—",
+      "after": "—",
+      "note": "这一步纯校验，不改任何状态。"
+    }
+  ],
+  "threads": "binder 线程（尚未持锁）。",
+  "pitfalls": [
+    "把 BadTokenException 都当归属问题：也可能无权限。",
+    "忽略 type 与 uid 的绑定关系。"
+  ],
+  "debug": [
+    "ProtoLog WM_ERROR 会打出具体失败原因。",
+    "客户端异常类型可反查这里的分支。"
+  ],
+  "next": "如何确定挂在哪个屏？见第 4 步。"
+}

@@ -1,0 +1,2151 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Android ANR问题完整分析指南 · ANR</title>
+<script>
+(function(){try{
+  var s=localStorage.getItem('st-theme');
+  var sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+  var f=null;try{f=new URLSearchParams(location.search).get('theme');}catch(e){}
+  document.documentElement.dataset.theme=(f==='light'||f==='dark')?f:(s||sys);
+}catch(e){document.documentElement.dataset.theme='dark';}})();
+</script>
+<style>:root {
+  --bg: #23262b;
+  --bg-2: #2a2e34;
+  --panel: #2d3138;
+  --panel-2: #363b43;
+  --line: rgba(255, 255, 255, 0.16);
+  --line-2: rgba(255, 255, 255, 0.30);
+  --tx: #f5f8fc;
+  --tx-2: #c8d1dd;
+  --tx-3: #98a5b5;
+  --wms: #ffb454;
+  --shell: #33d6c0;
+  --app: #4c8dff;
+  --sf: #c792ea;
+  --code: #dbe4ee;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --panel-solid: #2d3138;
+  --accent: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--tx);
+  font: 14px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bg-grid {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* ---------------- header ---------------- */
+.hdr {
+  position: relative; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 28px;
+  padding: 30px 40px 22px;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.kicker { font: 11px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--wms); }
+.hdr h1 { margin: 10px 0 6px; font-size: 30px; line-height: 1.25; letter-spacing: -0.01em; }
+.sub { margin: 0; color: var(--tx-2); font-size: 13.5px; max-width: 760px; }
+.hdr-stats { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.stat {
+  min-width: 86px; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: 10px; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+}
+.stat b { display: block; font: 600 20px/1.2 var(--mono); color: var(--tx); }
+.stat span { font-size: 11px; color: var(--tx-3); }
+
+/* ---------------- layout ---------------- */
+.app { position: relative; z-index: 1; display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: calc(100vh - 210px); }
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 18px 10px 40px 14px;
+  position: sticky; top: 0; align-self: start;
+  max-height: 100vh; overflow-y: auto;
+}
+.rail::-webkit-scrollbar, .code-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.rail::-webkit-scrollbar-thumb, .code-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+.phase { margin: 16px 0 6px; font: 10.5px/1.5 var(--mono); letter-spacing: 0.04em; color: var(--tx-3); }
+.phase span { letter-spacing: 0; opacity: .7; }
+.phase:first-child { margin-top: 2px; }
+.step {
+  position: relative; display: grid; grid-template-columns: 26px 1fr; gap: 9px;
+  padding: 8px 10px 8px 8px; margin: 2px 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.step:hover { background: rgba(255,255,255,0.035); }
+.step.is-on { background: rgba(255,255,255,0.055); border-color: var(--line-2); }
+.step .n { font: 600 11px/1.5 var(--mono); color: var(--tx-3); text-align: right; padding-top: 2px; }
+.step .t { font-size: 12.5px; line-height: 1.45; color: var(--tx-2); }
+.step.is-on .t { color: var(--tx); }
+.step .lane-dot { position: absolute; left: 0; top: 12px; width: 3px; height: 16px; border-radius: 2px; opacity: 0.85; }
+.step .p0tag { display: inline-block; margin-left: 6px; padding: 0 5px; font: 10px/16px var(--mono); border-radius: 4px;
+  color: var(--wms); border: 1px solid rgba(255,180,84,0.35); background: rgba(255,180,84,0.08); }
+
+/* ---------------- stage ---------------- */
+.stage { padding: 18px 34px 60px 26px; min-width: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+.tab {
+  appearance: none; border: 0; background: transparent; color: var(--tx-3);
+  font: 500 13px/1 inherit; padding: 12px 14px; cursor: pointer; position: relative;
+}
+.tab:hover { color: var(--tx-2); }
+.tab.is-on { color: var(--tx); }
+.tab.is-on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--wms); border-radius: 2px; }
+.view { display: none; }
+.view.is-on { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+.panel { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); margin-bottom: 16px; overflow: hidden; }
+.panel-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.panel-hd h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+.hint { font-size: 11.5px; color: var(--tx-3); }
+.grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+.diagram-wrap { padding: 12px 16px 18px; overflow: auto; }
+
+/* 图缩放/拖拽容器：盖住原有 padding，控件浮在右上角 */
+.zoom-wrap { position: relative; overflow: hidden; padding: 0; touch-action: none; height: 62vh; min-height: 360px; }
+.zoom-wrap > svg {
+  display: block; position: absolute; left: 0; top: 0;
+  max-width: none; user-select: none;
+  /* 放大是改布局尺寸，文字与描边会重新栅格化，因此放大后依然锐利 */
+}
+.zoom-wrap.is-dragging { cursor: grabbing; }
+.zoom-wrap.grab { cursor: grab; }
+.zoom-ui {
+  position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 4px;
+  padding: 4px; border-radius: 9px; z-index: 3;
+  border: 1px solid var(--line); background: var(--panel-solid, rgba(12,16,22,0.82));
+  backdrop-filter: blur(6px);
+}
+.zoom-ui button {
+  min-width: 26px; height: 24px; padding: 0 7px; cursor: pointer;
+  font: 12px/1 var(--mono); color: var(--tx-2);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.zoom-ui button:hover { color: var(--tx); border-color: var(--accent, #4c8dff); }
+.zoom-ui .zoom-val { min-width: 46px; text-align: center; font: 11.5px/1 var(--mono); color: var(--tx-3); }
+.zoom-hint { position: absolute; left: 12px; bottom: 8px; z-index: 3; font: 10.5px/1.4 var(--mono); color: var(--tx-3); opacity: 0.75; pointer-events: none; }
+.zoom-wrap.is-zoomed .zoom-hint { opacity: 0; }
+
+.diagram { width: 100%; height: auto; display: block; }
+
+/* svg text */
+.grp { fill: rgba(255,255,255,0.012); stroke-dasharray: 4 5; stroke-opacity: 0.45; }
+.grp-label { font: 11px/1 var(--mono); letter-spacing: 0.1em; opacity: 0.85; }
+.box rect { fill: rgba(255,255,255,0.04); stroke: rgba(255,255,255,0.14); }
+.bx { fill: var(--tx); font-size: 12.5px; font-weight: 600; }
+.bs { fill: var(--tx-3); font-size: 10.5px; }
+.edge { fill: none; stroke-width: 1.4; opacity: 0.95; }
+.el { fill: var(--tx-2); font-size: 10px; }
+.halo { paint-order: stroke; stroke: #26292e; stroke-width: 4px; stroke-linejoin: round; }
+.band { fill: rgba(255,255,255,0.014); }
+.lane-hd { fill: rgba(255,255,255,0.035); }
+.lane-t { font: 600 12px/1 -apple-system, sans-serif; }
+.lane-vl { stroke-width: 1.1; stroke-dasharray: 3 6; opacity: 0.5; }
+.msg { cursor: pointer; }
+.msg line, .msg path { stroke-width: 1.4; }
+.msg:hover line, .msg:hover path { stroke-width: 2.2; }
+.ml { fill: var(--tx-2); font-size: 11px; }
+.msg.is-on .ml { fill: var(--tx); font-weight: 600; }
+.mn { fill: var(--tx-3); font: 10px/1 var(--mono); }
+.tier { fill: var(--tx-3); font: 11px/1 var(--mono); letter-spacing: 0.1em; }
+.cls rect { fill: rgba(255,255,255,0.035); }
+.cn { font-size: 13px; font-weight: 600; }
+.cs { fill: var(--tx-3); font-size: 10.5px; }
+.cm { fill: var(--tx-2); font: 11px/1.4 var(--mono); }
+.rel { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 1.2; }
+.rl { fill: var(--tx-3); font-size: 9.5px; }
+.fproc { fill: rgba(255,255,255,0.045); stroke: rgba(255,255,255,0.14); }
+.fterm { fill: rgba(255,180,84,0.10); stroke: rgba(255,180,84,0.45); }
+.fd { fill: rgba(51,214,192,0.07); stroke: rgba(51,214,192,0.45); }
+.fn { fill: var(--tx); font-size: 12px; }
+.fedge { fill: none; stroke: rgba(255,255,255,0.34); stroke-width: 1.4; }
+.fl { fill: var(--tx-3); font-size: 10.5px; }
+
+/* ---------------- step card ---------------- */
+.step-card { display: none; border: 1px solid var(--line-2); border-left: 3px solid var(--wms); border-radius: 12px; padding: 14px 18px; margin-bottom: 16px; background: linear-gradient(90deg, rgba(255,180,84,0.06), transparent 60%); }
+.step-card.is-on { display: block; }
+.step-card .sc-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-card .sc-n { font: 600 11px/1 var(--mono); color: var(--wms); }
+.step-card h3 { margin: 0; font-size: 15px; }
+.step-card p { margin: 6px 0 10px; color: var(--tx-2); font-size: 13px; }
+.refs { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref { font: 11px/1.6 var(--mono); color: var(--tx-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: rgba(255,255,255,0.03); }
+.ref b { color: var(--shell); font-weight: 600; }
+
+/* ---------------- p0 list ---------------- */
+.p0-list { padding: 6px 0 10px; }
+.p0-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 9px 18px; border-bottom: 1px dashed rgba(255,255,255,0.06); cursor: pointer; }
+.p0-item:last-child { border-bottom: 0; }
+.p0-item:hover { background: rgba(255,255,255,0.03); }
+.p0-item .nm { font: 12.5px/1.4 var(--mono); color: var(--tx); }
+.p0-item .wh { font-size: 11.5px; color: var(--tx-3); margin-top: 3px; }
+.cov { font: 11px/1 var(--mono); color: var(--shell); white-space: nowrap; padding-top: 4px; }
+.cov.low { color: #ff9f43; }
+
+/* ---------------- code ---------------- */
+.code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font: 11.5px/1 var(--mono); padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); color: var(--tx-2); background: rgba(255,255,255,0.02); cursor: pointer; }
+.chip:hover { border-color: var(--line-2); color: var(--tx); }
+.chip.is-on { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.code-tools { display: flex; align-items: center; gap: 10px; }
+.code-tools input[type="search"] { width: 210px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+.code-tools input[type="search"]:focus { border-color: var(--shell); }
+.sw { font-size: 11.5px; color: var(--tx-3); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.step-hint { display: none; margin-bottom: 10px; font-size: 12px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 10px; }
+.step-hint.is-on { display: block; }
+.code-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: auto; max-height: calc(100vh - 260px); background: #191c21; }
+.code { min-width: 900px; font: 12px/1.85 var(--mono); }
+.crow { display: grid; grid-template-columns: 58px minmax(0, 1fr) 360px; align-items: start; border-bottom: 1px solid rgba(255,255,255,0.024); }
+.crow:hover { background: rgba(255,255,255,0.035); }
+.crow.has-note { background: rgba(255,255,255,0.017); }
+.crow.is-focus { background: rgba(255,180,84,0.09); }
+.crow .ln { color: #4b5869; text-align: right; padding: 0 10px 0 0; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); }
+.crow .lc { padding: 0 14px; white-space: pre; overflow-x: auto; color: var(--code); }
+.crow .la { padding: 1px 12px 3px 12px; font: 11.5px/1.6 -apple-system, "PingFang SC", sans-serif; color: var(--tx-2); border-left: 1px solid rgba(255,255,255,0.05); }
+.crow .la .k { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.crow.hidden { display: none; }
+.code-empty { padding: 40px; text-align: center; color: var(--tx-3); }
+
+/* ---------------- risk ---------------- */
+.risk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.risk-table th, .risk-table td { text-align: left; padding: 11px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.risk-table th { font: 11px/1 var(--mono); letter-spacing: 0.08em; color: var(--tx-3); text-transform: uppercase; }
+.risk-table td:first-child { color: var(--tx); width: 30%; }
+.risk-table td:nth-child(2) { color: var(--tx-2); }
+.risk-table code { color: var(--sf); font-size: 11.5px; }
+
+.facts { margin: 0; padding: 14px 18px 14px 36px; color: var(--tx-2); font-size: 12.5px; }
+.facts li { margin: 8px 0; }
+.facts b { color: var(--tx); }
+
+/* ---------------- footer ---------------- */
+.ftr { position: relative; z-index: 1; border-top: 1px solid var(--line); padding: 14px 40px 26px; color: var(--tx-3); font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+.ftr code { color: var(--tx-2); }
+.dot { opacity: 0.5; }
+
+@media (max-width: 1180px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { position: relative; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  .grid-2 { grid-template-columns: 1fr; }
+  .crow { grid-template-columns: 46px minmax(0, 1fr) 240px; }
+  .hdr { flex-direction: column; align-items: flex-start; }
+}
+
+/* code tokens */
+.crow .lc .k { color: #ff9e64; }
+.crow .lc .s { color: #9ece6a; }
+.crow .lc .c1 { color: #5f6b7a; font-style: italic; }
+.crow .lc .n { color: #7dcfff; }
+.crow .lc .a { color: #bb9af7; }
+
+
+.msg.is-on .band { fill: rgba(255,180,84,0.06); }
+.line-hd { fill: none; }
+
+/* ---------------- inventory ---------------- */
+.inv-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.inv-bar select, .inv-bar input[type="search"] {
+  padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none;
+}
+.inv-bar input[type="search"] { width: 220px; }
+.inv-bar select:focus, .inv-bar input:focus { border-color: var(--shell); }
+.inv-wrap { max-height: calc(100vh - 300px); overflow: auto; }
+.inv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv-table th { position: sticky; top: 0; background: #0a0e15; text-align: left; padding: 9px 14px;
+  font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; color: var(--tx-3); border-bottom: 1px solid var(--line); }
+.inv-table td { padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.inv-table tr.row:hover { background: rgba(255,255,255,0.035); cursor: pointer; }
+.inv-table .fn { font: 12px/1.5 var(--mono); color: var(--tx); }
+.inv-table .fl { color: var(--tx-3); font: 10.5px/1.5 var(--mono); }
+.inv-table .rg { font: 11px/1.5 var(--mono); color: var(--tx-2); white-space: nowrap; }
+.inv-table .act-hd { width: 82px; }
+.inv-table td.act { text-align: right; }
+.inv-table button.go-code, .inv-table button.go-card {
+  appearance: none; cursor: pointer; white-space: nowrap;
+  font: 11px/1 var(--mono); padding: 5px 9px; border-radius: 6px;
+  border: 1px solid rgba(255,180,84,0.45); background: rgba(255,180,84,0.10); color: var(--wms);
+}
+.inv-table button.go-code:hover { background: rgba(255,180,84,0.20); }
+.inv-table button.go-card {
+  border-color: var(--line-2); background: rgba(255,255,255,0.03); color: var(--tx-2);
+}
+.inv-table button.go-card:hover { color: var(--tx); border-color: var(--wms); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font: 10.5px/1.6 var(--mono); border: 1px solid; }
+.badge.covered { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.badge.partial { color: var(--wms); border-color: rgba(255,180,84,0.4); background: rgba(255,180,84,0.08); }
+.badge.uncovered { color: var(--tx-3); border-color: var(--line); }
+.card-row td { background: rgba(255,255,255,0.02); }
+.card-box { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px 18px; font-size: 12px; color: var(--tx-2); }
+.card-box .k { color: var(--tx-3); font: 10px/1.4 var(--mono); letter-spacing: 0.08em; display: block; }
+.card-box .wide { grid-column: 1 / -1; }
+.card-box b { color: var(--tx); font-weight: 600; }
+@media (max-width: 1180px) { .card-box { grid-template-columns: 1fr 1fr; } }
+
+#diagram-seq { max-height: 78vh; overflow: auto; }
+
+/* ---------------- deep read ---------------- */
+.scenario { display: flex; gap: 0; align-items: stretch; overflow-x: auto; border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 14px; background: linear-gradient(90deg, rgba(255,180,84,0.05), transparent 55%); }
+.scenario .ev { min-width: 150px; padding: 10px 14px; border-right: 1px dashed rgba(255,255,255,0.06); }
+.scenario .ev:last-child { border-right: 0; }
+.scenario .t { font: 11px/1.4 var(--mono); color: var(--wms); }
+.scenario .l { font-size: 12px; color: var(--tx); margin-top: 3px; }
+.scenario .d { font-size: 10.5px; color: var(--tx-3); margin-top: 2px; line-height: 1.45; }
+
+.deep-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.navbtn { appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,0.03); color: var(--tx-2);
+  border-radius: 7px; padding: 7px 12px; font: 12px/1 var(--mono); cursor: pointer; }
+.navbtn:hover { border-color: var(--line-2); color: var(--tx); }
+.deep-progress { font: 11.5px/1 var(--mono); color: var(--tx-3); flex: 1; text-align: center; }
+
+.deep-wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+.deep-body { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 26px 30px 34px; }
+.deep-body .kicker { font: 11px/1.4 var(--mono); letter-spacing: 0.1em; color: var(--wms); }
+.deep-body h1 { margin: 8px 0 6px; font-size: 25px; letter-spacing: -0.01em; }
+.deep-body .tldr { margin: 0 0 22px; font-size: 15px; line-height: 1.75; color: var(--tx); border-left: 2px solid var(--wms); padding-left: 14px; }
+.deep-body h2 { margin: 26px 0 10px; font-size: 13px; letter-spacing: 0.06em; color: var(--tx-3); font-weight: 600;
+  text-transform: uppercase; font-family: var(--mono); }
+.deep-body p { margin: 8px 0; color: var(--tx-2); line-height: 1.85; }
+.deep-body .why { font-size: 14px; color: var(--tx); line-height: 1.85; }
+.deep-body ol.walk { margin: 6px 0 0; padding-left: 0; list-style: none; counter-reset: w; }
+.deep-body ol.walk li { position: relative; padding: 10px 0 12px 38px; border-bottom: 1px dashed rgba(255,255,255,0.06); counter-increment: w; }
+.deep-body ol.walk li::before { content: counter(w); position: absolute; left: 0; top: 10px; width: 22px; height: 22px;
+  border-radius: 50%; border: 1px solid var(--line-2); color: var(--wms); font: 11px/22px var(--mono); text-align: center; }
+.deep-body ol.walk .call { font: 12.5px/1.6 var(--mono); color: var(--tx); }
+.deep-body ol.walk .ref { display: inline-block; margin-left: 8px; font: 10.5px/1.6 var(--mono); color: var(--shell);
+  border: 1px solid rgba(51,214,192,0.25); background: rgba(51,214,192,0.06); border-radius: 5px; padding: 0 6px; }
+.deep-body ol.walk .what { margin-top: 4px; font-size: 13px; color: var(--tx-2); }
+.deep-body table.state { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.deep-body table.state th, .deep-body table.state td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.deep-body table.state th { font: 10.5px/1.4 var(--mono); color: var(--tx-3); letter-spacing: 0.06em; }
+.deep-body table.state code { color: var(--tx); font: 11.5px/1.5 var(--mono); }
+.deep-body .threads { font-size: 13px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 12px; }
+.deep-body ul.plain { margin: 6px 0; padding-left: 18px; color: var(--tx-2); font-size: 13px; }
+.deep-body ul.plain li { margin: 6px 0; line-height: 1.7; }
+.deep-body .next { margin-top: 26px; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,180,84,0.25);
+  background: rgba(255,180,84,0.06); color: var(--tx); font-size: 13px; }
+.deep-body .concept { display: inline-block; margin: 4px 8px 0 0; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.03); font-size: 12px; color: var(--tx-2); }
+.deep-body .concept b { color: var(--tx); font-weight: 600; }
+.deep-body .missing { color: var(--tx-3); font-size: 13px; }
+.deep-body abbr.term { text-decoration: none; border-bottom: 1px dotted var(--shell); cursor: help; }
+.deep-side { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px; position: sticky; top: 10px; }
+.deep-side .side-hd { font-size: 12px; color: var(--tx); margin-bottom: 8px; }
+.deep-side dl { margin: 0; }
+.deep-side dt { font: 11.5px/1.6 var(--mono); color: var(--shell); margin-top: 8px; }
+.deep-side dd { margin: 2px 0 0; font-size: 11.5px; color: var(--tx-3); line-height: 1.6; }
+.branch-tbl { margin-top: 8px; font-size: 12.5px; }
+.branch-tbl .row { display: grid; grid-template-columns: 1.1fr 1.2fr 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); }
+.branch-tbl .row.head { color: var(--tx-3); font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; }
+.branch-tbl .cond { color: var(--tx); font: 11.5px/1.6 var(--mono); }
+.branch-tbl .then { color: var(--tx-2); }
+.branch-tbl .eff { color: var(--tx-3); }
+@media (max-width: 1180px) { .deep-wrap { grid-template-columns: 1fr; } .deep-side { position: relative; } }
+
+/* learning path */
+.lp { padding: 8px 18px 14px; }
+.lp-row { display: grid; grid-template-columns: 80px 1fr 1.4fr; gap: 12px; padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); font-size: 12.5px; }
+.lp-row:last-child { border-bottom: 0; }
+.lp-t { font: 11px/1.6 var(--mono); color: var(--wms); }
+.lp-g { color: var(--tx); }
+.lp-r { color: var(--tx-3); }
+
+
+/* ============================ light theme ============================ */
+[data-theme="light"] {
+  --bg: #f3efe5;
+  --bg-2: #e9e2d4;
+  --panel: #fcf9f1;
+  --panel-2: #f4ede0;
+  --line: rgba(62, 50, 34, 0.15);
+  --line-2: rgba(62, 50, 34, 0.28);
+  --tx: #2b2620;
+  --tx-2: #564f42;
+  --tx-3: #7d7362;
+  --wms: #9a5900;
+  --shell: #0a7365;
+  --app: #24589f;
+  --sf: #61419c;
+  --code: #2f2a22;
+  --panel-solid: rgba(251, 247, 238, 0.92);
+  --accent: #24589f;
+}
+[data-theme="light"] body {
+  background: radial-gradient(1100px 520px at 16% -12%, rgba(176, 116, 30, 0.075), transparent 62%),
+              radial-gradient(900px 460px at 92% 0%, rgba(10, 115, 101, 0.05), transparent 58%),
+              var(--bg);
+}
+[data-theme="light"] .bg-grid {
+  background-image: linear-gradient(rgba(62, 50, 34, 0.055) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(62, 50, 34, 0.055) 1px, transparent 1px);
+}
+[data-theme="light"] .hdr { background: rgba(243, 239, 229, 0.78); }
+[data-theme="light"] .stat {
+  background: linear-gradient(180deg, #fdfaf3, #f1eada);
+  box-shadow: 0 1px 0 rgba(62, 50, 34, 0.06);
+}
+[data-theme="light"] .step:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .step.is-on { background: #fdfaf3; border-color: var(--line-2); box-shadow: 0 1px 3px rgba(62, 50, 34, 0.10); }
+[data-theme="light"] .step .n { color: var(--tx-3); }
+[data-theme="light"] .step .t { color: var(--tx-2); }
+[data-theme="light"] .chip { background: #fdfaf3; }
+[data-theme="light"] .chip.is-on { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .navbtn { background: #fdfaf3; }
+[data-theme="light"] .code-tools input[type="search"],
+[data-theme="light"] .inv-bar select,
+[data-theme="light"] .inv-bar input[type="search"] { background: #fdfaf3; }
+[data-theme="light"] .code-wrap { background: #faf6eb; }
+[data-theme="light"] .crow:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .crow.has-note { background: rgba(62, 50, 34, 0.026); }
+[data-theme="light"] .crow.is-focus { background: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .crow .ln { color: #a9a08c; border-right-color: var(--line); }
+[data-theme="light"] .crow .la { border-left-color: var(--line); color: var(--tx-2); }
+[data-theme="light"] .crow .lc .k { color: #9a3f00; }
+[data-theme="light"] .crow .lc .s { color: #2c6f2c; }
+[data-theme="light"] .crow .lc .c1 { color: #948b78; }
+[data-theme="light"] .crow .lc .n { color: #0a6c9e; }
+[data-theme="light"] .crow .lc .a { color: #7133a8; }
+[data-theme="light"] .inv-table th { background: #efe8d8; }
+[data-theme="light"] .inv-table tr.row:hover { background: rgba(62, 50, 34, 0.045); }
+[data-theme="light"] .card-row td { background: #f9f4e8; }
+[data-theme="light"] .badge.covered { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code { background: rgba(154,89,0,0.10); border-color: rgba(154,89,0,0.42); color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code:hover { background: rgba(154,89,0,0.18); }
+[data-theme="light"] .inv-table button.go-card { background: rgba(14,24,38,0.04); border-color: var(--line-2); }
+[data-theme="light"] .badge.partial { color: #8a5200; background: rgba(154, 89, 0, 0.10); }
+[data-theme="light"] .scenario { background: linear-gradient(90deg, rgba(176, 116, 30, 0.06), transparent 55%); }
+[data-theme="light"] .scenario .ev { border-right-color: var(--line); }
+[data-theme="light"] .deep-body .concept { background: #f7f1e4; }
+[data-theme="light"] .ref { background: #f7f1e4; }
+[data-theme="light"] .deep-body .next { background: rgba(196, 124, 22, 0.08); }
+[data-theme="light"] .theme-toggle { background: #fdfaf3; }
+[data-theme="light"] .theme-toggle .ico-moon { display: none; }
+[data-theme="light"] .theme-toggle .ico-sun { display: block; }
+
+/* SVG 在亮色下的适配 */
+[data-theme="light"] .halo { stroke: #f3efe5; }
+[data-theme="light"] .band { fill: rgba(14, 24, 38, 0.022); }
+[data-theme="light"] .msg.is-on .band { fill: rgba(196, 124, 22, 0.09); }
+[data-theme="light"] .grp { fill: rgba(253, 249, 241, 0.65); stroke-opacity: 0.7; }
+[data-theme="light"] .box rect { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .bx { fill: var(--tx); }
+[data-theme="light"] .bs { fill: var(--tx-3); }
+[data-theme="light"] .lane-hd { fill: #fdfaf3; }
+[data-theme="light"] .lane-vl { opacity: 0.28; }
+[data-theme="light"] .cls rect { fill: #fdfaf3; }
+[data-theme="light"] .cm { fill: var(--tx-2); }
+[data-theme="light"] .rel { stroke: rgba(14, 24, 38, 0.22); }
+[data-theme="light"] .fproc { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .fterm { fill: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .fd { fill: rgba(10, 115, 101, 0.07); }
+[data-theme="light"] .fedge { stroke: rgba(14, 24, 38, 0.30); }
+[data-theme="light"] .edge.edge-binder, [data-theme="light"] .msg.msg-binder line,
+[data-theme="light"] .msg.msg-binder path { stroke: #a86400; }
+[data-theme="light"] .edge.edge-oneway, [data-theme="light"] .msg.msg-oneway line,
+[data-theme="light"] .msg.msg-oneway path { stroke: #6f44a8; }
+[data-theme="light"] .edge.edge-callback, [data-theme="light"] .msg.msg-callback line,
+[data-theme="light"] .msg.msg-callback path { stroke: #0a7365; }
+[data-theme="light"] .edge.edge-call, [data-theme="light"] .msg.msg-call line,
+[data-theme="light"] .msg.msg-call path { stroke: #5f6b7a; }
+[data-theme="light"] .msg.msg-state line, [data-theme="light"] .msg.msg-state path { stroke: #8a5200; }
+[data-theme="light"] .ml { fill: var(--tx-2); }
+[data-theme="light"] .el { fill: var(--tx-2); }
+[data-theme="light"] .fn { fill: var(--tx); }
+
+/* 语义色在亮色下加深（只作用于文字，避免染到容器矩形） */
+[data-theme="light"] .grp-label.grp-wms, [data-theme="light"] .lane-t.lane-WMS,
+[data-theme="light"] .cn.side-WMS { fill: #8a5200; }
+[data-theme="light"] .grp-label.grp-app, [data-theme="light"] .lane-t.lane-APP,
+[data-theme="light"] .cn.side-APP { fill: #24589f; }
+[data-theme="light"] .grp-label.grp-shell, [data-theme="light"] .lane-t.lane-SHELL,
+[data-theme="light"] .cn.side-SHELL { fill: #0a7365; }
+[data-theme="light"] .grp-label.grp-sf, [data-theme="light"] .lane-t.lane-SF,
+[data-theme="light"] .cn.side-SF { fill: #61419c; }
+[data-theme="light"] .cn.side-AIDL { fill: #4c5766; }
+[data-theme="light"] .grp.grp-wms, [data-theme="light"] .lane-hd.lane-WMS { stroke: #9a5900; }
+[data-theme="light"] .grp.grp-app, [data-theme="light"] .lane-hd.lane-APP { stroke: #24589f; }
+[data-theme="light"] .grp.grp-shell, [data-theme="light"] .lane-hd.lane-SHELL { stroke: #0a7365; }
+[data-theme="light"] .grp.grp-sf, [data-theme="light"] .lane-hd.lane-SF { stroke: #61419c; }
+[data-theme="light"] .cls.side-WMS rect { stroke: #9a5900; }
+[data-theme="light"] .cls.side-SHELL rect { stroke: #0a7365; }
+[data-theme="light"] .cls.side-AIDL rect { stroke: #7b8798; }
+[data-theme="light"] .cls.side-APP rect { stroke: #24589f; }
+[data-theme="light"] .cls.side-SF rect { stroke: #61419c; }
+
+/* header 上的主题按钮 */
+.hdr-right { display: flex; align-items: flex-end; gap: 14px; }
+.theme-toggle {
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--tx-2);
+  background: rgba(255, 255, 255, 0.04); cursor: pointer; font: 12px/1 inherit;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.theme-toggle:hover { border-color: var(--line-2); color: var(--tx); }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .ico-moon { display: block; }
+.theme-toggle .ico-sun { display: none; }
+.theme-toggle svg path, .theme-toggle svg circle { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.theme-toggle .ico-moon path { fill: currentColor; stroke: none; }
+@media (max-width: 1180px) { .hdr-right { width: 100%; justify-content: space-between; } }
+
+/* ---------------- file tree ---------------- */
+.files-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.files-bar input[type="search"] { width: 260px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+[data-theme="light"] .files-bar input[type="search"] { background: #fdfaf3; }
+.files-wrap { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: 0; }
+.tree { padding: 10px 8px 18px 14px; font: 12px/1.9 var(--mono); max-height: calc(100vh - 300px); overflow: auto; }
+.tnode { white-space: nowrap; }
+.tnode .row { display: flex; align-items: center; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; }
+.tnode .row:hover { background: rgba(255,255,255,0.05); }
+[data-theme="light"] .tnode .row:hover { background: rgba(14,24,38,0.05); }
+.tnode .caret { width: 12px; color: var(--tx-3); flex: none; }
+.tnode .ico { width: 14px; height: 14px; flex: none; opacity: .85; }
+.tnode .nm { color: var(--tx); }
+.tnode.dir > .row .nm { color: var(--tx-2); }
+.tnode .meta { color: var(--tx-3); font-size: 10.5px; }
+.tnode .badge-mini { font: 10px/1.6 var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--tx-3); }
+.tnode .badge-mini.hit { color: var(--wms); border-color: rgba(255,180,84,0.35); }
+.tnode .badge-mini.p0 { color: var(--shell); border-color: rgba(51,214,192,0.35); }
+.tnode .children { margin-left: 16px; border-left: 1px dashed rgba(255,255,255,0.10); padding-left: 8px; }
+[data-theme="light"] .tnode .children { border-left-color: rgba(14,24,38,0.12); }
+.tnode.collapsed > .children { display: none; }
+.tnode.sel > .row { background: rgba(255,180,84,0.12); }
+[data-theme="light"] .tnode.sel > .row { background: rgba(196,124,22,0.12); }
+.tnode.hidden { display: none; }
+.file-detail { border-left: 1px solid var(--line); padding: 14px 18px; max-height: calc(100vh - 300px); overflow: auto; font-size: 12.5px; }
+.file-detail h3 { margin: 0 0 4px; font-size: 13.5px; font-family: var(--mono); word-break: break-all; }
+.file-detail .fp { color: var(--tx-3); font: 10.5px/1.6 var(--mono); word-break: break-all; margin-bottom: 10px; }
+.file-detail dt { color: var(--tx-3); font: 10px/1.6 var(--mono); letter-spacing: .08em; margin-top: 12px; }
+.file-detail dd { margin: 2px 0 0; color: var(--tx-2); }
+.file-detail .chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.file-detail .stepchip { font: 11px/1.6 var(--mono); padding: 1px 8px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: rgba(255,255,255,0.035); color: var(--tx-2); cursor: pointer; }
+[data-theme="light"] .file-detail .stepchip { background: #fdfaf3; }
+.file-detail .stepchip:hover { border-color: var(--wms); color: var(--wms); }
+.file-detail .meth { font: 11.5px/1.7 var(--mono); color: var(--tx-2); }
+.file-detail .meth b { color: var(--tx); font-weight: 500; }
+@media (max-width: 1180px) { .files-wrap { grid-template-columns: 1fr; } .file-detail { border-left: 0; border-top: 1px solid var(--line); } }
+
+/* ---------------- detailed diagrams ---------------- */
+.rowband { fill: rgba(255,255,255,0.035); }
+[data-theme="light"] .rowband { fill: rgba(14,24,38,0.028); }
+.rn { font: 600 12px/1 var(--mono); fill: var(--tx); letter-spacing: .04em; }
+.rnote { font-size: 10.5px; fill: var(--tx-3); }
+.colhd { fill: rgba(255,255,255,0.055); }
+[data-theme="light"] .colhd { fill: #fdfaf3; }
+.colt { font: 600 11.5px/1.2 -apple-system, sans-serif; }
+.colseam { stroke: rgba(255,255,255,0.12); stroke-dasharray: 3 7; }
+[data-theme="light"] .colseam { stroke: rgba(14,24,38,0.10); }
+.anode rect { fill: rgba(255,255,255,0.07); }
+[data-theme="light"] .anode rect { fill: #fdfaf3; }
+.anl { font-size: 11.5px; fill: var(--tx); font-family: var(--mono); }
+.ans { font-size: 10px; fill: var(--tx-3); }
+.ant { font: 9.5px/1 var(--mono); fill: var(--tx-3); text-anchor: end; }
+.anb { font: 9.5px/1 var(--mono); fill: var(--wms); }
+.aedge { fill: none; stroke-width: 1.4; opacity: 1; }
+.ael { font-size: 10px; fill: var(--tx-2); }
+.aed { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.lg { font: 9.5px/1 var(--mono); fill: var(--tx-3); }
+.phasebar { fill: rgba(255,255,255,0.05); }
+[data-theme="light"] .phasebar { fill: rgba(62, 50, 34, 0.06); }
+.phasebar-t { font: 600 10.5px/1 var(--mono); fill: var(--tx-2); letter-spacing: .04em; }
+.md { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.blockmark { fill: rgba(255,107,107,0.10); stroke: rgba(255,107,107,0.45); }
+.blockmark-t { font-size: 9.5px; fill: #ff8b8b; text-anchor: middle; }
+[data-theme="light"] .blockmark { fill: rgba(200,40,40,0.07); }
+[data-theme="light"] .blockmark-t { fill: #b03030; }
+.region { fill: rgba(255,255,255,0.012); stroke: rgba(255,255,255,0.10); stroke-dasharray: 5 6; }
+[data-theme="light"] .region { fill: rgba(253, 249, 241, 0.65); stroke: rgba(62, 50, 34, 0.18); }
+.region-t { font: 600 11.5px/1 var(--mono); fill: var(--tx-3); letter-spacing: .04em; }
+.fnote { font-size: 9.5px; fill: var(--tx-3); }
+
+
+/* ---------- ANR 文档：沿用 wiki 的 hdr/rail/stage/panel，只补正文排版 ---------- */
+.anr-toc { padding: 4px 0 40px; }
+.anr-toc a { display: block; padding: 5px 10px 5px 12px; border-left: 2px solid transparent;
+  color: var(--tx-2); font-size: 12.5px; line-height: 1.55; text-decoration: none;
+  overflow-wrap: anywhere; word-break: break-word; }
+.anr-toc a:hover { color: var(--tx); background: rgba(255,255,255,.04); }
+[data-theme="light"] .anr-toc a:hover { background: rgba(62,50,34,.05); }
+.anr-toc a.lv3 { padding-left: 24px; font-size: 12px; color: var(--tx-3); }
+.anr-toc a.active { border-left-color: var(--wms); color: var(--tx); background: rgba(255,180,84,.08); }
+.anr-doc { padding: 24px 30px 30px; }
+.anr-doc > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.anr-doc h2 { margin: 30px 0 10px; padding-top: 20px; border-top: 1px solid var(--line);
+  font-size: 20px; letter-spacing: 0; color: var(--tx); text-transform: none; }
+.anr-doc h3 { margin: 22px 0 8px; font-size: 15.5px; color: var(--tx); letter-spacing: 0; text-transform: none; }
+.anr-doc h4 { margin: 16px 0 6px; font-size: 13.5px; color: var(--tx-2); }
+.anr-doc p { margin: 9px 0; color: var(--tx-2); line-height: 1.85; }
+.anr-doc strong { color: var(--tx); }
+.anr-doc ul, .anr-doc ol { margin: 8px 0; padding-left: 22px; color: var(--tx-2); }
+.anr-doc li { margin: 4px 0; line-height: 1.75; }
+.anr-doc blockquote { margin: 14px 0; padding: 10px 16px; border-left: 3px solid var(--wms);
+  background: rgba(255,180,84,.07); border-radius: 0 8px 8px 0; color: var(--tx-2); }
+[data-theme="light"] .anr-doc blockquote { background: rgba(138,82,0,.07); }
+.anr-doc code { font: 12.5px/1.6 var(--mono); background: #191c21; padding: 1px 5px; border-radius: 4px; color: var(--tx); }
+[data-theme="light"] .anr-doc code { background: #f3ecdf; }
+.anr-doc pre { position: relative; background: #191c21; border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; overflow: auto; margin: 14px 0; }
+[data-theme="light"] .anr-doc pre { background: #faf6eb; }
+.anr-doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.75; }
+.anr-doc hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+.anr-doc a { color: var(--wms); }
+.anr-doc img { max-width: 100%; }
+.anr-doc .table-wrap { overflow: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; }
+.anr-doc table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.anr-doc th, .anr-doc td { border-bottom: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+.anr-doc th { background: var(--panel-2); color: var(--tx); font-weight: 600; white-space: nowrap; }
+.anr-doc tr:last-child td { border-bottom: 0; }
+.mermaid-box { margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); overflow: hidden; }
+.mermaid-hd { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font: 10.5px/1.6 var(--mono); color: var(--tx-3); letter-spacing: .06em; }
+.mermaid { padding: 16px; margin: 0; background: none; border: 0; overflow: auto; text-align: center; }
+pre.mermaid { white-space: pre-wrap; text-align: left; font: 12px/1.7 var(--mono); color: var(--tx-3); }
+.mermaid svg { max-width: 100%; height: auto; }
+.anr-pager { display: flex; justify-content: space-between; gap: 14px; margin: 4px 0 40px; font-size: 12.5px; }
+.anr-pager a { color: var(--tx-2); text-decoration: none; border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 14px; background: var(--panel); }
+.anr-pager a:hover { border-color: var(--line-2); color: var(--tx); }
+.anr-cards { display: grid; gap: 12px; margin-top: 18px; }
+.anr-card { display: block; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: inherit; text-decoration: none; transition: border-color .16s, transform .16s; }
+.anr-card:hover { border-color: var(--wms); transform: translateY(-1px); }
+.anr-card .hd { display: flex; align-items: baseline; gap: 12px; }
+.anr-card .no { font: 600 11px/1 var(--mono); color: var(--tx-3); }
+.anr-card h2 { margin: 0; font-size: 16px; letter-spacing: 0; text-transform: none; border: 0; padding: 0; }
+.anr-card .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.anr-card .pill { font: 10.5px/1.8 var(--mono); padding: 0 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--tx-3); }
+</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <div class="kicker">AOSP · android17-release · ANR</div>
+    <h1>Android ANR问题完整分析指南</h1>
+    <p class="sub">ANR问题完整分析指南.md · 9 个小节 · 1 张 mermaid 图 · 0 行表格 · 44K 字</p>
+  </div>
+  <div class="hdr-right">
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" title="切换亮/暗色">
+      <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span class="tt-label">亮色</span>
+    </button>
+    <div class="hdr-stats"><div class="stat"><b>9</b><span>小节</span></div><div class="stat"><b>1</b><span>mermaid 图</span></div><div class="stat"><b>0</b><span>表格行</span></div><div class="stat"><b>44K</b><span>字数</span></div></div>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="rail">
+    <div class="phase">返回 <a href="../dist/index.html">站点索引</a> · <a href="index.html">ANR 索引</a></div>
+    <nav class="anr-toc" id="toc"><a class="lv2" href="#一需要收集的日志文件清单">一、需要收集的日志文件清单</a>
+<a class="lv3" href="#11-日志文件对应关系表">1.1 日志文件对应关系表</a>
+<a class="lv2" href="#二日志获取方法详解">二、日志获取方法详解</a>
+<a class="lv3" href="#21-实时抓取anr发生时">2.1 实时抓取（ANR发生时）</a>
+<a class="lv3" href="#22-抓取systrace">2.2 抓取Systrace</a>
+<a class="lv3" href="#23-抓取winscope">2.3 抓取Winscope</a>
+<a class="lv3" href="#24-monkey测试日志抓取">2.4 Monkey测试日志抓取</a>
+<a class="lv2" href="#三关键日志信息及过滤方法">三、关键日志信息及过滤方法</a>
+<a class="lv3" href="#31-eventlog关键事件">3.1 EventLog关键事件</a>
+<a class="lv3" href="#32-logcat主日志关键信息">3.2 Logcat主日志关键信息</a>
+<a class="lv3" href="#33-自动化分析脚本">3.3 自动化分析脚本</a>
+<a class="lv2" href="#四tracestxt分析方法">四、Traces.txt分析方法</a>
+<a class="lv3" href="#41-traces文件结构">4.1 Traces文件结构</a>
+<a class="lv3" href="#42-traces分析脚本">4.2 Traces分析脚本</a>
+<a class="lv2" href="#五anr检测核心流程源码分析">五、ANR检测核心流程源码分析</a>
+<a class="lv3" href="#50-anr检测流程概述">5.0 ANR检测流程概述</a>
+<a class="lv3" href="#501-窗口无焦点anr检测源码">5.0.1 窗口无焦点ANR检测源码</a>
+<a class="lv3" href="#502-anr处理流程源码">5.0.2 ANR处理流程源码</a>
+<a class="lv3" href="#503-anr超时检测源码">5.0.3 ANR超时检测源码</a>
+<a class="lv2" href="#七完整anr分析流程">七、完整ANR分析流程</a>
+<a class="lv2" href="#八实战案例分析">八、实战案例分析</a>
+<a class="lv3" href="#案例1-应用启动慢导致的anr">案例1: 应用启动慢导致的ANR</a>
+<a class="lv3" href="#案例2-surface不可见导致的anr">案例2: Surface不可见导致的ANR</a>
+<a class="lv3" href="#案例3-recent手势导致的anr">案例3: Recent手势导致的ANR</a>
+<a class="lv2" href="#九快速诊断检查清单">九、快速诊断检查清单</a>
+<a class="lv2" href="#十总结">十、总结</a></nav>
+  </aside>
+  <section class="stage">
+    <div class="panel">
+      <div class="panel-hd"><h2>正文</h2><span class="hint">ANR问题完整分析指南.md · 9 个小节 · 1 张 mermaid 图 · 0 行表格 · 44K 字</span></div>
+      <article class="deep-body anr-doc"><blockquote>
+<p><strong>源码参考</strong>：本文档基于AOSP 16源码分析</p>
+<ul>
+<li>ANR控制器：<a href="../../../base/services/core/java/com/android/server/wm/AnrController.java">AnrController.java</a></li>
+<li>Input分发器：<a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp">InputDispatcher.cpp</a></li>
+<li>EventLog标签：<a href="../../../base/services/core/java/com/android/server/wm/EventLogTags.logtags">EventLogTags.logtags</a></li>
+<li>焦点管理：<a href="../../../base/services/core/java/com/android/server/wm/DisplayContent.java">DisplayContent.java</a></li>
+</ul>
+</blockquote>
+<h2 id="一需要收集的日志文件清单">一、需要收集的日志文件清单</h2>
+<h3 id="11-日志文件对应关系表">1.1 日志文件对应关系表</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                        ANR日志文件全景图                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+文件类型              路径位置                 用途                  优先级
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+traces.txt       /data/anr/traces.txt      主线程堆栈、线程状态    ⭐⭐⭐⭐⭐
+                                           锁信息、CPU使用情况
+
+anr_*.txt        /data/anr/anr_*.txt       ANR详细信息             ⭐⭐⭐⭐⭐
+                                           系统状态快照
+
+logcat           adb logcat -b all         实时日志流              ⭐⭐⭐⭐⭐
+                                           事件时序、焦点变化
+
+event log        adb logcat -b events      系统事件日志            ⭐⭐⭐⭐⭐
+                                           Activity生命周期
+
+bugreport        adb bugreport             完整系统状态            ⭐⭐⭐⭐
+                                           包含所有日志
+
+dropbox          /data/system/dropbox/     历史ANR记录             ⭐⭐⭐⭐
+                 *.txt
+
+systrace         systrace.py               时间线性能分析          ⭐⭐⭐⭐
+                                           各线程耗时分布
+
+perfetto         perfetto工具              新版性能分析            ⭐⭐⭐⭐
+                                           更详细的trace
+
+dumpsys window   adb shell dumpsys         窗口状态、焦点信息      ⭐⭐⭐⭐
+                 window
+
+dumpsys input    adb shell dumpsys         输入系统状态            ⭐⭐⭐⭐
+                 input                     焦点窗口信息
+
+dumpsys SF       adb shell dumpsys         Surface状态             ⭐⭐⭐
+                 SurfaceFlinger            Layer可见性
+
+winscope         .winscope文件             可视化窗口层级          ⭐⭐⭐
+                                           Layer状态分析</code></pre>
+<h2 id="二日志获取方法详解">二、日志获取方法详解</h2>
+<h3 id="21-实时抓取anr发生时">2.1 实时抓取（ANR发生时）</h3>
+<pre><code># ========== 完整ANR日志抓取脚本 ==========
+
+ANR_LOG_DIR=&quot;anr_logs_$(date +%Y%m%d_%H%M%S)&quot;
+mkdir -p $ANR_LOG_DIR
+
+echo &quot;==================== 开始抓取ANR日志 ====================&quot;
+
+# 1. 抓取logcat（所有buffer）
+echo &quot;[1/12] 抓取logcat main...&quot;
+adb logcat -b main -d &gt; $ANR_LOG_DIR/logcat_main.txt
+
+echo &quot;[2/12] 抓取logcat system...&quot;
+adb logcat -b system -d &gt; $ANR_LOG_DIR/logcat_system.txt
+
+echo &quot;[3/12] 抓取logcat events...&quot;
+adb logcat -b events -d &gt; $ANR_LOG_DIR/logcat_events.txt
+
+echo &quot;[4/12] 抓取logcat crash...&quot;
+adb logcat -b crash -d &gt; $ANR_LOG_DIR/logcat_crash.txt
+
+echo &quot;[5/12] 抓取所有buffer...&quot;
+adb logcat -b all -d &gt; $ANR_LOG_DIR/logcat_all.txt
+
+# 2. 拉取ANR traces文件
+echo &quot;[6/12] 拉取traces.txt...&quot;
+adb pull /data/anr/traces.txt $ANR_LOG_DIR/ 2&gt;/dev/null
+adb pull /data/anr/anr_*.txt $ANR_LOG_DIR/ 2&gt;/dev/null
+
+# 3. 抓取bugreport（包含完整系统信息）
+echo &quot;[7/12] 生成bugreport（可能需要1-2分钟）...&quot;
+adb bugreport $ANR_LOG_DIR/bugreport.zip
+
+# 4. dumpsys关键信息
+echo &quot;[8/12] dumpsys window...&quot;
+adb shell dumpsys window &gt; $ANR_LOG_DIR/dumpsys_window.txt
+
+echo &quot;[9/12] dumpsys input...&quot;
+adb shell dumpsys input &gt; $ANR_LOG_DIR/dumpsys_input.txt
+
+echo &quot;[10/12] dumpsys SurfaceFlinger...&quot;
+adb shell dumpsys SurfaceFlinger &gt; $ANR_LOG_DIR/dumpsys_sf.txt
+
+echo &quot;[11/12] dumpsys activity...&quot;
+adb shell dumpsys activity &gt; $ANR_LOG_DIR/dumpsys_activity.txt
+
+echo &quot;[12/12] dumpsys meminfo...&quot;
+adb shell dumpsys meminfo &gt; $ANR_LOG_DIR/dumpsys_meminfo.txt
+
+# 5. 系统状态信息
+echo &quot;抓取系统状态...&quot;
+adb shell ps -A &gt; $ANR_LOG_DIR/ps.txt
+adb shell top -n 1 &gt; $ANR_LOG_DIR/top.txt
+adb shell getprop &gt; $ANR_LOG_DIR/prop.txt
+
+echo &quot;==================== 日志抓取完成 ====================&quot;
+echo &quot;日志保存在: $ANR_LOG_DIR&quot;</code></pre>
+<h3 id="22-抓取systrace">2.2 抓取Systrace</h3>
+<pre><code>#!/bin/bash
+# ========== Systrace抓取脚本 ==========
+
+echo &quot;开始抓取Systrace（持续10秒）...&quot;
+
+# 方法1: 使用systrace.py（推荐）
+python $ANDROID_HOME/platform-tools/systrace/systrace.py \
+    -t 10 \
+    -o systrace_$(date +%Y%m%d_%H%M%S).html \
+    sched gfx view wm am input dalvik sync workq \
+    freq idle load disk mmc
+
+# 方法2: 使用perfetto（Android 10+）
+adb shell perfetto \
+  -c - --txt \
+  -o /data/misc/perfetto-traces/trace_$(date +%Y%m%d_%H%M%S) \
+&lt;&lt;EOF
+duration_ms: 10000
+
+buffers: {
+    size_kb: 63488
+    fill_policy: DISCARD
+}
+
+data_sources: {
+    config {
+        name: &quot;linux.ftrace&quot;
+        ftrace_config {
+            # 调度事件
+            ftrace_events: &quot;sched/sched_switch&quot;
+            ftrace_events: &quot;sched/sched_wakeup&quot;
+            ftrace_events: &quot;sched/sched_wakeup_new&quot;
+            ftrace_events: &quot;sched/sched_waking&quot;
+            ftrace_events: &quot;sched/sched_process_exit&quot;
+            ftrace_events: &quot;sched/sched_process_free&quot;
+            
+            # 图形渲染
+            ftrace_events: &quot;graphics/gpu_mem_total&quot;
+            
+            # Input事件
+            ftrace_events: &quot;input/input_event&quot;
+            
+            # 电源管理
+            ftrace_events: &quot;power/suspend_resume&quot;
+            ftrace_events: &quot;power/cpu_frequency&quot;
+            ftrace_events: &quot;power/cpu_idle&quot;
+        }
+    }
+}
+
+data_sources: {
+    config {
+        name: &quot;android.surfaceflinger.frame&quot;
+    }
+}
+
+data_sources: {
+    config {
+        name: &quot;android.graphics.composer.hwc&quot;
+    }
+}
+EOF
+
+# 拉取trace文件
+adb pull /data/misc/perfetto-traces/trace_* .
+
+echo &quot;Systrace抓取完成&quot;</code></pre>
+<h3 id="23-抓取winscope">2.3 抓取Winscope</h3>
+<pre><code>#!/bin/bash
+# ========== Winscope抓取脚本 ==========
+
+echo &quot;开始抓取Winscope trace...&quot;
+
+# 1. 开启WindowManager trace
+adb shell cmd window tracing start
+
+# 2. 开启SurfaceFlinger trace  
+adb shell &quot;su root service call SurfaceFlinger 1025 i32 1&quot;
+
+echo &quot;Trace已开启，请复现ANR问题...&quot;
+echo &quot;按Enter键停止抓取...&quot;
+read
+
+# 3. 停止trace
+adb shell cmd window tracing stop
+adb shell &quot;su root service call SurfaceFlinger 1025 i32 0&quot;
+
+# 4. 拉取trace文件
+WINSCOPE_DIR=&quot;winscope_$(date +%Y%m%d_%H%M%S)&quot;
+mkdir -p $WINSCOPE_DIR
+
+adb pull /data/misc/wmtrace/wm_trace.pb $WINSCOPE_DIR/
+adb pull /data/misc/wmtrace/layers_trace.pb $WINSCOPE_DIR/
+adb pull /data/misc/wmtrace/transactions_trace.pb $WINSCOPE_DIR/
+
+echo &quot;Winscope trace保存在: $WINSCOPE_DIR&quot;
+echo &quot;使用 https://ui.perfetto.dev/ 或 winscope.dev 打开分析&quot;</code></pre>
+<h3 id="24-monkey测试日志抓取">2.4 Monkey测试日志抓取</h3>
+<pre><code>#!/bin/bash
+# ========== Monkey测试完整日志抓取 ==========
+
+PACKAGE_NAME=&quot;com.example.app&quot;
+EVENT_COUNT=10000
+SEED=12345
+
+LOG_DIR=&quot;monkey_$(date +%Y%m%d_%H%M%S)&quot;
+mkdir -p $LOG_DIR
+
+echo &quot;开始Monkey测试...&quot;
+
+# 1. 清除旧日志
+adb logcat -c
+
+# 2. 开始实时日志抓取（后台运行）
+adb logcat -v threadtime &gt; $LOG_DIR/logcat_realtime.txt &amp;
+LOGCAT_PID=$!
+
+adb logcat -b events -v threadtime &gt; $LOG_DIR/logcat_events_realtime.txt &amp;
+EVENTS_PID=$!
+
+# 3. 运行Monkey
+adb shell monkey \
+    -p $PACKAGE_NAME \
+    -s $SEED \
+    --throttle 300 \
+    --pct-touch 40 \
+    --pct-motion 25 \
+    --pct-nav 15 \
+    --pct-majornav 10 \
+    --pct-syskeys 5 \
+    --pct-appswitch 5 \
+    --ignore-crashes \
+    --ignore-timeouts \
+    --monitor-native-crashes \
+    -v -v -v \
+    $EVENT_COUNT \
+    2&gt;&amp;1 | tee $LOG_DIR/monkey.log
+
+# 4. 停止日志抓取
+kill $LOGCAT_PID
+kill $EVENTS_PID
+
+# 5. 检查是否有ANR
+if adb shell ls /data/anr/*.txt 2&gt;/dev/null; then
+    echo &quot;检测到ANR，拉取traces文件...&quot;
+    adb pull /data/anr/ $LOG_DIR/anr/
+fi
+
+# 6. 抓取最终状态
+adb shell dumpsys window &gt; $LOG_DIR/final_dumpsys_window.txt
+adb shell dumpsys activity &gt; $LOG_DIR/final_dumpsys_activity.txt
+
+echo &quot;Monkey测试完成，日志保存在: $LOG_DIR&quot;</code></pre>
+<h2 id="三关键日志信息及过滤方法">三、关键日志信息及过滤方法</h2>
+<h3 id="31-eventlog关键事件">3.1 EventLog关键事件</h3>
+<pre><code># ========== EventLog过滤脚本 ==========
+
+#!/bin/bash
+LOG_FILE=&quot;logcat_events.txt&quot;
+OUTPUT=&quot;anr_analysis_events.txt&quot;
+
+echo &quot;==================== EventLog关键信息分析 ====================&quot; &gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 1. Activity生命周期
+echo &quot;========== Activity生命周期 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;wm_.*activity|am_.*activity&quot; $LOG_FILE | tail -100 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 关键事件说明（源码定义见 base/services/core/java/com/android/server/wm/EventLogTags.logtags）：
+# wm_create_activity (30005): Activity创建
+# wm_restart_activity (30006): Activity重启
+# wm_resume_activity (30007): Activity resume
+# wm_pause_activity (30013): Activity pause
+# wm_destroy_activity (30018): Activity销毁
+# wm_on_create_called (30057): onCreate调用
+# wm_on_start_called (30059): onStart调用
+# wm_on_resume_called (30022): onResume调用
+# wm_on_paused_called (30021): onPause调用
+# wm_on_stop_called (30049): onStop调用
+# wm_activity_launch_time (30009): Activity启动耗时（关键！）
+# wm_set_resumed_activity (30043): Activity变为resumed状态
+# wm_focused_root_task (30044): 焦点Task变化
+
+# 2. 焦点变化
+echo &quot;========== 焦点变化 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;input_focus|Changing focus&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 关键事件（源码见 InputMonitor.java:518 和 DisplayContent.java:4050）：
+# input_focus: Input系统焦点变化
+# - Focus entering: 焦点进入某窗口
+# - Focus leaving: 焦点离开某窗口
+# - Focus request: 请求焦点
+# - Requesting to set focus to null: 清空焦点
+
+# 3. ANR事件
+echo &quot;========== ANR事件 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;am_anr|ANR in&quot; $LOG_FILE &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# am_anr格式：
+# am_anr: [User,PID,Package,Flags,Reason]
+
+# 4. Window事件
+echo &quot;========== Window事件 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;wm_.*window&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 5. Task事件
+echo &quot;========== Task/Stack事件 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;wm_task|wm_stack|wm_focused_root_task&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 6. 配置变更
+echo &quot;========== 配置变更 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;configuration_changed|override_config&quot; $LOG_FILE | tail -20 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 7. 亮灭屏
+echo &quot;========== 屏幕状态 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;screen_toggled|power_screen&quot; $LOG_FILE | tail -20 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+echo &quot;EventLog分析完成: $OUTPUT&quot;</code></pre>
+<h3 id="32-logcat主日志关键信息">3.2 Logcat主日志关键信息</h3>
+<pre><code>#!/bin/bash
+# ========== Logcat主日志过滤脚本 ==========
+
+LOG_FILE=&quot;logcat_all.txt&quot;
+OUTPUT=&quot;anr_analysis_main.txt&quot;
+
+echo &quot;==================== Logcat关键信息分析 ====================&quot; &gt; $OUTPUT
+
+# 1. ANR触发点
+echo &quot;========== ANR触发信息 ==========&quot; &gt;&gt; $OUTPUT
+grep -B 50 -A 50 &quot;Input dispatching timed out\|ANR in&quot; $LOG_FILE &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 2. WindowManager焦点日志
+echo &quot;========== WindowManager焦点变化 ==========&quot; &gt;&gt; $OUTPUT
+grep &quot;WindowManager:.*Changing focus&quot; $LOG_FILE | tail -100 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 3. InputDispatcher等待日志
+echo &quot;========== InputDispatcher等待 ==========&quot; &gt;&gt; $OUTPUT
+grep &quot;InputDispatcher.*Waiting&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 4. Activity启动日志
+echo &quot;========== Activity启动 ==========&quot; &gt;&gt; $OUTPUT
+grep &quot;ActivityTaskManager.*START u0&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 5. ViewRootImpl关键日志
+echo &quot;========== ViewRootImpl ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;VRI$$.*$$|reportDrawFinished|reportDrawn&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 6. SurfaceFlinger日志
+echo &quot;========== SurfaceFlinger ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;SurfaceFlinger|Layer.*Focus&quot; $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 7. Transition动画
+echo &quot;========== Transition动画 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;WindowManagerShell.*transition|TransitionController|SentTransition|FinishTransition&quot; \
+    $LOG_FILE | tail -50 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 8. Recent手势
+echo &quot;========== Recent手势 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;ShellRecents|recents.*animation|RecentsController&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 9. 按键事件
+echo &quot;========== 按键事件 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;interceptKeyTq|interceptKeyTi&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 10. Surface同步
+echo &quot;========== Surface同步 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;BLASTSyncEngine|SyncGroup&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 11. 窗口Relayout
+echo &quot;========== Relayout窗口 ==========&quot; &gt;&gt; $OUTPUT
+grep &quot;Relayout Window&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+# 12. GC和内存
+echo &quot;========== GC和内存 ==========&quot; &gt;&gt; $OUTPUT
+grep -E &quot;GC_|alloc|OutOfMemory&quot; $LOG_FILE | tail -30 &gt;&gt; $OUTPUT
+echo &quot;&quot; &gt;&gt; $OUTPUT
+
+echo &quot;Logcat主日志分析完成: $OUTPUT&quot;</code></pre>
+<h3 id="33-自动化分析脚本">3.3 自动化分析脚本</h3>
+<pre><code>#!/usr/bin/env python3
+# ========== ANR日志自动分析工具 ==========
+
+import re
+import sys
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+class ANRLogAnalyzer:
+    def __init__(self, logcat_file, events_file):
+        self.logcat_file = logcat_file
+        self.events_file = events_file
+        self.anr_time = None
+        self.anr_package = None
+        self.timeline = []
+        
+    def parse_timestamp(self, line):
+        &quot;&quot;&quot;解析时间戳&quot;&quot;&quot;
+        match = re.search(r&#39;(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})&#39;, line)
+        if match:
+            return match.group(1)
+        return None
+    
+    def find_anr_info(self):
+        &quot;&quot;&quot;查找ANR基本信息&quot;&quot;&quot;
+        print(&quot;=== 步骤1: 查找ANR信息 ===&quot;)
+        
+        with open(self.logcat_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                # 查找ANR触发行
+                if &#39;Input dispatching timed out&#39; in line or &#39;ANR in&#39; in line:
+                    self.anr_time = self.parse_timestamp(line)
+                    
+                    # 提取包名
+                    match = re.search(r&#39;ANR in ([^\s]+)&#39;, line)
+                    if match:
+                        self.anr_package = match.group(1)
+                    
+                    print(f&quot;发现ANR: {line.strip()}&quot;)
+                    print(f&quot;ANR时间: {self.anr_time}&quot;)
+                    print(f&quot;ANR包名: {self.anr_package}&quot;)
+                    break
+        
+        if not self.anr_time:
+            print(&quot;❌ 未找到ANR信息&quot;)
+            return False
+        return True
+    
+    def analyze_activity_lifecycle(self):
+        &quot;&quot;&quot;分析Activity生命周期&quot;&quot;&quot;
+        print(&quot;\n=== 步骤2: 分析Activity生命周期 ===&quot;)
+        
+        lifecycle_events = []
+        
+        with open(self.events_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                if any(x in line for x in [&#39;wm_create_activity&#39;, &#39;wm_on_create_called&#39;,
+                                           &#39;wm_on_resume_called&#39;, &#39;wm_activity_launch_time&#39;]):
+                    timestamp = self.parse_timestamp(line)
+                    lifecycle_events.append((timestamp, line.strip()))
+        
+        # 显示最近的生命周期事件
+        for ts, event in lifecycle_events[-10:]:
+            print(f&quot;{ts}: {event}&quot;)
+        
+        # 查找启动时间
+        for ts, event in lifecycle_events:
+            if &#39;wm_activity_launch_time&#39; in event:
+                match = re.search(r&#39;wm_activity_launch_time:.*,(\d+)\]&#39;, event)
+                if match:
+                    launch_time = int(match.group(1))
+                    print(f&quot;\n⚠️  Activity启动时间: {launch_time}ms&quot;)
+                    if launch_time &gt; 5000:
+                        print(f&quot;❌ 启动时间过长（&gt;{launch_time}ms），可能是应用启动慢导致&quot;)
+                        return &#39;APP_SLOW_START&#39;
+                    elif launch_time &gt; 3000:
+                        print(f&quot;⚠️  启动时间较长（{launch_time}ms），需要优化&quot;)
+        
+        return &#39;UNKNOWN&#39;
+    
+    def analyze_focus_change(self):
+        &quot;&quot;&quot;分析焦点变化&quot;&quot;&quot;
+        print(&quot;\n=== 步骤3: 分析焦点变化 ===&quot;)
+        
+        focus_events = []
+        
+        with open(self.logcat_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                timestamp = self.parse_timestamp(line)
+                
+                # WindowManager焦点变化
+                if &#39;Changing focus&#39; in line:
+                    focus_events.append((timestamp, &#39;WM&#39;, line.strip()))
+                
+                # Input焦点变化
+                if &#39;input_focus&#39; in line and any(x in line for x in 
+                    [&#39;Focus entering&#39;, &#39;Focus leaving&#39;, &#39;Focus request&#39;]):
+                    focus_events.append((timestamp, &#39;INPUT&#39;, line.strip()))
+        
+        # 显示ANR前后的焦点变化
+        print(&quot;\n焦点变化时间线（最近20条）:&quot;)
+        for ts, source, event in focus_events[-20:]:
+            print(f&quot;[{source}] {ts}: {event}&quot;)
+        
+        # 分析焦点状态
+        last_wm_focus = None
+        last_input_focus = None
+        
+        for ts, source, event in focus_events:
+            if source == &#39;WM&#39; and &#39;Changing focus&#39; in event:
+                match = re.search(r&#39;to (Window\{[^}]+\}|null)&#39;, event)
+                if match:
+                    last_wm_focus = match.group(1)
+            
+            elif source == &#39;INPUT&#39; and &#39;Focus entering&#39; in event:
+                match = re.search(r&#39;Focus entering ([^\s,]+)&#39;, event)
+                if match:
+                    last_input_focus = match.group(1)
+        
+        print(f&quot;\n最后的WindowManager焦点: {last_wm_focus}&quot;)
+        print(f&quot;最后的Input焦点: {last_input_focus}&quot;)
+        
+        if last_wm_focus and &#39;null&#39; not in last_wm_focus and \
+           (not last_input_focus or last_input_focus != last_wm_focus):
+            print(&quot;❌ WindowManager有焦点窗口，但Input焦点未更新&quot;)
+            return &#39;INPUT_FOCUS_NOT_UPDATED&#39;
+        
+        if last_wm_focus and &#39;null&#39; in last_wm_focus:
+            print(&quot;❌ WindowManager焦点为null&quot;)
+            return &#39;NO_FOCUSED_WINDOW&#39;
+        
+        return &#39;UNKNOWN&#39;
+    
+    def analyze_draw_state(self):
+        &quot;&quot;&quot;分析绘制状态&quot;&quot;&quot;
+        print(&quot;\n=== 步骤4: 分析绘制状态 ===&quot;)
+        
+        draw_events = []
+        
+        with open(self.logcat_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                if any(x in line for x in [&#39;reportDrawFinished&#39;, &#39;Relayout Window&#39;,
+                                           &#39;performTraversals&#39;]):
+                    timestamp = self.parse_timestamp(line)
+                    draw_events.append((timestamp, line.strip()))
+        
+        for ts, event in draw_events[-10:]:
+            print(f&quot;{ts}: {event}&quot;)
+        
+        # 检查是否有reportDrawFinished
+        has_draw_finished = any(&#39;reportDrawFinished&#39; in e[1] for e in draw_events)
+        
+        if not has_draw_finished:
+            print(&quot;❌ 未找到reportDrawFinished，窗口可能未绘制完成&quot;)
+            return &#39;DRAW_NOT_FINISHED&#39;
+        
+        return &#39;UNKNOWN&#39;
+    
+    def analyze_surface_state(self):
+        &quot;&quot;&quot;分析Surface状态&quot;&quot;&quot;
+        print(&quot;\n=== 步骤5: 分析Surface/Layer状态 ===&quot;)
+        
+        surface_events = []
+        
+        with open(self.logcat_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                if any(x in line for x in [&#39;Layer&#39;, &#39;SurfaceFlinger&#39;, &#39;NOT_VISIBLE&#39;,
+                                           &#39;isHidden&#39;, &#39;isOccluded&#39;]):
+                    timestamp = self.parse_timestamp(line)
+                    surface_events.append((timestamp, line.strip()))
+        
+        for ts, event in surface_events[-15:]:
+            print(f&quot;{ts}: {event}&quot;)
+        
+        # 检查NOT_VISIBLE
+        for ts, event in surface_events:
+            if &#39;NOT_VISIBLE&#39; in event:
+                print(&quot;❌ Layer状态为NOT_VISIBLE，Surface不可见&quot;)
+                return &#39;SURFACE_NOT_VISIBLE&#39;
+        
+        return &#39;UNKNOWN&#39;
+    
+    def analyze_recent_gesture(self):
+        &quot;&quot;&quot;分析Recent手势&quot;&quot;&quot;
+        print(&quot;\n=== 步骤6: 检查Recent手势相关 ===&quot;)
+        
+        recent_events = []
+        
+        with open(self.logcat_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                if any(x in line for x in [&#39;ShellRecents&#39;, &#39;recents_animation&#39;,
+                                           &#39;RecentsController&#39;, &#39;startExistingRecents&#39;]):
+                    timestamp = self.parse_timestamp(line)
+                    recent_events.append((timestamp, line.strip()))
+        
+        if recent_events:
+            print(f&quot;\n发现{len(recent_events)}条Recent相关日志:&quot;)
+            for ts, event in recent_events[-10:]:
+                print(f&quot;{ts}: {event}&quot;)
+            
+            # 检查手势是否完成
+            has_finish = any(&#39;finishInner&#39; in e[1] or &#39;Completing&#39; in e[1] 
+                           for e in recent_events)
+            
+            if not has_finish:
+                print(&quot;❌ Recent手势未正常结束，可能导致焦点异常&quot;)
+                return &#39;RECENT_GESTURE_NOT_FINISHED&#39;
+        
+        return &#39;UNKNOWN&#39;
+    
+    def generate_report(self):
+        &quot;&quot;&quot;生成分析报告&quot;&quot;&quot;
+        print(&quot;\n&quot; + &quot;=&quot;*70)
+        print(&quot;                        ANR分析报告&quot;)
+        print(&quot;=&quot;*70)
+        
+        # 基本信息
+        print(f&quot;\nANR时间: {self.anr_time}&quot;)
+        print(f&quot;ANR包名: {self.anr_package}&quot;)
+        
+        # 执行分析
+        issues = []
+        
+        result = self.analyze_activity_lifecycle()
+        if result != &#39;UNKNOWN&#39;:
+            issues.append(result)
+        
+        result = self.analyze_focus_change()
+        if result != &#39;UNKNOWN&#39;:
+            issues.append(result)
+        
+        result = self.analyze_draw_state()
+        if result != &#39;UNKNOWN&#39;:
+            issues.append(result)
+        
+        result = self.analyze_surface_state()
+        if result != &#39;UNKNOWN&#39;:
+            issues.append(result)
+        
+        result = self.analyze_recent_gesture()
+        if result != &#39;UNKNOWN&#39;:
+            issues.append(result)
+        
+        # 问题总结
+        print(&quot;\n&quot; + &quot;=&quot;*70)
+        print(&quot;问题总结:&quot;)
+        print(&quot;=&quot;*70)
+        
+        if not issues:
+            print(&quot;⚠️  未能自动识别具体问题，需要人工深入分析&quot;)
+        else:
+            for issue in issues:
+                print(f&quot;❌ {issue}&quot;)
+        
+        # 给出建议
+        print(&quot;\n&quot; + &quot;=&quot;*70)
+        print(&quot;分析建议:&quot;)
+        print(&quot;=&quot;*70)
+        
+        if &#39;APP_SLOW_START&#39; in issues:
+            print(&quot;&quot;&quot;
+1. 检查Application.onCreate()和Activity.onCreate()耗时
+2. 使用Trace查看主线程阻塞点
+3. 将耗时操作移到异步线程
+4. 优化布局复杂度
+            &quot;&quot;&quot;)
+        
+        if &#39;NO_FOCUSED_WINDOW&#39; in issues:
+            print(&quot;&quot;&quot;
+1. 检查Activity是否正常Resume
+2. 检查窗口是否正常Relayout
+3. 查看Winscope确认窗口层级
+            &quot;&quot;&quot;)
+        
+        if &#39;INPUT_FOCUS_NOT_UPDATED&#39; in issues:
+            print(&quot;&quot;&quot;
+1. 检查reportDrawFinished是否调用
+2. 使用Winscope检查Layer可见性
+3. 检查Surface是否正常创建
+4. 查看SurfaceFlinger日志
+            &quot;&quot;&quot;)
+        
+        if &#39;SURFACE_NOT_VISIBLE&#39; in issues:
+            print(&quot;&quot;&quot;
+1. 使用Winscope分析Layer状态
+2. 检查父Layer是否被隐藏
+3. 检查Layer的alpha和bounds
+4. 查看是否被其他Layer遮挡
+            &quot;&quot;&quot;)
+        
+        if &#39;RECENT_GESTURE_NOT_FINISHED&#39; in issues:
+            print(&quot;&quot;&quot;
+1. 检查Recent手势动画是否异常
+2. 查看Launcher日志
+3. 检查TransitionController日志
+4. 可能是系统问题，查看Google Issue
+            &quot;&quot;&quot;)
+        
+        print(&quot;\n&quot; + &quot;=&quot;*70)
+
+def main():
+    if len(sys.argv) &lt; 3:
+        print(&quot;用法: python3 anr_analyzer.py &lt;logcat_file&gt; &lt;events_file&gt;&quot;)
+        sys.exit(1)
+    
+    logcat_file = sys.argv[1]
+    events_file = sys.argv[2]
+    
+    analyzer = ANRLogAnalyzer(logcat_file, events_file)
+    
+    if analyzer.find_anr_info():
+        analyzer.generate_report()
+    else:
+        print(&quot;未找到ANR信息，请检查日志文件&quot;)
+
+if __name__ == &#39;__main__&#39;:
+    main()</code></pre>
+<h2 id="四tracestxt分析方法">四、Traces.txt分析方法</h2>
+<h3 id="41-traces文件结构">4.1 Traces文件结构</h3>
+<pre><code>traces.txt结构图:
+┌─────────────────────────────────────────────────────────────┐
+│ ----- pid &lt;PID&gt; at &lt;timestamp&gt; -----                        │  ← ANR进程标识
+│ Cmd line: &lt;package_name&gt;                                    │  ← 包名
+│                                                              │
+│ DALVIK THREADS (N threads):                                 │  ← 线程信息
+│                                                              │
+│ &quot;main&quot; prio=5 tid=1 Native                                  │  ← 主线程
+│   | group=&quot;main&quot; sCount=1 dsCount=0 flags=1 obj=0x...      │
+│   | sysTid=&lt;tid&gt; nice=0 cgrp=default sched=0/0 handle=...  │
+│   | state=S schedstat=( ... ) utm=... stm=... core=...     │
+│   | stack=0x... ... pthread_t=0x...                         │
+│   native: #00 pc ... &lt;lib&gt; (&lt;symbol&gt;+&lt;offset&gt;)             │  ← Native堆栈
+│   native: #01 pc ...                                        │
+│   at &lt;java_method&gt;(&lt;source&gt;:&lt;line&gt;)                         │  ← Java堆栈
+│   at &lt;java_method&gt;(&lt;source&gt;:&lt;line&gt;)                         │
+│   ...                                                        │
+│                                                              │
+│ &quot;RenderThread&quot; prio=6 tid=10 Native                         │  ← RenderThread
+│   ...                                                        │
+│                                                              │
+│ &quot;HeapTaskDaemon&quot; prio=5 tid=5 Waiting                       │  ← 其他线程
+│   ...                                                        │
+│                                                              │
+│ ----- end &lt;PID&gt; -----                                       │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+<h3 id="42-traces分析脚本">4.2 Traces分析脚本</h3>
+<pre><code>#!/usr/bin/env python3
+# ========== Traces.txt分析工具 ==========
+
+import re
+import sys
+
+class TracesAnalyzer:
+    def __init__(self, traces_file):
+        self.traces_file = traces_file
+        self.threads = {}
+        self.anr_pid = None
+        
+    def parse_traces(self):
+        &quot;&quot;&quot;解析traces文件&quot;&quot;&quot;
+        print(&quot;解析traces.txt...&quot;)
+        
+        current_thread = None
+        current_stack = []
+        
+        with open(self.traces_file, &#39;r&#39;, encoding=&#39;utf-8&#39;, errors=&#39;ignore&#39;) as f:
+            for line in f:
+                # 查找ANR进程
+                if &#39;pid&#39; in line and self.anr_pid is None:
+                    match = re.search(r&#39;pid (\d+)&#39;, line)
+                    if match:
+                        self.anr_pid = match.group(1)
+                        print(f&quot;ANR进程PID: {self.anr_pid}&quot;)
+                
+                # 解析线程名
+                if line.startswith(&#39;&quot;&#39;) and &#39;prio=&#39; in line:
+                    # 保存上一个线程
+                    if current_thread:
+                        self.threads[current_thread] = {
+                            &#39;stack&#39;: current_stack.copy(),
+                            &#39;raw&#39;: &#39;\n&#39;.join(current_stack)
+                        }
+                    
+                    # 开始新线程
+                    match = re.search(r&#39;&quot;([^&quot;]+)&quot;.*tid=(\d+)\s+(\w+)&#39;, line)
+                    if match:
+                        current_thread = match.group(1)
+                        current_stack = [line.strip()]
+                
+                elif current_thread:
+                    current_stack.append(line.strip())
+        
+        # 保存最后一个线程
+        if current_thread:
+            self.threads[current_thread] = {
+                &#39;stack&#39;: current_stack.copy(),
+                &#39;raw&#39;: &#39;\n&#39;.join(current_stack)
+            }
+        
+        print(f&quot;共找到 {len(self.threads)} 个线程\n&quot;)
+    
+    def analyze_main_thread(self):
+        &quot;&quot;&quot;分析主线程&quot;&quot;&quot;
+        print(&quot;=&quot;*70)
+        print(&quot;主线程分析&quot;)
+        print(&quot;=&quot;*70)
+        
+        if &#39;main&#39; not in self.threads:
+            print(&quot;❌ 未找到主线程信息&quot;)
+            return
+        
+        main_thread = self.threads[&#39;main&#39;]
+        stack = main_thread[&#39;raw&#39;]
+        
+        print(stack)
+        print()
+        
+        # 检查常见问题
+        issues = []
+        
+        # 1. 检查是否在等待锁
+        if &#39;waiting to lock&#39; in stack.lower() or &#39;blocked&#39; in stack.lower():
+            issues.append(&quot;主线程等待锁&quot;)
+            
+            # 提取锁信息
+            match = re.search(r&#39;waiting to lock &lt;0x([0-9a-f]+)&gt;&#39;, stack)
+            if match:
+                lock_addr = match.group(1)
+                print(f&quot;⚠️  主线程等待锁: 0x{lock_addr}&quot;)
+                
+                # 查找持有该锁的线程
+                self.find_lock_holder(lock_addr)
+        
+        # 2. 检查是否在执行耗时操作
+        slow_operations = [
+            &#39;Thread.sleep&#39;, &#39;Object.wait&#39;, &#39;MessageQueue.nativePollOnce&#39;,
+            &#39;Binder.transact&#39;, &#39;socket&#39;, &#39;read&#39;, &#39;write&#39;
+        ]
+        
+        for op in slow_operations:
+            if op in stack:
+                issues.append(f&quot;可能的耗时操作: {op}&quot;)
+        
+        # 3. 检查是否在onCreate/onResume
+        lifecycle_methods = [
+            &#39;Activity.onCreate&#39;, &#39;Activity.onResume&#39;, &#39;Activity.onStart&#39;,
+            &#39;Application.onCreate&#39;
+        ]
+        
+        for method in lifecycle_methods:
+            if method in stack:
+                issues.append(f&quot;阻塞在生命周期: {method}&quot;)
+        
+        # 显示问题总结
+        if issues:
+            print(&quot;\n主线程问题:&quot;)
+            for issue in issues:
+                print(f&quot;  ❌ {issue}&quot;)
+        else:
+            print(&quot;\n✅ 主线程看起来正常&quot;)
+        
+        print()
+    
+    def find_lock_holder(self, lock_addr):
+        &quot;&quot;&quot;查找持有锁的线程&quot;&quot;&quot;
+        print(f&quot;\n查找持有锁 0x{lock_addr} 的线程:&quot;)
+        
+        for thread_name, thread_data in self.threads.items():
+            stack = thread_data[&#39;raw&#39;]
+            
+            # 查找 locked &lt;0x...&gt;
+            if f&#39;locked &lt;0x{lock_addr}&gt;&#39; in stack:
+                print(f&quot;\n  持有者: {thread_name}&quot;)
+                print(&quot;  &quot; + &quot;─&quot;*60)
+                
+                # 显示该线程的前10行堆栈
+                lines = thread_data[&#39;stack&#39;][:10]
+                for line in lines:
+                    print(f&quot;  {line}&quot;)
+                
+                return
+        
+        print(&quot;  未找到持有该锁的线程&quot;)
+    
+    def analyze_render_thread(self):
+        &quot;&quot;&quot;分析RenderThread&quot;&quot;&quot;
+        print(&quot;=&quot;*70)
+        print(&quot;RenderThread分析&quot;)
+        print(&quot;=&quot;*70)
+        
+        render_threads = [name for name in self.threads.keys() 
+                         if &#39;render&#39; in name.lower()]
+        
+        if not render_threads:
+            print(&quot;未找到RenderThread&quot;)
+            return
+        
+        for thread_name in render_threads:
+            print(f&quot;\n线程: {thread_name}&quot;)
+            print(&quot;─&quot;*60)
+            
+            stack = self.threads[thread_name][&#39;raw&#39;]
+            print(stack[:500])  # 显示前500字符
+            
+            # 检查是否在等待buffer
+            if &#39;dequeueBuffer&#39; in stack or &#39;queueBuffer&#39; in stack:
+                print(&quot;\n⚠️  RenderThread可能在等待Buffer&quot;)
+    
+    def analyze_binder_threads(self):
+        &quot;&quot;&quot;分析Binder线程&quot;&quot;&quot;
+        print(&quot;\n&quot; + &quot;=&quot;*70)
+        print(&quot;Binder线程分析&quot;)
+        print(&quot;=&quot;*70)
+        
+        binder_threads = [name for name in self.threads.keys() 
+                         if &#39;binder&#39; in name.lower()]
+        
+        if not binder_threads:
+            print(&quot;未找到Binder线程&quot;)
+            return
+        
+        print(f&quot;共有 {len(binder_threads)} 个Binder线程\n&quot;)
+        
+        for thread_name in binder_threads:
+            stack = self.threads[thread_name][&#39;raw&#39;]
+            
+            # 只显示有问题的Binder线程
+            if &#39;waiting to lock&#39; in stack.lower() or &#39;blocked&#39; in stack.lower():
+                print(f&quot;线程: {thread_name}&quot;)
+                print(&quot;─&quot;*60)
+                print(stack[:300])
+                print()
+    
+    def check_deadlock(self):
+        &quot;&quot;&quot;检查死锁&quot;&quot;&quot;
+        print(&quot;=&quot;*70)
+        print(&quot;死锁检测&quot;)
+        print(&quot;=&quot;*70)
+        
+        # 构建等待图
+        waiting_for = {}  # thread -&gt; lock
+        holding = {}      # lock -&gt; thread
+        
+        for thread_name, thread_data in self.threads.items():
+            stack = thread_data[&#39;raw&#39;]
+            
+            # 查找等待的锁
+            match = re.search(r&#39;waiting to lock &lt;0x([0-9a-f]+)&gt;&#39;, stack)
+            if match:
+                lock_addr = match.group(1)
+                waiting_for[thread_name] = lock_addr
+            
+            # 查找持有的锁
+            matches = re.findall(r&#39;locked &lt;0x([0-9a-f]+)&gt;&#39;, stack)
+            for lock_addr in matches:
+                holding[lock_addr] = thread_name
+        
+        # 检测循环等待
+        deadlock_found = False
+        
+        for thread1, lock1 in waiting_for.items():
+            if lock1 in holding:
+                thread2 = holding[lock1]
+                
+                if thread2 in waiting_for:
+                    lock2 = waiting_for[thread2]
+                    
+                    if lock2 in holding and holding[lock2] == thread1:
+                        print(f&quot;\n❌ 发现死锁!&quot;)
+                        print(f&quot;  {thread1} 等待锁 0x{lock1} (被 {thread2} 持有)&quot;)
+                        print(f&quot;  {thread2} 等待锁 0x{lock2} (被 {thread1} 持有)&quot;)
+                        deadlock_found = True
+        
+        if not deadlock_found:
+            print(&quot;\n✅ 未发现明显死锁&quot;)
+        
+        print()
+    
+    def generate_report(self):
+        &quot;&quot;&quot;生成完整报告&quot;&quot;&quot;
+        self.parse_traces()
+        self.analyze_main_thread()
+        self.analyze_render_thread()
+        self.analyze_binder_threads()
+        self.check_deadlock()
+
+def main():
+    if len(sys.argv) &lt; 2:
+        print(&quot;用法: python3 traces_analyzer.py &lt;traces.txt&gt;&quot;)
+        sys.exit(1)
+    
+    traces_file = sys.argv[1]
+    analyzer = TracesAnalyzer(traces_file)
+    analyzer.generate_report()
+
+if __name__ == &#39;__main__&#39;:
+    main()</code></pre>
+<h2 id="五anr检测核心流程源码分析">五、ANR检测核心流程源码分析</h2>
+<h3 id="50-anr检测流程概述">5.0 ANR检测流程概述</h3>
+<p>ANR（Application Not Responding）检测主要发生在InputDispatcher中，核心流程如下：</p>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    participant App as 应用进程
+    participant ID as InputDispatcher
+    participant WMS as WindowManagerService
+    participant AMS as ActivityManagerService
+    
+    Note over ID: 1. Input事件到达
+    ID-&gt;&gt;ID: findFocusedWindowTargetLocked()
+    
+    alt 无焦点窗口
+        ID-&gt;&gt;ID: 启动ANR计时器(mNoFocusedWindowTimeoutTime)
+        Note over ID: 等待窗口创建或超时
+        alt 超时
+            ID-&gt;&gt;WMS: onAnrLocked()
+            WMS-&gt;&gt;WMS: notifyWindowUnresponsive()
+            WMS-&gt;&gt;AMS: inputDispatchingTimedOut()
+            AMS-&gt;&gt;AMS: 生成ANR traces
+        end
+    else 有焦点窗口
+        ID-&gt;&gt;App: 分发事件
+        alt 应用无响应
+            ID-&gt;&gt;ID: processAnrsLocked()
+            ID-&gt;&gt;WMS: onAnrLocked()
+            WMS-&gt;&gt;AMS: inputDispatchingTimedOut()
+        end
+    end</code></pre></div>
+<h3 id="501-窗口无焦点anr检测源码">5.0.1 窗口无焦点ANR检测源码</h3>
+<p><strong>核心代码位置</strong>：<a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2330">InputDispatcher.cpp:2330-2360</a></p>
+<pre><code>// 当有焦点应用但无焦点窗口时，启动ANR计时器
+if (focusedWindowHandle == nullptr &amp;&amp; focusedApplicationHandle != nullptr) {
+    if (!mNoFocusedWindowTimeoutTime.has_value()) {
+        // 刚发现没有焦点窗口，启动ANR计时器
+        std::chrono::nanoseconds timeout = focusedApplicationHandle-&gt;getDispatchingTimeout(
+                DEFAULT_INPUT_DISPATCHING_TIMEOUT);
+        mNoFocusedWindowTimeoutTime = currentTime + timeout.count();
+        mAwaitedFocusedApplication = focusedApplicationHandle;
+        ALOGW(&quot;Waiting because no window has focus but %s may eventually add a &quot;
+              &quot;window when it finishes starting up. Will wait for %&quot; PRId64 &quot;ms&quot;,
+              mAwaitedFocusedApplication-&gt;getName().c_str(), millis(timeout));
+        nextWakeupTime = std::min(nextWakeupTime, *mNoFocusedWindowTimeoutTime);
+        return injectionError(InputEventInjectionResult::PENDING);
+    } else if (currentTime &gt; *mNoFocusedWindowTimeoutTime) {
+        // 已超时，触发ANR
+        ALOGE(&quot;Dropping %s event because there is no focused window&quot;,
+              ftl::enum_string(entry.type).c_str());
+        return injectionError(InputEventInjectionResult::FAILED);
+    }
+}</code></pre>
+<h3 id="502-anr处理流程源码">5.0.2 ANR处理流程源码</h3>
+<p><strong>核心代码位置</strong>：<a href="../../../base/services/core/java/com/android/server/wm/AnrController.java#L100">AnrController.java:100-130</a></p>
+<pre><code>// AnrController处理无响应窗口
+void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
+        @NonNull TimeoutRecord timeoutRecord) {
+    try {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveStarted();
+        if (notifyWindowUnresponsive(token, timeoutRecord)) {
+            return;
+        }
+        // ... 省略部分代码
+    } finally {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveEnded();
+    }
+}
+
+// 实际的ANR日志输出
+private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
+        TimeoutRecord timeoutRecord) {
+    // ... 获取窗口信息 ...
+    Slog.i(TAG_WM, &quot;ANR in &quot; + target + &quot;. Reason:&quot; + timeoutRecord.mReason);
+    // ... 调用AMS处理ANR ...
+    if (activity != null) {
+        activity.inputDispatchingTimedOut(timeoutRecord, pid);
+    } else {
+        mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);
+    }
+    dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);
+    return true;
+}</code></pre>
+<h3 id="503-anr超时检测源码">5.0.3 ANR超时检测源码</h3>
+<p><strong>核心代码位置</strong>：<a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2820">InputDispatcher.cpp:2820-2860</a></p>
+<pre><code>nsecs_t InputDispatcher::processAnrsLocked() {
+    const nsecs_t currentTime = now();
+    nsecs_t nextAnrCheck = LLONG_MAX;
+    
+    // 检查是否在等待焦点窗口出现，如果等待太久则触发ANR
+    if (mNoFocusedWindowTimeoutTime.has_value() &amp;&amp; mAwaitedFocusedApplication != nullptr) {
+        if (currentTime &gt;= *mNoFocusedWindowTimeoutTime) {
+            processNoFocusedWindowAnrLocked();  // 触发无焦点窗口ANR
+            mAwaitedFocusedApplication.reset();
+            mNoFocusedWindowTimeoutTime = std::nullopt;
+            return LLONG_MIN;
+        } else {
+            nextAnrCheck = *mNoFocusedWindowTimeoutTime;
+        }
+    }
+    
+    // 检查是否有连接ANR到期
+    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
+    if (currentTime &lt; nextAnrCheck) {
+        return nextAnrCheck;  // 一切正常，下次检查时间
+    }
+    
+    // 有无响应的连接，触发ANR
+    std::shared_ptr&lt;Connection&gt; connection =
+            mConnectionManager.getConnection(mAnrTracker.firstToken());
+    connection-&gt;responsive = false;
+    mAnrTracker.eraseToken(connection-&gt;getToken());
+    onAnrLocked(connection);
+    return LLONG_MIN;
+}</code></pre>
+<h2 id="七完整anr分析流程">七、完整ANR分析流程</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                      完整ANR分析流程图                                │
+└─────────────────────────────────────────────────────────────────────┘
+
+步骤1: 收集日志
+├─ logcat (main/system/events/crash)
+├─ traces.txt
+├─ bugreport
+├─ dumpsys (window/input/sf/activity)
+└─ systrace/winscope (可选)
+          │
+          ▼
+步骤2: 确定ANR类型
+├─ 查找 &quot;ANR in&quot; 或 &quot;Input dispatching timed out&quot;
+├─ 确定ANR时间点
+├─ 确定ANR包名
+└─ 确定ANR原因描述
+          │
+          ├─── &quot;Application does not have a focused window&quot;
+          │         │
+          │         └──▶ 窗口无焦点ANR (本文重点)
+          │                   │
+          │                   ▼
+          │              步骤3: 检查Activity启动
+          │              ├─ 查找 wm_activity_launch_time
+          │              ├─ 如果 &gt; 5s → 应用启动慢
+          │              │    └──▶ 分析onCreate/onResume
+          │              │
+          │              └─ 如果 &lt; 5s → 系统问题
+          │                     │
+          │                     ▼
+          │              步骤4: 检查焦点状态
+          │              ├─ WindowManager焦点 (Changing focus)
+          │              ├─ Input焦点 (input_focus)
+          │              ├─ 焦点是否为null?
+          │              └─ 焦点是否更新到Input?
+          │                     │
+          │                     ▼
+          │              步骤5: 检查窗口绘制
+          │              ├─ reportDrawFinished是否调用?
+          │              ├─ Relayout是否完成?
+          │              └─ Surface是否创建?
+          │                     │
+          │                     ▼
+          │              步骤6: 检查Layer状态
+          │              ├─ 使用Winscope查看
+          │              ├─ Layer是否可见?
+          │              ├─ Layer是否被隐藏?
+          │              └─ 父Layer状态?
+          │                     │
+          │                     ▼
+          │              步骤7: 检查特殊场景
+          │              ├─ Recent手势?
+          │              ├─ 屏幕旋转?
+          │              ├─ 多窗口切换?
+          │              └─ 系统动画?
+          │
+          ├─── &quot;Broadcast&quot;
+          │         └──▶ Broadcast ANR
+          │
+          ├─── &quot;Service&quot;
+          │         └──▶ Service ANR
+          │
+          └─── &quot;ContentProvider&quot;
+                    └──▶ Provider ANR
+                              │
+                              ▼
+步骤8: 分析Traces.txt
+├─ 主线程在做什么?
+│   ├─ 等待锁?
+│   ├─ 执行耗时操作?
+│   └─ 生命周期阻塞?
+│
+├─ RenderThread状态?
+│   └─ 等待Buffer?
+│
+├─ 是否有死锁?
+└─ Binder线程状态?
+          │
+          ▼
+步骤9: 确定根本原因
+├─ 应用层问题
+│   ├─ 主线程耗时操作
+│   ├─ 布局过于复杂
+│   ├─ 绘制过于复杂
+│   └─ 死锁/等待锁
+│
+├─ 系统层问题
+│   ├─ Surface创建慢
+│   ├─ Layer状态异常
+│   ├─ InputFocus未更新
+│   ├─ SurfaceFlinger慢
+│   └─ Recent手势异常
+│
+└─ 环境问题
+    ├─ 内存不足
+    ├─ CPU繁忙
+    └─ IO阻塞
+          │
+          ▼
+步骤10: 给出解决方案</code></pre>
+<h2 id="八实战案例分析">八、实战案例分析</h2>
+<h3 id="案例1-应用启动慢导致的anr">案例1: 应用启动慢导致的ANR</h3>
+<pre><code># ========== 关键日志 ==========
+
+# 1. ANR信息
+12-05 17:18:55.096  1903  2245 I WindowManager: ANR in ActivityRecord{161928112 u0 
+    com.example.myapplication/.Main t83}. 
+    Reason: Input dispatching timed out (Application does not have a focused window).
+
+# 2. Activity启动
+12-05 17:18:45.313  1903  2196 I wm_create_activity: [0,161928112,83,
+    com.example.myapplication/.Main,android.intent.action.MAIN,NULL,NULL,268435456]
+
+# 3. 焦点变化
+12-05 17:18:45.333  1903  5331 W WindowManager: Changing focus from 
+    Window{243b7ec u0 com.android.launcher/...QuickstepLauncher} to null
+
+# 4. 长时间后才完成onCreate
+12-05 17:18:55.719 16362 16362 I wm_on_create_called: [161928112,
+    com.example.myapplication.Main,performCreate,10021]
+
+# 5. 启动时间
+12-05 17:18:55.809  1903  2010 I wm_activity_launch_time: [0,161928112,
+    com.example.myapplication/.Main,10495]
+                                                        ^^^^^ 10.5秒!
+
+# ========== 分析结论 ==========
+问题: 应用onCreate耗时10秒
+原因: 主线程执行耗时操作
+解决: 
+  1. 检查traces.txt主线程堆栈
+  2. 使用Trace查看耗时点
+  3. 将耗时操作移到子线程</code></pre>
+<h3 id="案例2-surface不可见导致的anr">案例2: Surface不可见导致的ANR</h3>
+<pre><code># ========== 关键日志 ==========
+
+# 1. Activity正常启动
+03-15 15:43:29.553 30851 30851 I wm_on_resume_called: [210563469,
+    com.google.android.apps.messaging/.ui.ConversationListActivity,RESUME_ACTIVITY,8]
+
+# 2. 启动时间正常
+03-15 15:43:29.631  1446  1761 I wm_activity_launch_time: [0,210563469,
+    com.google.android.apps.messaging/.ui.ConversationListActivity,414]
+
+# 3. 焦点窗口已设置
+03-15 15:43:29.641  1446  1953 W WindowManager: Changing focus to Window{xxx MainActivity}
+
+# 4. 但Input焦点状态异常
+03-15 15:43:29.641  1446  1953 I input_focus: [Focus request xxx MainActivity, 
+    reason=UpdateInputWindows]
+
+# 5. reportDrawFinished已调用
+03-15 15:43:29.650 30851 30851 D VRI[MainActivity]: reportDrawFinished
+
+# 6. 但是Input焦点一直没有entering
+# (应该有 &quot;Focus entering xxx MainActivity&quot;)
+
+# 7. SurfaceFlinger日志显示Layer不可见
+Layer: isHiddenByPolicy parent=DefaultTaskDisplayArea#9 reason=parent.mHidden=true
+
+# ========== 分析结论 ==========
+问题: Layer被父Layer隐藏
+原因: DefaultTaskDisplayArea被错误设置为HIDDEN
+解决: 
+  1. 使用Winscope确认Layer层级
+  2. 检查Transition动画是否异常
+  3. 查找设置HIDDEN的代码
+  4. 检查是否是系统问题</code></pre>
+<h3 id="案例3-recent手势导致的anr">案例3: Recent手势导致的ANR</h3>
+<pre><code># ========== 关键日志 ==========
+
+# 1. 进入Recent
+03-15 15:43:29.414  1446  3785 I wm_focused_root_task: [0,27,-1,startExistingRecents]
+
+# 2. recents_animation_input_consumer获取焦点
+03-15 15:43:29.456  1446  1765 I input_focus: [Focus request 
+    recents_animation_input_consumer,reason=UpdateInputWindows]
+03-15 15:43:29.470  1446  1953 I input_focus: [Focus entering 
+    recents_animation_input_consumer (server),reason=setFocusedWindow]
+
+# 3. 应用启动新Activity
+03-15 15:43:30.198  1446  1837 I wm_create_activity: [0,237489693,37,
+    com.google.android.apps.messaging/gaia.expresssignin.BugleExpressSignInActivity,...]
+
+# 4. Recent焦点异常丢失
+03-15 15:43:30.728  1446  1953 I input_focus: [Focus leaving 
+    recents_animation_input_consumer (server),reason=NOT_VISIBLE]
+
+# 5. 没有新的焦点窗口
+
+# 6. 按Back键触发ANR
+03-15 15:43:39.993  1446 31148 I am_anr: [0,23232,com.google.android.apps.nexuslauncher,
+    885767749,Input dispatching timed out(Application does not have a focused window)]
+
+# ========== 分析结论 ==========
+问题: Recent手势过程中应用启动新Activity导致焦点丢失
+原因: recents_animation_input_consumer的Layer相对层级设置错误
+解决: 
+  1. 修改Layer相对层级设置
+  2. 使用Task而不是Activity作为相对层级基准
+  3. 提交Google Case修复</code></pre>
+<h2 id="九快速诊断检查清单">九、快速诊断检查清单</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                    ANR快速诊断检查清单                                │
+└─────────────────────────────────────────────────────────────────────┘
+
+□ 步骤1: 基本信息确认 (1分钟)
+  □ ANR时间: _______________
+  □ ANR包名: _______________
+  □ ANR类型: _______________
+  □ 系统版本: _______________
+
+□ 步骤2: 应用启动检查 (2分钟)
+  □ 查找 wm_activity_launch_time
+  □ 启动时间: _______ ms
+  □ 是否 &gt; 5000ms? □是 □否
+  □ 如果是 → 应用启动慢，检查onCreate/onResume
+
+□ 步骤3: 焦点状态检查 (3分钟)
+  □ WindowManager焦点: _______________
+  □ Input焦点: _______________
+  □ 两者是否一致? □是 □否
+  □ 是否为null? □是 □否
+
+□ 步骤4: 绘制状态检查 (2分钟)
+  □ reportDrawFinished是否调用? □是 □否
+  □ Relayout是否完成? □是 □否
+  □ Surface是否创建? □是 □否
+
+□ 步骤5: Layer状态检查 (5分钟)
+  □ 是否抓取了Winscope? □是 □否
+  □ Layer是否存在? □是 □否
+  □ Layer是否可见? □是 □否
+  □ 是否被父Layer隐藏? □是 □否
+
+□ 步骤6: 特殊场景检查 (3分钟)
+  □ 是否有Recent手势? □是 □否
+  □ 是否有屏幕旋转? □是 □否
+  □ 是否有多窗口操作? □是 □否
+
+□ 步骤7: Traces分析 (5分钟)
+  □ 主线程状态: _______________
+  □ 是否等待锁? □是 □否
+  □ 是否有耗时操作? □是 □否
+  □ RenderThread状态: _______________
+
+□ 步骤8: 结论 (根据以上检查确定)
+  □ 应用层问题
+    □ 主线程耗时
+    □ 布局复杂
+    □ 绘制复杂
+    □ 死锁
+  
+  □ 系统层问题
+    □ Surface创建慢
+    □ Layer状态异常
+    □ InputFocus未更新
+    □ Recent手势异常
+  
+  □ 需要进一步分析
+
+总耗时: _______ 分钟</code></pre>
+<h2 id="十总结">十、总结</h2>
+<p>通过以上完整的日志收集、过滤、分析流程，我们可以系统性地诊断ANR问题：</p>
+<ol type="1">
+<li><strong>日志收集</strong>: 使用脚本自动化收集所有相关日志</li>
+<li><strong>关键信息提取</strong>: 通过grep和脚本快速定位关键事件</li>
+<li><strong>时间线重建</strong>: 根据EventLog重建事件发生顺序</li>
+<li><strong>根因定位</strong>: 结合Traces、Systrace、Winscope深入分析</li>
+<li><strong>问题分类</strong>: 明确是应用层、系统层还是环境问题</li>
+<li><strong>解决方案</strong>: 针对不同类型给出具体优化方案</li>
+</ol>
+<p>关键是要<strong>系统化、流程化</strong>地分析，不要遗漏任何一个环节。</p>
+</article>
+    </div>
+    <div class="anr-pager"><a class="prv" href="ANR日志分析完整实战指南.html">← Android ANR日志分析完整实战指南</a>
+<a class="nxt" href="Broadcast-ANR放炸弹与拆炸弹机制源码深度解析.html">Broadcast ANR「放炸弹 / 拆炸弹」机制源码深度解析 →</a></div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <span>docs/ANR/ANR问题完整分析指南.md</span><span class="dot">·</span>
+  <span>由 docs/ANR/tools/md2html.py 生成，样式复用 wiki（docs/wiki_site/src/app.css）</span>
+</footer>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>
+(function(){
+  var srcs=[];
+  document.querySelectorAll('pre.mermaid').forEach(function(el,i){ srcs[i]=el.textContent; });
+  function themeName(){ return document.documentElement.dataset.theme==='light'?'default':'dark'; }
+  function render(){
+    if(!window.mermaid) return;
+    document.querySelectorAll('pre.mermaid').forEach(function(el,i){
+      el.removeAttribute('data-processed'); el.textContent = srcs[i];
+    });
+    var dark = themeName()==='dark';
+    try{
+      mermaid.initialize({startOnLoad:false,theme:themeName(),securityLevel:'loose',
+        themeVariables: dark ? {
+          background:'transparent', primaryColor:'#30343a', primaryTextColor:'#f5f8fc',
+          primaryBorderColor:'#5a6068', lineColor:'#9aa4b2', secondaryColor:'#2a2e34',
+          tertiaryColor:'#2a2e34', textColor:'#e8eef6', mainBkg:'#30343a',
+          nodeBorder:'#5a6068', clusterBkg:'#2a2e34', clusterBorder:'#4a5058',
+          edgeLabelBackground:'#23262b', actorBkg:'#30343a', actorBorder:'#5a6068',
+          signalColor:'#9aa4b2'
+        } : {},
+        flowchart:{htmlLabels:true,useMaxWidth:true},sequence:{useMaxWidth:true}});
+      mermaid.run({nodes:document.querySelectorAll('pre.mermaid')});
+    }catch(e){ console.warn('mermaid render failed', e); }
+  }
+  render();
+
+  var btn=document.getElementById('theme-toggle');
+  function apply(){
+    var light=document.documentElement.dataset.theme==='light';
+    btn.setAttribute('aria-pressed',String(light));
+    var lab=btn.querySelector('.tt-label'); if(lab) lab.textContent = light?'暗色':'亮色';
+  }
+  btn.addEventListener('click',function(){
+    var root=document.documentElement;
+    root.dataset.theme = root.dataset.theme==='light'?'dark':'light';
+    try{ localStorage.setItem('st-theme',root.dataset.theme); }catch(e){}
+    apply(); render();
+  });
+  apply();
+
+  var links=[].slice.call(document.querySelectorAll('#toc a'));
+  var heads=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){
+        links.forEach(function(a){a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id);});
+      }});
+    },{rootMargin:'-8% 0px -82% 0px'});
+    heads.forEach(function(h){io.observe(h);});
+  }
+})();
+</script>
+</body>
+</html>

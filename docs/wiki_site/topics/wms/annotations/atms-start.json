@@ -1,0 +1,84 @@
+{
+  "id": "atms-start",
+  "title": "ATMS.startActivityAsUser",
+  "file": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java",
+  "sig": "public int startActivityAsUser(IApplicationThread caller, String callingPackage,",
+  "span": [
+    1289,
+    1300
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public int startActivityAsUser(IApplicationThread caller, String callingPackage,",
+      "kind": "note",
+      "text": "ATMS 的启动入口。它只是薄薄一层，真正逻辑在下面的重载里。注意它与 WMS 同进程、共用 mGlobalLock。"
+    },
+    {
+      "at": 2,
+      "quote": "String callingFeatureId, Intent intent, String resolvedType, IBinder resultTo,",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 3,
+      "quote": "String resultWho, int requestCode, int startFlags, ProfilerInfo profilerInfo,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 4,
+      "quote": "Bundle bOptions, @CanBeCURRENT @UserIdInt int userId) {",
+      "kind": "note",
+      "text": "续行：userId。"
+    },
+    {
+      "at": 5,
+      "quote": "return startActivityAsUser(caller, callingPackage, callingFeatureId, intent, resolvedType,",
+      "kind": "call",
+      "text": "委托给带 validateIncomingUser=true 的重载——**校验调用者能否操作该 user**。"
+    },
+    {
+      "at": 6,
+      "quote": "resultTo, resultWho, requestCode, startFlags, profilerInfo, bOptions, userId,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 7,
+      "quote": "true /*validateIncomingUser*/);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 9,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 10,
+      "quote": "static boolean isSdkSandboxActivityIntent(Context context, Intent intent) {",
+      "kind": "note",
+      "text": "（下一个方法 isSdkSandboxActivityIntent）"
+    },
+    {
+      "at": 11,
+      "quote": "return SdkSandboxActivityAuthority.isSdkSandboxActivityIntent(context, intent);",
+      "kind": "note",
+      "text": "（同上）"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "（同上）"
+    }
+  ]
+}

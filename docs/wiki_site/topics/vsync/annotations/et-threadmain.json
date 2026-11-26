@@ -1,0 +1,648 @@
+{
+  "id": "et-threadmain",
+  "title": "EventThread::threadMain",
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "sig": "void EventThread::threadMain",
+  "span": [
+    530,
+    635
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void EventThread::threadMain(std::unique_lock<std::mutex>& lock) {",
+      "kind": "note",
+      "text": "app 侧分发线程的主循环。它同时干三件事：处理待发事件、决定是否武装、在没有事件时等待或伪造。"
+    },
+    {
+      "at": 2,
+      "quote": "DisplayEventConsumers consumers;",
+      "kind": "data",
+      "text": "本轮要被唤醒的连接集合。"
+    },
+    {
+      "at": 3,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 4,
+      "quote": "while (mState != State::Quit) {",
+      "kind": "note",
+      "text": "循环直到 Quit（hotplug 断开或析构）。"
+    },
+    {
+      "at": 5,
+      "quote": "std::optional<DisplayEventReceiver::Event> event;",
+      "kind": "data",
+      "text": "本轮要处理的事件（可能为空）。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "// Determine next event to dispatch.",
+      "kind": "note",
+      "text": "注释：先决定要分发什么事件。"
+    },
+    {
+      "at": 8,
+      "quote": "if (!mPendingEvents.empty()) {",
+      "kind": "branch",
+      "text": "有积压事件。"
+    },
+    {
+      "at": 9,
+      "quote": "event = mPendingEvents.front();",
+      "kind": "data",
+      "text": "取队首。"
+    },
+    {
+      "at": 10,
+      "quote": "mPendingEvents.pop_front();",
+      "kind": "call",
+      "text": "出队。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "if (event->header.type == DisplayEventType::DISPLAY_EVENT_HOTPLUG) {",
+      "kind": "branch",
+      "text": "是 hotplug 事件。"
+    },
+    {
+      "at": 13,
+      "quote": "if (event->hotplug.connectionError == 0) {",
+      "kind": "branch",
+      "text": "没有连接错误。"
+    },
+    {
+      "at": 14,
+      "quote": "if (event->hotplug.connected && !mVSyncState) {",
+      "kind": "decision",
+      "text": "显示已连接且还没有 vsync 状态。"
+    },
+    {
+      "at": 15,
+      "quote": "mVSyncState.emplace();",
+      "kind": "call",
+      "text": "**建立 VSyncState**：之后才会真正分发 vsync。"
+    },
+    {
+      "at": 16,
+      "quote": "} else if (!event->hotplug.connected &&",
+      "kind": "note",
+      "text": "否则若断开且是本显示。"
+    },
+    {
+      "at": 17,
+      "quote": "mVsyncSchedule->getPhysicalDisplayId() == event->header.displayId) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 18,
+      "quote": "mVSyncState.reset();",
+      "kind": "state",
+      "text": "**销毁 VSyncState**：断开后所有 vsync 请求被忽略。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是错误。"
+    },
+    {
+      "at": 21,
+      "quote": "// Ignore vsync stuff on an error.",
+      "kind": "note",
+      "text": "注释：错误时忽略 vsync 相关处理。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 hotplug 分支。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭事件判断。"
+    },
+    {
+      "at": 25,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 26,
+      "quote": "bool vsyncRequested = false;",
+      "kind": "data",
+      "text": "本轮是否有连接在请求 vsync。"
+    },
+    {
+      "at": 27,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 28,
+      "quote": "// Find connections that should consume this event.",
+      "kind": "note",
+      "text": "注释：找出应该收到这个事件的连接。"
+    },
+    {
+      "at": 29,
+      "quote": "auto it = mDisplayEventConnections.begin();",
+      "kind": "data",
+      "text": "遍历连接表。"
+    },
+    {
+      "at": 30,
+      "quote": "while (it != mDisplayEventConnections.end()) {",
+      "kind": "note",
+      "text": "循环条件。"
+    },
+    {
+      "at": 31,
+      "quote": "if (const auto connection = it->promote()) {",
+      "kind": "branch",
+      "text": "弱引用还能提升。"
+    },
+    {
+      "at": 32,
+      "quote": "if (event && shouldConsumeEvent(*event, connection)) {",
+      "kind": "decision",
+      "text": "该连接应消费这个事件（限流与相位在这里判）。"
+    },
+    {
+      "at": 33,
+      "quote": "consumers.push_back(connection);",
+      "kind": "call",
+      "text": "加入本轮消费者。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "vsyncRequested |= connection->vsyncRequest != VSyncRequest::None;",
+      "kind": "state",
+      "text": "统计是否还有人在请求 vsync。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "++it;",
+      "kind": "note",
+      "text": "推进迭代器。"
+    },
+    {
+      "at": 39,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 40,
+      "quote": "it = mDisplayEventConnections.erase(it);",
+      "kind": "call",
+      "text": "**连接已死**：从表里摘除。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 42,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 while。"
+    },
+    {
+      "at": 43,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 44,
+      "quote": "if (!consumers.empty()) {",
+      "kind": "branch",
+      "text": "有消费者。"
+    },
+    {
+      "at": 45,
+      "quote": "dispatchEvent(*event, consumers);",
+      "kind": "call",
+      "text": "**分发**：生成 timeline 并写 BitTube。"
+    },
+    {
+      "at": 46,
+      "quote": "consumers.clear();",
+      "kind": "call",
+      "text": "清空集合。"
+    },
+    {
+      "at": 47,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 48,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 49,
+      "quote": "if (mVSyncState && vsyncRequested) {",
+      "kind": "branch",
+      "text": "有 vsync 状态且有人请求。"
+    },
+    {
+      "at": 50,
+      "quote": "const bool vsyncOmitted =",
+      "kind": "data",
+      "text": "息屏且状态标记为 omitted。"
+    },
+    {
+      "at": 51,
+      "quote": "FlagManager::getInstance().no_vsyncs_on_screen_off() && mVSyncState->omitted;",
+      "kind": "call",
+      "text": "开关 no_vsyncs_on_screen_off。"
+    },
+    {
+      "at": 52,
+      "quote": "if (vsyncOmitted) {",
+      "kind": "branch",
+      "text": "息屏应停发。"
+    },
+    {
+      "at": 53,
+      "quote": "updateState(State::Idle);",
+      "kind": "call",
+      "text": "**进入 Idle**：不武装定时器。"
+    },
+    {
+      "at": 54,
+      "quote": "SFTRACE_INT(\"VsyncPendingScreenOn\", 1);",
+      "kind": "state",
+      "text": "打 trace 标记。"
+    },
+    {
+      "at": 55,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 56,
+      "quote": "updateState(mVSyncState->synthetic ? State::SyntheticVSync : State::VSync);",
+      "kind": "call",
+      "text": "**选路**：synthetic 走 SyntheticVSync，否则走 VSync。"
+    },
+    {
+      "at": 57,
+      "quote": "if (FlagManager::getInstance().no_vsyncs_on_screen_off()) {",
+      "kind": "branch",
+      "text": "同样受息屏开关控制。"
+    },
+    {
+      "at": 58,
+      "quote": "SFTRACE_INT(\"VsyncPendingScreenOn\", 0);",
+      "kind": "state",
+      "text": "清 trace 标记。"
+    },
+    {
+      "at": 59,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 60,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 61,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则没人要 or 没有状态。"
+    },
+    {
+      "at": 62,
+      "quote": "ALOGW_IF(!mVSyncState, \"Ignoring VSYNC request while display is disconnected\");",
+      "kind": "note",
+      "text": "W 级日志：显示已断开还在请求 vsync。"
+    },
+    {
+      "at": 63,
+      "quote": "updateState(State::Idle);",
+      "kind": "call",
+      "text": "进入 Idle。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 65,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 66,
+      "quote": "if (mState == State::VSync) {",
+      "kind": "branch",
+      "text": "**只有 VSync 状态才武装**。"
+    },
+    {
+      "at": 67,
+      "quote": "const auto scheduleResult = mVsyncRegistration.schedule(",
+      "kind": "data",
+      "text": "用当前 work/ready/lastVsync/committedVsync 调度。"
+    },
+    {
+      "at": 68,
+      "quote": "{.workDuration = mWorkDuration.get().count(),",
+      "kind": "call",
+      "text": "workDuration 来自 setDuration。"
+    },
+    {
+      "at": 69,
+      "quote": ".readyDuration = mReadyDuration.count(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 70,
+      "quote": ".lastVsync = mLastVsyncCallbackTime.ns(),",
+      "kind": "data",
+      "text": "上次回调时间。"
+    },
+    {
+      "at": 71,
+      "quote": ".committedVsyncOpt = mLastCommittedVsyncTime.ns()});",
+      "kind": "data",
+      "text": "已提交的 vsync，用于把结果钉住。"
+    },
+    {
+      "at": 72,
+      "quote": "LOG_ALWAYS_FATAL_IF(!scheduleResult, \"Error scheduling callback\");",
+      "kind": "note",
+      "text": "**调度失败直接 FATAL**：这是「静默不刷新」的防线。"
+    },
+    {
+      "at": 73,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 74,
+      "quote": "mVsyncRegistration.cancel();",
+      "kind": "call",
+      "text": "Idle / Synthetic 状态下**取消**定时器。"
+    },
+    {
+      "at": 75,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 76,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 77,
+      "quote": "if (!mPendingEvents.empty()) {",
+      "kind": "branch",
+      "text": "还有积压事件。"
+    },
+    {
+      "at": 78,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "不等待，继续处理。"
+    },
+    {
+      "at": 79,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 80,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 81,
+      "quote": "// Wait for event or client registration/request.",
+      "kind": "note",
+      "text": "注释：等待事件或新的注册/请求。"
+    },
+    {
+      "at": 82,
+      "quote": "if (mState == State::Idle) {",
+      "kind": "branch",
+      "text": "**Idle 时无限等待**。"
+    },
+    {
+      "at": 83,
+      "quote": "mCondition.wait(lock);",
+      "kind": "call",
+      "text": "等到有人请求为止。"
+    },
+    {
+      "at": 84,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 85,
+      "quote": "// Generate a fake VSYNC after a long timeout in case the driver stalls. When the",
+      "kind": "note",
+      "text": "注释：驱动卡死时伪造 vsync；息屏时保持 60Hz 喂给客户端。"
+    },
+    {
+      "at": 86,
+      "quote": "// display is off, keep feeding clients at 60 Hz.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 87,
+      "quote": "const std::chrono::nanoseconds timeout =",
+      "kind": "data",
+      "text": "Synthetic 用 16ms，VSync 用 1000ms 超时。"
+    },
+    {
+      "at": 88,
+      "quote": "mState == State::SyntheticVSync ? 16ms : 1000ms;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 89,
+      "quote": "if (mCondition.wait_for(lock, timeout) == std::cv_status::timeout) {",
+      "kind": "branch",
+      "text": "**超时了**。"
+    },
+    {
+      "at": 90,
+      "quote": "if (mState == State::VSync) {",
+      "kind": "branch",
+      "text": "处于 VSync 状态说明驱动没给事件。"
+    },
+    {
+      "at": 91,
+      "quote": "ALOGW(\"Faking VSYNC due to driver stall for thread %s\", mThreadName);",
+      "kind": "note",
+      "text": "W 级日志：Faking VSYNC due to driver stall。"
+    },
+    {
+      "at": 92,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 93,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "LOG_FATAL_IF(!mVSyncState);",
+      "kind": "note",
+      "text": "断言有 vsync 状态（否则说明逻辑错）。"
+    },
+    {
+      "at": 95,
+      "quote": "const auto now = systemTime(SYSTEM_TIME_MONOTONIC);",
+      "kind": "data",
+      "text": "当前时间。"
+    },
+    {
+      "at": 96,
+      "quote": "const auto deadlineTimestamp = now + timeout.count();",
+      "kind": "data",
+      "text": "deadline = now + timeout。"
+    },
+    {
+      "at": 97,
+      "quote": "const auto expectedVSyncTime = deadlineTimestamp + timeout.count();",
+      "kind": "data",
+      "text": "expected vsync = deadline + timeout（再往后一拍）。"
+    },
+    {
+      "at": 98,
+      "quote": "mPendingEvents.push_back(makeVSync(mVsyncSchedule->getPhysicalDisplayId(), now,",
+      "kind": "call",
+      "text": "**伪造一个 vsync 事件入队**，下一轮就会被分发。"
+    },
+    {
+      "at": 99,
+      "quote": "++mVSyncState->count, expectedVSyncTime,",
+      "kind": "call",
+      "text": "带显示 id 与计数。"
+    },
+    {
+      "at": 100,
+      "quote": "deadlineTimestamp));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 101,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 102,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭超时分支。"
+    },
+    {
+      "at": 103,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭等待分支。"
+    },
+    {
+      "at": 104,
+      "quote": "// cancel any pending vsync event before exiting",
+      "kind": "note",
+      "text": "关闭主循环。"
+    },
+    {
+      "at": 105,
+      "quote": "mVsyncRegistration.cancel();",
+      "kind": "note",
+      "text": "注释：退出前取消待定的 vsync。"
+    },
+    {
+      "at": 106,
+      "quote": "}",
+      "kind": "call",
+      "text": "取消注册，避免线程退出后仍有回调。"
+    }
+  ]
+}

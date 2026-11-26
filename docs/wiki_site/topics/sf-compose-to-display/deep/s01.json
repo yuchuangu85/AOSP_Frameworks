@@ -1,0 +1,60 @@
+{
+  "step": "s01",
+  "title": "交棒：buffer 与 acquire fence 进入 SF",
+  "tldr": "BLAST 把 buffer handle、acquire fence、frameNumber 打包成 Transaction 一次性 apply，SF 这拍还没动。",
+  "why": "这条链路的起点必须说清楚：app 侧 queueBuffer 之后并不会「通知」SF 去干活，而是把一块 buffer 的描述塞进事务队列；SF 要等到自己的 vsync 相位（sf 相位）才会去看队列。这解释了两个常见现象：一是「app 已经 queue 了，屏幕上却没变」——SF 还没到那一拍；二是「同一拍里多个窗口的事务被一起处理」——它们在同一个 flush 里被合并提交。理解这一点，才不会把 app 的生产速率与屏幕的消费速率混为一谈。",
+  "concepts": [
+    {
+      "term": "SurfaceControl.Transaction",
+      "text": "一组 SurfaceControl 属性变更的集合，buffer、fence、层级、裁剪都在里面。"
+    },
+    {
+      "term": "apply 是 oneway",
+      "text": "BLAST 的 apply 不等 SF 处理完就返回，app 继续跑下一帧。"
+    },
+    {
+      "term": "acquire fence",
+      "text": "GPU 写完这块 buffer 的信号，SF 合成前必须等它。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "t->setBuffer(mSurfaceControl, buffer, fence, frameNumber, producerId, releaseBufferCallback, dequeueTime)",
+      "ref": "native/libs/gui/BLASTBufferQueue.cpp:665",
+      "what": "buffer、acquire fence、帧号与释放回调一起进事务。"
+    },
+    {
+      "call": "t->setApplyToken(...).apply(false, true)",
+      "ref": "native/libs/gui/BLASTBufferQueue.cpp:745",
+      "what": "oneway 提交；返回时 SF 可能还没看到。"
+    },
+    {
+      "call": "const bool canSkipValidate = [&] {",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:562",
+      "what": "反方向：SF 在自己的相位之前完全不知道 app 的状态，只能等 commit 时统一处理事务。"
+    },
+    {
+      "call": "for (const auto& [id, targeter] : frameTargeters) {",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3783",
+      "what": "本拍的 frameTargeters 才是 SF 侧「要处理哪些显示」的输入。"
+    }
+  ],
+  "state": [
+    {
+      "field": "SF 侧事务队列",
+      "before": "空",
+      "after": "挂入一条待 flush 的事务",
+      "note": "SF 会在自己的 vsync 相位统一收集。"
+    }
+  ],
+  "threads": "发生在 app 的 RenderThread（queueBuffer 之后）；SF 侧的处理在 surfaceflinger 主线程。",
+  "pitfalls": [
+    "以为 apply 之后屏幕就会更新：还要等 SF 的帧信号与合成。",
+    "把 acquire fence 当成可选参数：少了它 SF 可能读到未写完的 buffer。"
+  ],
+  "debug": [
+    "Perfetto 里看 app 侧的 queueBuffer 与 SF 侧 commit 之间隔了多久。",
+    "dumpsys SurfaceFlinger --latency 能看到每块 buffer 的 queue 与 present 时间。"
+  ],
+  "next": "SF 什么时候才真正处理这些事务？见第 2 步。"
+}

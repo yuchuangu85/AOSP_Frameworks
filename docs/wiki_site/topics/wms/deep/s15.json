@@ -1,0 +1,51 @@
+{
+  "step": "s15",
+  "title": "SurfaceControl 的写入",
+  "tldr": "WindowStateAnimator 用 Transaction 批量写位置/裁剪/alpha/layer，一帧内合并提交。",
+  "why": "WMS 与合成系统之间只有这一条数据通道：所有窗口的位置、裁剪、透明度最终都变成 SurfaceControl 的属性。理解这点就能解释几个现象：为什么 WMS 的改动要等 SF 才生效、为什么大量窗口属性变更会拖慢一帧、以及为什么「动画」在 WMS 里改的是 matrix 而不是 frame。",
+  "concepts": [
+    {
+      "term": "SurfaceControl.Transaction",
+      "text": "批量属性修改的载体。"
+    },
+    {
+      "term": "WindowStateAnimator",
+      "text": "持有 surface 与动画状态。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "class WindowStateAnimator {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowStateAnimator.java:74",
+      "what": "窗口的 surface/动画状态。"
+    },
+    {
+      "call": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay) {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1146",
+      "what": "transaction 的提交。"
+    },
+    {
+      "call": "void applySurfaceChangesTransaction() {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5594",
+      "what": "WMS 侧的写入时机。"
+    }
+  ],
+  "state": [
+    {
+      "field": "SurfaceControl 属性",
+      "before": "上一帧",
+      "after": "本帧期望值",
+      "note": "尚未提交。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "以为改 frame 会立刻移动 surface：要走 transaction。",
+    "动画改 matrix 不改 frame。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 layer 属性。",
+    "Perfetto 里 SF 轨道看到 transaction 应用。"
+  ],
+  "next": "如何提交给 SF？见第 16 步。"
+}

@@ -1,0 +1,51 @@
+{
+  "step": "s09",
+  "title": "ActivityRecord 与 Task 的关系",
+  "tldr": "Task 是任务栈，ActivityRecord 是栈里的一个 Activity 实例；一个 ActivityRecord 可有多个窗口但只有一个主窗口。",
+  "why": "区分「任务」与「活动」是理解 Android 多任务的基础，也是理解窗口归属的关键：应用窗口的 token 是 ActivityRecord，所以同一 Activity 的所有子窗口天然共用一个 token。而 Task 决定了它们在屏幕上的分组与裁剪，也决定了转场的作用范围。",
+  "concepts": [
+    {
+      "term": "主窗口",
+      "text": "决定该 Activity 可见性的那个窗口。"
+    },
+    {
+      "term": "embedded Activity",
+      "text": "内嵌在 Task 里的 Activity，层级指派方式不同。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void makeVisibleIfNeeded(ActivityRecord starting, boolean reportToClient) {",
+      "ref": "base/services/core/java/com/android/server/wm/ActivityRecord.java:6015",
+      "what": "Activity 变可见的入口。"
+    },
+    {
+      "call": "setVisibility(true);",
+      "ref": "base/services/core/java/com/android/server/wm/ActivityRecord.java:6032",
+      "what": "真正设置可见性。"
+    },
+    {
+      "call": "boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,",
+      "ref": "base/services/core/java/com/android/server/wm/Task.java:5369",
+      "what": "任务栈顶的恢复。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mVisibleRequested",
+      "before": "false",
+      "after": "true",
+      "note": "客户端据此调整窗口可见性。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "把 Task 当 Activity：层级不同。",
+    "忽略子窗口共用 token。"
+  ],
+  "debug": [
+    "dumpsys activity activities 看任务栈。",
+    "dumpsys window 看 ActivityRecord 与窗口对应。"
+  ],
+  "next": "布局何时触发？见第 10 步。"
+}

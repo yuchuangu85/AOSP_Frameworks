@@ -1,0 +1,60 @@
+{
+  "step": "s12",
+  "title": "EventThread::threadMain：状态机选路",
+  "tldr": "唤醒后统计 vsyncRequested，在 Idle / VSync / SyntheticVSync 三态选路；只有 VSync 才重新武装。",
+  "why": "这个循环同时管三件事：处理待发事件、决定是否武装、在没有事件时等待或伪造。三个状态的语义差别很大：Idle 无限等待（省电），VSync 正常武装，SyntheticVSync 用 16ms 兜底（息屏时仍按 60Hz 喂）。最值得注意的是「伪造 vsync」——驱动卡死或息屏时若没有它，应用会永久收不到刷新而冻住。",
+  "concepts": [
+    {
+      "term": "State",
+      "text": "Idle / VSync / SyntheticVSync / Quit。"
+    },
+    {
+      "term": "mVSyncState",
+      "text": "仅 hotplug connected 时存在，断开即销毁。"
+    },
+    {
+      "term": "SyntheticVSync",
+      "text": "超时伪造的 vsync，兜底防冻结。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void EventThread::threadMain(std::unique_lock<std::mutex>& lock) {",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:530",
+      "what": "主循环入口。"
+    },
+    {
+      "call": "updateState(mVSyncState->synthetic ? State::SyntheticVSync : State::VSync);",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:585",
+      "what": "三态选路。"
+    },
+    {
+      "call": "mVsyncRegistration.schedule(",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:596",
+      "what": "只有 VSync 才武装。"
+    },
+    {
+      "call": "const std::chrono::nanoseconds timeout =",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:616",
+      "what": "16ms / 1000ms 超时伪造。"
+    }
+  ],
+  "state": [
+    {
+      "field": "State",
+      "before": "Idle",
+      "after": "VSync",
+      "note": "由 vsyncRequested 与 mVSyncState 决定。"
+    }
+  ],
+  "threads": "EventThread(app) 线程，持 mMutex。",
+  "pitfalls": [
+    "以为 SyntheticVSync 是异常：它是兜底设计。",
+    "断开显示后仍期待 vsync：mVSyncState 已销毁。"
+  ],
+  "debug": [
+    "trace 里 EventThreadState-app 与 VsyncPendingScreenOn。",
+    "日志 Faking VSYNC due to driver stall。"
+  ],
+  "next": "哪些连接能收到这一拍？见第 13 步。"
+}

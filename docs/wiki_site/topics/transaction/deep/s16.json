@@ -1,0 +1,51 @@
+{
+  "step": "s16",
+  "title": "display 事务单独一批",
+  "tldr": "DisplayState 不走 applyTransactionState，而在 display 事务专用函数里统一应用。",
+  "why": "display 事务（改分辨率、旋转、layerStack）不是「层属性」，它们要动显示控制器模式，涉及 HWC 配置与可能的 mode set。这类操作必须在同一批里一起判断，否则一次提交里两个相互矛盾的 display 设置会出现中间态。所以它们被单独拎出来，在 updateLayerSnapshots 里更早的位置统一应用——这也解释了为什么「改分辨率」和「改层位置」在时序上的表现不一样。",
+  "concepts": [
+    {
+      "term": "setDisplayStateLocked",
+      "text": "单条 display 状态的落地。"
+    },
+    {
+      "term": "eDisplayTransactionNeeded",
+      "text": "需要重建显示配置的标志。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool SurfaceFlinger::applyAndCommitDisplayTransactionStatesLocked(",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5810",
+      "what": "统一应用 display 事务。"
+    },
+    {
+      "call": "transactionFlags |= setDisplayStateLocked(display);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5816",
+      "what": "逐条应用。"
+    },
+    {
+      "call": "mustComposite |= applyAndCommitDisplayTransactionStatesLocked(update.transactions);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2839",
+      "what": "在 updateLayerSnapshots 里调用。"
+    }
+  ],
+  "state": [
+    {
+      "field": "显示配置",
+      "before": "上一拍",
+      "after": "本事务的值",
+      "note": "可能触发 mode set。"
+    }
+  ],
+  "threads": "SF 主线程，持 mStateLock。",
+  "pitfalls": [
+    "以为 display 与 layer 事务一起应用：分两处。",
+    "改分辨率后立刻期待层坐标生效：可能跨帧。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 display 段。",
+    "日志里 mode set 相关打印。"
+  ],
+  "next": "事务完成后回调谁？见第 17 步。"
+}

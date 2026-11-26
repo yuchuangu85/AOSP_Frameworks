@@ -1,0 +1,56 @@
+{
+  "step": "s17",
+  "title": "sf 侧：MessageQueue::vsyncCallback",
+  "tldr": "sf 相位的回调跑在 timer 线程：生成 vsyncId、记录 lastCallbackTime，再把帧丢给 SF 主线程。",
+  "why": "同一套 VSyncDispatch 上注册了两条回调，sf 这条只拿 workDuration（ready 为 0）。注意它仍然生成 vsyncId——SF 自己也要这个 id 来做 FrameTimeline 对账。另一个容易忽略的细节：回调只是 dispatchFrame，真正的工作（commit/composite）在主线程的 onFrameSignal 里，所以「sf 唤醒」与「SF 开始合成」之间还隔着一次线程切换。",
+  "concepts": [
+    {
+      "term": "dispatchFrame",
+      "text": "把 (vsyncId, expectedVsyncTime) 交给 SF 主线程。"
+    },
+    {
+      "term": "MessageQueue::setDuration",
+      "text": "sf 侧的时长设置入口。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void MessageQueue::vsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {",
+      "ref": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp:59",
+      "what": "sf 回调。"
+    },
+    {
+      "call": "const auto vsyncId = VsyncId{mVsync.tokenManager->generateTokenForPredictions(",
+      "ref": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp:71",
+      "what": "生成 vsyncId。"
+    },
+    {
+      "call": "mHandler->dispatchFrame(vsyncId, expectedVsyncTime);",
+      "ref": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp:74",
+      "what": "交给主线程。"
+    },
+    {
+      "call": "void MessageQueue::setDuration(std::chrono::nanoseconds workDuration) {",
+      "ref": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp:138",
+      "what": "时长设置。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mVsync.lastCallbackTime",
+      "before": "上一拍",
+      "after": "本拍",
+      "note": "供下一次调度参考。"
+    }
+  ],
+  "threads": "timer 线程回调 → SF 主线程执行。",
+  "pitfalls": [
+    "以为 sf 回调里就做合成：只是一次线程切换。",
+    "忽略 ready=0：sf 的 deadline 就是 vsync 本身。"
+  ],
+  "debug": [
+    "trace 里 VSYNC-sf 打点。",
+    "onFrameSignal 与 vsyncCallback 之间的间隔就是线程切换延迟。"
+  ],
+  "next": "SF 主线程怎么接？见第 18 步。"
+}

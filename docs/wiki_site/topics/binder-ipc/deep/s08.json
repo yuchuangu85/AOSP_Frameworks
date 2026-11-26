@@ -1,0 +1,51 @@
+{
+  "step": "s08",
+  "title": "内核：一次拷贝与线程唤醒（仓库外）",
+  "tldr": "驱动按 handle 找到目标节点，把数据从发送方直接映射到接收方（一次拷贝），再唤醒接收线程。",
+  "why": "把这一段明确标成仓库外，是因为它决定了 binder 最核心的性能特征：只有一次拷贝（不像 socket 要两次），以及同步调用期间发送线程被阻塞（不占 CPU）。但也意味着「驱动线程优先级继承」「一次事务最大 1MB 减去页偏移」这些行为只能从文档与现象推断，无法在本仓库读到实现。",
+  "concepts": [
+    {
+      "term": "一次拷贝",
+      "text": "发送方用户空间到接收方映射区。"
+    },
+    {
+      "term": "节点引用",
+      "text": "binder 对象在内核里的表示，handle 是它的进程内编号。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr) >= 0)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1304",
+      "what": "用户态能看到的全部就是这一次 ioctl。"
+    },
+    {
+      "call": "void HWComposer::onVsync(hal::HWDisplayId displayId, int64_t timestamp,",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:155",
+      "what": "（对比：别的子系统也有「外部事件入口」，但 binder 的是 ioctl）"
+    },
+    {
+      "call": "void IPCThreadState::joinThreadPool(bool isMain)",
+      "ref": "native/libs/binder/IPCThreadState.cpp:841",
+      "what": "接收侧由线程池等待被唤醒。"
+    }
+  ],
+  "state": [
+    {
+      "field": "驱动内的事务队列",
+      "before": "空",
+      "after": "有本次事务",
+      "note": "接收线程被标记为可运行。"
+    }
+  ],
+  "threads": "内核驱动线程（仓库外）。",
+  "pitfalls": [
+    "以为有两次拷贝：binder 是一次。",
+    "以为事务大小无上限：受驱动 buf 限制。"
+  ],
+  "debug": [
+    "Perfetto binder 轨道能看到 queued / sent 的时间差。",
+    "dumpsys 的 binder 统计有事务计数。"
+  ],
+  "next": "对端线程怎么被组织起来？见第 9 步。"
+}

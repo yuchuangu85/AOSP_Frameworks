@@ -1,0 +1,51 @@
+{
+  "step": "s22",
+  "title": "分支：布局重复与稳定性",
+  "tldr": "一次 traversal 里若 pendingLayoutChanges 反复变化，会重复布局；次数过多说明布局不稳定。",
+  "why": "布局重复是「某一帧特别慢」的隐性原因。它的判定在 applySurfaceChangesTransaction 开头：看到 REDO_LAYOUT 就重新置 layoutNeeded，于是整轮再来一遍。如果你的代码在布局过程中修改了会触发布局的属性，就会形成这类循环——DEBUG_LAYOUT_REPEATS 能直接看到重复次数。",
+  "concepts": [
+    {
+      "term": "FINISH_LAYOUT_REDO_LAYOUT",
+      "text": "需要重做布局。"
+    },
+    {
+      "term": "debugLayoutRepeats",
+      "text": "打印重复轮次的调试开关。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if ((pendingLayoutChanges & FINISH_LAYOUT_REDO_LAYOUT) != 0) {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5608",
+      "what": "检测需要重做。"
+    },
+    {
+      "call": "setLayoutNeeded();",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5609",
+      "what": "重新标记。"
+    },
+    {
+      "call": "pendingLayoutChanges = 0;",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5618",
+      "what": "布局完成后清零。"
+    }
+  ],
+  "state": [
+    {
+      "field": "pendingLayoutChanges",
+      "before": "含 REDO_LAYOUT",
+      "after": "0",
+      "note": "非 0 会触发下一轮。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "在布局回调里改布局属性。",
+    "忽略重复次数警告。"
+  ],
+  "debug": [
+    "DEBUG_LAYOUT_REPEATS 打开后看日志。",
+    "trace 里连续多个 performLayout 切片。"
+  ],
+  "next": "现场怎么抓？见第 23 步。"
+}

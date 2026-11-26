@@ -1,0 +1,56 @@
+{
+  "step": "s02",
+  "title": "onComposerHalVsync：进 SF 并去重",
+  "tldr": "SF 入口先持 mStateLock 再取 scheduler 锁；HWComposer::onVsync 负责丢掉重复时间戳。",
+  "why": "去重看起来是小事，其实是必需的：某些 HAL 会在同一拍内多次上报（例如切换显示模式期间），如果不去重，预测器会收到重复样本，周期估计直接被拉偏。时间戳非法也要早退，否则会污染模型。这两道防线都在链路最前端，说明设计者把「模型输入必须干净」当成硬约束。",
+  "concepts": [
+    {
+      "term": "重复时间戳",
+      "text": "同一个 timestamp 被上报多次，必须只计一次。"
+    },
+    {
+      "term": "mSchedulerLock",
+      "text": "SF 与 Scheduler 之间的锁，保护调度状态。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void SurfaceFlinger::onComposerHalVsync(hal::HWDisplayId hwcDisplayId, int64_t timestamp,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2535",
+      "what": "入口。"
+    },
+    {
+      "call": "if (timestamp <= 0) {",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2541",
+      "what": "非法时间戳直接返回。"
+    },
+    {
+      "call": "void HWComposer::onVsync(hal::HWDisplayId displayId, int64_t timestamp,",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:155",
+      "what": "去重在这里。"
+    },
+    {
+      "call": "SFTRACE_FORMAT(\"HW_VSYNC_%\" PRIu64, displayId);",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:181",
+      "what": "trace 打点。"
+    }
+  ],
+  "state": [
+    {
+      "field": "lastHwVsync 时间戳",
+      "before": "上一次",
+      "after": "本次",
+      "note": "相同则丢弃。"
+    }
+  ],
+  "threads": "HAL 回调线程，持 mStateLock + mSchedulerLock。",
+  "pitfalls": [
+    "忽略非法时间戳检查：会污染模型。",
+    "以为去重在 reactor：实际在 HWComposer 层。"
+  ],
+  "debug": [
+    "HW_VSYNC_<id> 打点的间隔就是硬件 vsync 周期。",
+    "重复上报可从打点密度看出。"
+  ],
+  "next": "样本如何进入校准器？见第 3 步。"
+}

@@ -1,0 +1,60 @@
+{
+  "step": "s04",
+  "title": "processEventsLocked 按设备切批",
+  "tldr": "把连续 RawEvent 按 deviceId 切成批次，交给各 InputDevice；DEVICE_ADDED/REMOVED 单独处理。",
+  "why": "切批不只是性能优化，它是语义要求：同一批事件共享设备上下文（例如触摸的当前位置），跨设备混合会让 mapper 状态错乱。同时这里也是 SYN_DROPPED 的入口——一旦内核报告缓冲溢出，EventHub 会发一个 SYN_DROPPED，InputDevice 进入丢弃态直到下一个 SYN_REPORT，于是「中间一段事件整段消失」在应用侧表现为异常手势或跳点。",
+  "concepts": [
+    {
+      "term": "FIRST_SYNTHETIC_EVENT",
+      "text": "合成事件（设备增删）与真实设备事件的分界值。"
+    },
+    {
+      "term": "InputDevice::process",
+      "text": "逐 mapper 处理一批事件并累积 NotifyArgs。"
+    },
+    {
+      "term": "SYN_DROPPED",
+      "text": "内核事件缓冲溢出的标志，意味着中间有丢失。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::list<NotifyArgs> InputReader::processEventsLocked(const RawEvent* rawEvents, size_t count) {",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:261",
+      "what": "按批次推进的总循环。"
+    },
+    {
+      "call": "out += processEventsForDeviceLocked(deviceId, rawEvent, batchSize);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:276",
+      "what": "同一设备的一批事件交给该设备。"
+    },
+    {
+      "call": "addDeviceLocked(rawEvent->when, rawEvent->deviceId);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:280",
+      "what": "设备接入。"
+    },
+    {
+      "call": "removeDeviceLocked(rawEvent->when, rawEvent->deviceId);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:283",
+      "what": "设备移除。"
+    }
+  ],
+  "state": [
+    {
+      "field": "InputDevice 的丢弃态",
+      "before": "false",
+      "after": "SYN_DROPPED 后为 true，直到 SYN_REPORT",
+      "note": "期间产生的事件被丢弃。"
+    }
+  ],
+  "threads": "持 InputReader::mLock。",
+  "pitfalls": [
+    "以为所有事件都会产生 NotifyArgs：合成事件与丢弃态下不会。",
+    "忽略 SYN_DROPPED 告警：它是「事件丢了」的唯一线索。"
+  ],
+  "debug": [
+    "打开 debugRawEvents 可看到 BatchSize 日志。",
+    "atrace 里 processEventsLocked 的耗时反映解析成本。"
+  ],
+  "next": "触摸 mapper 如何把原始轴值变成 NotifyMotionArgs？见第 5 步。"
+}

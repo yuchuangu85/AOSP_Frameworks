@@ -1,0 +1,186 @@
+{
+  "id": "td-schedule",
+  "title": "VSyncDispatchTimerQueueEntry::schedule",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+  "sig": "void VSyncDispatchTimerQueueEntry::schedule(",
+  "span": [
+    90,
+    118
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "ScheduleResult VSyncDispatchTimerQueueEntry::schedule(VSyncDispatch::ScheduleTiming timing,",
+      "kind": "note",
+      "text": "把一次调度请求折算成「目标 vsync + 唤醒时刻 + ready 时刻」。这是相位注入的唯一落点。"
+    },
+    {
+      "at": 2,
+      "quote": "VSyncTracker& tracker, nsecs_t now) {",
+      "kind": "note",
+      "text": "参数：调度参数（含 work/ready/lastVsync/committedVsync）、tracker、当前时间。"
+    },
+    {
+      "at": 3,
+      "quote": "SFTRACE_NAME(\"VSyncDispatchTimerQueueEntry::schedule\");",
+      "kind": "trace",
+      "text": "切片名直接就是 schedule。"
+    },
+    {
+      "at": 4,
+      "quote": "auto nextVsyncTime =",
+      "kind": "data",
+      "text": "**目标 vsync**。"
+    },
+    {
+      "at": 5,
+      "quote": "tracker.nextAnticipatedVSyncTimeFrom(std::max(timing.lastVsync,",
+      "kind": "call",
+      "text": "请求点取 max(上次 vsync, now + work + ready)。"
+    },
+    {
+      "at": 6,
+      "quote": "now + timing.workDuration +",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 7,
+      "quote": "timing.readyDuration),",
+      "kind": "data",
+      "text": "所以「已经来不及」时，请求点就落在 now+work+ready 之后，自然顺延到下一拍。"
+    },
+    {
+      "at": 8,
+      "quote": "timing.committedVsyncOpt.value_or(",
+      "kind": "call",
+      "text": "committedVsync 优先，把结果钉在已承诺的拍上。"
+    },
+    {
+      "at": 9,
+      "quote": "timing.lastVsync));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "auto nextWakeupTime = nextVsyncTime - timing.workDuration - timing.readyDuration;",
+      "kind": "data",
+      "text": "**唤醒时刻 = vsync − work − ready**：相位就是这样变成唤醒时间的。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "bool const wouldSkipAVsyncTarget =",
+      "kind": "data",
+      "text": "新目标 vsync 是否比已武装目标晚太多。"
+    },
+    {
+      "at": 13,
+      "quote": "mArmedInfo && (nextVsyncTime > (mArmedInfo->mActualVsyncTime + mMinVsyncDistance));",
+      "kind": "call",
+      "text": "这是「避免为同一拍重复唤醒」的第一条判据。"
+    },
+    {
+      "at": 14,
+      "quote": "bool const wouldSkipAWakeup =",
+      "kind": "data",
+      "text": "唤醒点是否也晚太多。"
+    },
+    {
+      "at": 15,
+      "quote": "mArmedInfo && ((nextWakeupTime > (mArmedInfo->mActualWakeupTime + mMinVsyncDistance)));",
+      "kind": "call",
+      "text": "第二条判据。"
+    },
+    {
+      "at": 16,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"%s: wouldSkipAVsyncTarget=%d wouldSkipAWakeup=%d\", mName.c_str(),",
+      "kind": "trace",
+      "text": "打瞬时 trace 记录两个判据的取值。"
+    },
+    {
+      "at": 17,
+      "quote": "wouldSkipAVsyncTarget, wouldSkipAWakeup);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 18,
+      "quote": "if (wouldSkipAVsyncTarget || wouldSkipAWakeup) {",
+      "kind": "branch",
+      "text": "任一为真：保留旧目标。"
+    },
+    {
+      "at": 19,
+      "quote": "nextVsyncTime = mArmedInfo->mActualVsyncTime;",
+      "kind": "state",
+      "text": "**沿用已武装的 vsync**。"
+    },
+    {
+      "at": 20,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 21,
+      "quote": "nextVsyncTime = adjustVsyncIfNeeded(tracker, nextVsyncTime);",
+      "kind": "call",
+      "text": "允许按需修正（例如 missed vsync 的处理）。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 23,
+      "quote": "nextWakeupTime = std::max(now, nextVsyncTime - timing.workDuration - timing.readyDuration);",
+      "kind": "data",
+      "text": "重算唤醒点，并保证不早于 now。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "auto const nextReadyTime = nextVsyncTime - timing.readyDuration;",
+      "kind": "data",
+      "text": "**ready 时刻 = vsync − readyDuration**：这就是 app 的 deadline。"
+    },
+    {
+      "at": 26,
+      "quote": "mScheduleTiming = timing;",
+      "kind": "state",
+      "text": "记下这次调度参数，供下次比较。"
+    },
+    {
+      "at": 27,
+      "quote": "mArmedInfo = {nextWakeupTime, nextVsyncTime, nextReadyTime};",
+      "kind": "state",
+      "text": "**武装信息三元组**：唤醒、vsync、ready。"
+    },
+    {
+      "at": 28,
+      "quote": "return ScheduleResult{TimePoint::fromNs(nextWakeupTime), TimePoint::fromNs(nextVsyncTime)};",
+      "kind": "note",
+      "text": "返回给调用方。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

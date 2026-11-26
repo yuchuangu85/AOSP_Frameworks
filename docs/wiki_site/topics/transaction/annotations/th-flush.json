@@ -1,0 +1,258 @@
+{
+  "id": "th-flush",
+  "title": "TransactionHandler::flushTransactions",
+  "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+  "sig": "std::vector<QueuedTransactionState> TransactionHandler::flushTransactions()",
+  "span": [
+    50,
+    90
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::vector<QueuedTransactionState> TransactionHandler::flushTransactions() {",
+      "kind": "note",
+      "text": "挑选「现在可以应用」的事务。返回列表交给 applyTransactionsLocked 逐笔应用。"
+    },
+    {
+      "at": 2,
+      "quote": "// Collect transaction that are ready to be applied.",
+      "kind": "note",
+      "text": "注释：收集已就绪的事务。"
+    },
+    {
+      "at": 3,
+      "quote": "std::vector<QueuedTransactionState> transactions;",
+      "kind": "data",
+      "text": "输出列表。"
+    },
+    {
+      "at": 4,
+      "quote": "TransactionFlushState flushState;",
+      "kind": "data",
+      "text": "本轮刷写状态（携带 queueProcessTime 与各 token 结果）。"
+    },
+    {
+      "at": 5,
+      "quote": "flushState.queueProcessTime = systemTime();",
+      "kind": "data",
+      "text": "**统一取一次时间**：本轮所有判定共用它，避免同一批判定时间不一致。"
+    },
+    {
+      "at": 6,
+      "quote": "// Expire signal tokens.",
+      "kind": "note",
+      "text": "注释：让已 signal 的 barrier token 过期。"
+    },
+    {
+      "at": 7,
+      "quote": "std::erase_if(mSignalledTransactionBarriers,",
+      "kind": "call",
+      "text": "删除 TTL 到期的 barrier 记录。"
+    },
+    {
+      "at": 8,
+      "quote": "[ttl = mTransactionBarrierTtl,",
+      "kind": "data",
+      "text": "捕获 TTL。"
+    },
+    {
+      "at": 9,
+      "quote": "queueProcessTime = flushState.queueProcessTime](const auto& pair) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "const bool isExpired =",
+      "kind": "data",
+      "text": "判定是否过期。"
+    },
+    {
+      "at": 11,
+      "quote": "std::chrono::nanoseconds(queueProcessTime - pair.second) > ttl;",
+      "kind": "call",
+      "text": "TTL 比较：queueProcessTime - signalTime > ttl。"
+    },
+    {
+      "at": 12,
+      "quote": "if (isExpired) {",
+      "kind": "branch",
+      "text": "已过期。"
+    },
+    {
+      "at": 13,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"Transaction barrier signal %s has expired\",",
+      "kind": "note",
+      "text": "打瞬时 trace，便于排查「谁等太久」。"
+    },
+    {
+      "at": 14,
+      "quote": "pair.first.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 16,
+      "quote": "return isExpired;",
+      "kind": "note",
+      "text": "返回删除。"
+    },
+    {
+      "at": 17,
+      "quote": "});",
+      "kind": "note",
+      "text": "闭合 erase_if。"
+    },
+    {
+      "at": 18,
+      "quote": "// Transactions with a buffer pending on a barrier may be on a different applyToken",
+      "kind": "note",
+      "text": "**关键注释**：依赖 barrier 的事务可能属于另一个 applyToken，所以要在本轮内反复扫。"
+    },
+    {
+      "at": 19,
+      "quote": "// than the transaction which satisfies our barrier. In fact this is the exact use case",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 20,
+      "quote": "// that the primitive is designed for. This means we may first process",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "// the barrier dependent transaction, determine it ineligible to complete",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 22,
+      "quote": "// and then satisfy in a later inner iteration of flushPendingTransactionQueues.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 23,
+      "quote": "// The barrier dependent transaction was eligible to be presented in this frame",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 24,
+      "quote": "// but we would have prevented it without case. To fix this we continually",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "// loop through flushPendingTransactionQueues until we perform an iteration",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "// where the number of transactionsPendingBarrier doesn't change. This way",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "// we can continue to resolve dependency chains of barriers as far as possible.",
+      "kind": "note",
+      "text": "注释收尾：循环直到「等待中的事务数」不再变化。"
+    },
+    {
+      "at": 28,
+      "quote": "int lastTransactionsPendingBarrier = 0;",
+      "kind": "data",
+      "text": "上一轮的计数。"
+    },
+    {
+      "at": 29,
+      "quote": "int transactionsPendingBarrier = 0;",
+      "kind": "data",
+      "text": "本轮计数。"
+    },
+    {
+      "at": 30,
+      "quote": "do {",
+      "kind": "note",
+      "text": "do-while：反复扫描直到稳定。"
+    },
+    {
+      "at": 31,
+      "quote": "lastTransactionsPendingBarrier = transactionsPendingBarrier;",
+      "kind": "state",
+      "text": "记住上一轮。"
+    },
+    {
+      "at": 32,
+      "quote": "// Collect transactions that are ready to be applied.",
+      "kind": "note",
+      "text": "注释：再收一批可应用事务。"
+    },
+    {
+      "at": 33,
+      "quote": "transactionsPendingBarrier = flushPendingTransactionQueues(transactions, flushState);",
+      "kind": "call",
+      "text": "**核心**：按 token 扫一遍队列，挑出 Ready 的。"
+    },
+    {
+      "at": 34,
+      "quote": "} while (lastTransactionsPendingBarrier != transactionsPendingBarrier);",
+      "kind": "note",
+      "text": "条件：计数不变则停止——说明本轮再也解不开新的依赖。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "applyUnsignaledBufferTransaction(transactions, flushState);",
+      "kind": "call",
+      "text": "处理「允许未 signal 就 latch」的事务。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "mPendingTransactionCount.fetch_sub(transactions.size());",
+      "kind": "call",
+      "text": "原子地扣减待处理计数。"
+    },
+    {
+      "at": 39,
+      "quote": "SFTRACE_INT(\"TransactionQueue\", static_cast<int>(mPendingTransactionCount.load()));",
+      "kind": "trace",
+      "text": "把队列长度写进 trace，一眼看出积压。"
+    },
+    {
+      "at": 40,
+      "quote": "return transactions;",
+      "kind": "note",
+      "text": "返回可应用事务。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

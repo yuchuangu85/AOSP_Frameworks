@@ -1,0 +1,72 @@
+{
+  "id": "th-collect",
+  "title": "TransactionHandler::collectTransactions",
+  "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+  "sig": "void TransactionHandler::collectTransactions()",
+  "span": [
+    39,
+    48
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void TransactionHandler::collectTransactions() {",
+      "kind": "note",
+      "text": "把 binder 线程写入的无锁队列内容搬到按 applyToken 分组的待处理队列。只有 SF 主线程调用。"
+    },
+    {
+      "at": 2,
+      "quote": "while (!mLocklessTransactionQueue.isEmpty()) {",
+      "kind": "note",
+      "text": "逐个取空无锁队列。"
+    },
+    {
+      "at": 3,
+      "quote": "auto maybeTransaction = mLocklessTransactionQueue.pop();",
+      "kind": "call",
+      "text": "pop 一笔；返回空表示队列已空。"
+    },
+    {
+      "at": 4,
+      "quote": "if (!maybeTransaction.has_value()) {",
+      "kind": "note",
+      "text": "用 applyToken 作为顺序域：同一 token 的事务在这里被串到同一队列。"
+    },
+    {
+      "at": 5,
+      "quote": "break;",
+      "kind": "note",
+      "text": "队列不存在就新建。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "call",
+      "text": "**按 token 入队**——同一 token 的先后顺序由此固化。"
+    },
+    {
+      "at": 7,
+      "quote": "const auto& token = maybeTransaction->applyToken;",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 8,
+      "quote": "mPendingTransactionQueues[token].emplace(std::move(*maybeTransaction));",
+      "kind": "note",
+      "text": "关闭 while。"
+    },
+    {
+      "at": 9,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "（EOF）"
+    }
+  ]
+}

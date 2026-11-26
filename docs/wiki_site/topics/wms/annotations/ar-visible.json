@@ -1,0 +1,192 @@
+{
+  "id": "ar-visible",
+  "title": "ActivityRecord.makeVisibleIfNeeded",
+  "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+  "sig": "void makeVisibleIfNeeded(ActivityRecord starting, boolean reportToClient) {",
+  "span": [
+    6015,
+    6044
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void makeVisibleIfNeeded(ActivityRecord starting, boolean reportToClient) {",
+      "kind": "note",
+      "text": "把一个「正在运行但不可见」的 Activity 变为可见。注意它是被动的：由容器在布局时决定谁该可见。"
+    },
+    {
+      "at": 2,
+      "quote": "// This activity is not currently visible, but is running. Tell it to become visible.",
+      "kind": "note",
+      "text": "注释：它当前不可见但仍在运行，通知它变成可见。"
+    },
+    {
+      "at": 3,
+      "quote": "if ((mState == RESUMED && mVisibleRequested) || this == starting) {",
+      "kind": "branch",
+      "text": "**已经可见**（RESUMED 且已请求可见）或是本次启动的目标本身。"
+    },
+    {
+      "at": 4,
+      "quote": "if (DEBUG_VISIBILITY) Slog.d(TAG_VISIBILITY,",
+      "kind": "branch",
+      "text": "可见性调试开关。"
+    },
+    {
+      "at": 5,
+      "quote": "\"Not making visible, r=\" + this + \" state=\" + mState + \" starting=\" + starting);",
+      "kind": "note",
+      "text": "续行：日志里带 state 与 starting。"
+    },
+    {
+      "at": 6,
+      "quote": "return;",
+      "kind": "note",
+      "text": "直接返回，不做任何事。"
+    },
+    {
+      "at": 7,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "// If this activity is paused, tell it to now show its window.",
+      "kind": "note",
+      "text": "注释：如果这个 Activity 是 paused 的，让它现在显示窗口。"
+    },
+    {
+      "at": 10,
+      "quote": "if (DEBUG_VISIBILITY) Slog.v(TAG_VISIBILITY,",
+      "kind": "branch",
+      "text": "调试开关。"
+    },
+    {
+      "at": 11,
+      "quote": "\"Making visible and scheduling visibility: \" + this);",
+      "kind": "note",
+      "text": "V 级日志。"
+    },
+    {
+      "at": 12,
+      "quote": "final Task rootTask = getRootTask();",
+      "kind": "data",
+      "text": "取根任务（root task）。"
+    },
+    {
+      "at": 13,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 开始。"
+    },
+    {
+      "at": 14,
+      "quote": "if (rootTask.mTranslucentActivityWaiting != null) {",
+      "kind": "branch",
+      "text": "**根任务上有一个「半透明 Activity 正在等待」**。"
+    },
+    {
+      "at": 15,
+      "quote": "updateOptionsLocked(returningOptions);",
+      "kind": "call",
+      "text": "更新返回选项。"
+    },
+    {
+      "at": 16,
+      "quote": "rootTask.mUndrawnActivitiesBelowTopTranslucent.add(this);",
+      "kind": "call",
+      "text": "把本 Activity 记进「顶层半透明之下的未绘制列表」——用于决定何时结束半透明状态。"
+    },
+    {
+      "at": 17,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 18,
+      "quote": "setVisibility(true);",
+      "kind": "call",
+      "text": "**核心**：设置可见性为 true，这会触发向客户端下发可见性变更。"
+    },
+    {
+      "at": 19,
+      "quote": "app.postPendingUiCleanMsg(true);",
+      "kind": "call",
+      "text": "请求客户端做一次 UI 清理（释放不可见时的缓存）。"
+    },
+    {
+      "at": 20,
+      "quote": "if (reportToClient) {",
+      "kind": "branch",
+      "text": "调用方要求回报给客户端。"
+    },
+    {
+      "at": 21,
+      "quote": "makeActiveIfNeeded(starting);",
+      "kind": "call",
+      "text": "让它成为 active（可能触发 resume 流程）。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 23,
+      "quote": "// The activity may be waiting for stop, but that is no longer appropriate for it.",
+      "kind": "note",
+      "text": "注释：它可能正在等待 stop，但现在不适合再 stop 了。"
+    },
+    {
+      "at": 24,
+      "quote": "mTaskSupervisor.mStoppingActivities.remove(this);",
+      "kind": "call",
+      "text": "**从 stopping 列表移除**：避免刚可见就被 stop。"
+    },
+    {
+      "at": 25,
+      "quote": "} catch (Exception e) {",
+      "kind": "note",
+      "text": "catch 块。"
+    },
+    {
+      "at": 26,
+      "quote": "// Just skip on any failure; we'll make it visible when it next restarts.",
+      "kind": "note",
+      "text": "注释：任何失败都跳过，等下次重启时再让它可见。"
+    },
+    {
+      "at": 27,
+      "quote": "Slog.w(TAG, \"Exception thrown making visible: \" + intent.getComponent(), e);",
+      "kind": "note",
+      "text": "W 级日志带组件名。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 catch。"
+    },
+    {
+      "at": 29,
+      "quote": "handleAlreadyVisible();",
+      "kind": "call",
+      "text": "处理「本已可见」的收尾逻辑。"
+    },
+    {
+      "at": 30,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

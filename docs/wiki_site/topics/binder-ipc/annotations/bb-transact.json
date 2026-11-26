@@ -1,0 +1,600 @@
+{
+  "id": "bb-transact",
+  "title": "BBinder::transact",
+  "file": "native/libs/binder/Binder.cpp",
+  "sig": "status_t BBinder::transact(",
+  "span": [
+    490,
+    587
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t BBinder::transact(",
+      "kind": "note",
+      "text": "本地实体侧入口。注意它**先处理一批内置 code**（PING/EXTENSION 等），只有其它 code 才落到 onTransact。"
+    },
+    {
+      "at": 2,
+      "quote": "uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 3,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 4,
+      "quote": "bool tracingEnabled = get_trace_enabled_tags() & ATRACE_TAG_AIDL;",
+      "kind": "data",
+      "text": "是否开了 AIDL trace。"
+    },
+    {
+      "at": 5,
+      "quote": "if (tracingEnabled) {",
+      "kind": "branch",
+      "text": "开了 trace。"
+    },
+    {
+      "at": 6,
+      "quote": "tracingEnabled = startTrace(code);",
+      "kind": "call",
+      "text": "开始一个以 code 命名的切片。"
+    },
+    {
+      "at": 7,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "scope_guard guard = make_scope_guard([&]() {",
+      "kind": "data",
+      "text": "**scope_guard 保证 trace 一定闭合**，即使 onTransact 抛异常。"
+    },
+    {
+      "at": 10,
+      "quote": "if (tracingEnabled) trace_end(ATRACE_TAG_AIDL);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 11,
+      "quote": "});",
+      "kind": "note",
+      "text": "结束切片。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "闭合 lambda。"
+    },
+    {
+      "at": 13,
+      "quote": "const auto startTime = std::chrono::steady_clock::now();",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "",
+      "kind": "data",
+      "text": "记录开始时间（用于后续耗时统计）。"
+    },
+    {
+      "at": 15,
+      "quote": "data.setDataPosition(0);",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "",
+      "kind": "call",
+      "text": "**把读位置归零**：调用方可能已经读过一部分。"
+    },
+    {
+      "at": 17,
+      "quote": "if (reply != nullptr && (flags & FLAG_CLEAR_BUF)) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 18,
+      "quote": "reply->markSensitive();",
+      "kind": "branch",
+      "text": "带 FLAG_CLEAR_BUF 且要回包。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "call",
+      "text": "标记回包为敏感（可被清零）。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 21,
+      "quote": "if (data.dataSize() > binder::kLogTransactionsOverBytes) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 22,
+      "quote": "ALOGW(\"Large data transaction of %zu bytes, interface descriptor %s, function: %s, flags: \"",
+      "kind": "branch",
+      "text": "入参过大。"
+    },
+    {
+      "at": 23,
+      "quote": "\"%d\",",
+      "kind": "note",
+      "text": "W 级日志：Large data transaction。"
+    },
+    {
+      "at": 24,
+      "quote": "data.dataSize(), String8(getInterfaceDescriptor()).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 25,
+      "quote": "getFunctionNameAndCode(code).c_str(), flags);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 28,
+      "quote": "status_t err = NO_ERROR;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 29,
+      "quote": "switch (code) {",
+      "kind": "data",
+      "text": "默认无错。"
+    },
+    {
+      "at": 30,
+      "quote": "case PING_TRANSACTION:",
+      "kind": "decision",
+      "text": "**内置 code 优先处理**。"
+    },
+    {
+      "at": 31,
+      "quote": "err = pingBinder();",
+      "kind": "branch",
+      "text": "PING：探活。"
+    },
+    {
+      "at": 32,
+      "quote": "break;",
+      "kind": "call",
+      "text": "调 pingBinder。"
+    },
+    {
+      "at": 33,
+      "quote": "case START_RECORDING_TRANSACTION:",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 34,
+      "quote": "err = startRecordingTransactions(data);",
+      "kind": "branch",
+      "text": "开始记录事务。"
+    },
+    {
+      "at": 35,
+      "quote": "break;",
+      "kind": "call",
+      "text": "无参版本（这里传 data 只是兼容签名）。"
+    },
+    {
+      "at": 36,
+      "quote": "case STOP_RECORDING_TRANSACTION:",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 37,
+      "quote": "err = stopRecordingTransactions();",
+      "kind": "branch",
+      "text": "停止记录。"
+    },
+    {
+      "at": 38,
+      "quote": "break;",
+      "kind": "call",
+      "text": "结束记录。"
+    },
+    {
+      "at": 39,
+      "quote": "case EXTENSION_TRANSACTION:",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 40,
+      "quote": "LOG_ALWAYS_FATAL_IF(reply == nullptr, \"reply == nullptr\");",
+      "kind": "branch",
+      "text": "取扩展 binder。"
+    },
+    {
+      "at": 41,
+      "quote": "err = reply->writeStrongBinder(getExtension());",
+      "kind": "note",
+      "text": "断言必须有 reply。"
+    },
+    {
+      "at": 42,
+      "quote": "break;",
+      "kind": "call",
+      "text": "把扩展 binder 写进回包——这是 AIDL 版本兼容的机制。"
+    },
+    {
+      "at": 43,
+      "quote": "case DEBUG_PID_TRANSACTION:",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 44,
+      "quote": "LOG_ALWAYS_FATAL_IF(reply == nullptr, \"reply == nullptr\");",
+      "kind": "branch",
+      "text": "取 debug pid。"
+    },
+    {
+      "at": 45,
+      "quote": "err = reply->writeInt32(getDebugPid());",
+      "kind": "note",
+      "text": "断言有 reply。"
+    },
+    {
+      "at": 46,
+      "quote": "break;",
+      "kind": "call",
+      "text": "写 pid。"
+    },
+    {
+      "at": 47,
+      "quote": "case SET_RPC_CLIENT_TRANSACTION: {",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 48,
+      "quote": "err = setRpcClientDebug(data);",
+      "kind": "branch",
+      "text": "设置 RPC client。"
+    },
+    {
+      "at": 49,
+      "quote": "break;",
+      "kind": "call",
+      "text": "转发。"
+    },
+    {
+      "at": 50,
+      "quote": "}",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 51,
+      "quote": "default:",
+      "kind": "note",
+      "text": "**默认分支才是业务**。"
+    },
+    {
+      "at": 52,
+      "quote": "err = onTransact(code, data, reply, flags);",
+      "kind": "call",
+      "text": "**调用 onTransact**：AIDL Stub 在这里 switch(code)。"
+    },
+    {
+      "at": 53,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出。"
+    },
+    {
+      "at": 54,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 55,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 56,
+      "quote": "// In case this is being transacted on in the same process.",
+      "kind": "note",
+      "text": "注释：同进程调用时回包也需要归零读位置。"
+    },
+    {
+      "at": 57,
+      "quote": "if (reply != nullptr) {",
+      "kind": "branch",
+      "text": "有回包。"
+    },
+    {
+      "at": 58,
+      "quote": "reply->setDataPosition(0);",
+      "kind": "call",
+      "text": "**回包读位置归零**，让调用方能从头读。"
+    },
+    {
+      "at": 59,
+      "quote": "if (reply->dataSize() > binder::kLogTransactionsOverBytes) {",
+      "kind": "branch",
+      "text": "回包数据过大。"
+    },
+    {
+      "at": 60,
+      "quote": "ALOGW(\"Large reply transaction of %zu bytes, interface descriptor %s, function: %s, \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 61,
+      "quote": "\"flags: %d\",",
+      "kind": "note",
+      "text": "日志参数收尾。"
+    },
+    {
+      "at": 62,
+      "quote": "reply->dataSize(), String8(getInterfaceDescriptor()).c_str(),",
+      "kind": "note",
+      "text": "日志参数：回包大小、接口名。"
+    },
+    {
+      "at": 63,
+      "quote": "getFunctionNameAndCode(code).c_str(), flags);",
+      "kind": "data",
+      "text": "函数名与 code。"
+    },
+    {
+      "at": 64,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志调用。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭过大分支。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "if (kEnableKernelIpc && kEnableRecording && code != START_RECORDING_TRANSACTION) [[unlikely]] {",
+      "kind": "branch",
+      "text": "**事务记录开启**（调试用，kEnableRecording）。"
+    },
+    {
+      "at": 68,
+      "quote": "Extras* e = mExtras.load(std::memory_order_acquire);",
+      "kind": "data",
+      "text": "取 extras。"
+    },
+    {
+      "at": 69,
+      "quote": "if (e && e->mRecordingOn) {",
+      "kind": "branch",
+      "text": "确实在记录中。"
+    },
+    {
+      "at": 70,
+      "quote": "RpcMutexUniqueLock lock(e->mLock);",
+      "kind": "lock",
+      "text": "取记录锁。"
+    },
+    {
+      "at": 71,
+      "quote": "if (e->mRecordingOn) {",
+      "kind": "branch",
+      "text": "双重检查仍在记录。"
+    },
+    {
+      "at": 72,
+      "quote": "Parcel emptyReply;",
+      "kind": "data",
+      "text": "空回包占位。"
+    },
+    {
+      "at": 73,
+      "quote": "timespec ts;",
+      "kind": "data",
+      "text": "时间戳。"
+    },
+    {
+      "at": 74,
+      "quote": "timespec_get(&ts, TIME_UTC);",
+      "kind": "call",
+      "text": "取 UTC 时间。"
+    },
+    {
+      "at": 75,
+      "quote": "auto transaction = android::binder::debug::RecordedTransaction::",
+      "kind": "call",
+      "text": "构造记录对象：接口名、code、flags、时间、入参、回包、结果。"
+    },
+    {
+      "at": 76,
+      "quote": "fromDetails(getInterfaceDescriptor(), code, flags, ts, data,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 77,
+      "quote": "reply ? *reply : emptyReply, err);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 78,
+      "quote": "if (transaction) {",
+      "kind": "branch",
+      "text": "构造成功。"
+    },
+    {
+      "at": 79,
+      "quote": "if (err = transaction->dumpToFile(e->mRecordingFd); err != NO_ERROR) {",
+      "kind": "branch",
+      "text": "写文件失败。"
+    },
+    {
+      "at": 80,
+      "quote": "ALOGI(\"Failed to dump RecordedTransaction to file with error %d\", err);",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 81,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 82,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则构造失败。"
+    },
+    {
+      "at": 83,
+      "quote": "ALOGI(\"Failed to create RecordedTransaction object.\");",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 84,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 85,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭双重检查。"
+    },
+    {
+      "at": 86,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭记录分支。"
+    },
+    {
+      "at": 87,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 extras 分支。"
+    },
+    {
+      "at": 88,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 89,
+      "quote": "const uint64_t transactionMs = to_ms(std::chrono::steady_clock::now() - startTime);",
+      "kind": "data",
+      "text": "**算本次事务耗时**。"
+    },
+    {
+      "at": 90,
+      "quote": "if (transactionMs > 1000lu) {",
+      "kind": "branch",
+      "text": "**超过 1 秒**。"
+    },
+    {
+      "at": 91,
+      "quote": "ALOGW(\"Binder transaction to %s, function: %s, took %\" PRIu64",
+      "kind": "note",
+      "text": "W 级日志：Binder transaction ... took Nms——这是抓「哪个调用慢」最直接的线索。"
+    },
+    {
+      "at": 92,
+      "quote": "\"ms. Data bytes: %zu Reply bytes: %zu Flags: %d\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 93,
+      "quote": "String8(getInterfaceDescriptor()).c_str(), getFunctionNameAndCode(code).c_str(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 94,
+      "quote": "transactionMs, data.dataSize(), reply ? reply->dataSize() : 0u, flags);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 95,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 96,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 97,
+      "quote": "return err;",
+      "kind": "note",
+      "text": "返回 onTransact 的结果。"
+    },
+    {
+      "at": 98,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

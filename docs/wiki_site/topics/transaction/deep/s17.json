@@ -1,0 +1,51 @@
+{
+  "step": "s17",
+  "title": "commit 回调：OnCommit",
+  "tldr": "事务应用后 TransactionCallbackInvoker 在 commit 阶段发 onCommit；空事务更早发。",
+  "why": "回调分两拍是这套设计里最容易搞错的地方。OnCommit 的语义是「SF 已接受并应用了你的变更」，此时状态已写入，但还没有新的 buffer 上屏。因此它适合做「事务已生效」的确认（例如同步 apply 的返回），不能用来判断「用户看到了新画面」。同步 apply 等就是它——这也解释了为什么 synchronous apply 的等待时间通常很短（一次 commit），而不是一整个 vsync。",
+  "concepts": [
+    {
+      "term": "onCommitOnly",
+      "text": "true 表示只发 commit 回调。"
+    },
+    {
+      "term": "addEmptyTransaction",
+      "text": "没有 surface 的 listener 靠它拿到回调。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3162",
+      "what": "空事务：commit 与 complete 一起发。"
+    },
+    {
+      "call": "mTransactionCallbackInvoker.sendCallbacks(true /* onCommitOnly */);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3165",
+      "what": "非空事务：只发 commit。"
+    },
+    {
+      "call": "void TransactionCallbackInvoker::sendCallbacks(bool onCommitOnly) {",
+      "ref": "native/services/surfaceflinger/TransactionCallbackInvoker.cpp:158",
+      "what": "实现入口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "待发回调集合",
+      "before": "本拍累积",
+      "after": "commit 后清空（complete 部分保留）",
+      "note": "complete 回调等 present。"
+    }
+  ],
+  "threads": "SF 主线程（commit 阶段）。",
+  "pitfalls": [
+    "把 OnCommit 当成「已上屏」。",
+    "期望 OnCommit 一定在 apply 返回前：异步提交时不会。"
+  ],
+  "debug": [
+    "trace 里 TransactionCallbackInvoker::sendCallbacks 切片。",
+    "同步 apply 的等待时长可验证只等一拍。"
+  ],
+  "next": "那上屏后的回调是什么？见第 18 步。"
+}

@@ -1,0 +1,56 @@
+{
+  "step": "s01",
+  "title": "面板 vsync 由 HAL 上报（仓库外）",
+  "tldr": "显示控制器在垂直消隐点产生 vsync，由 composer HAL 回调给 SF；上报线程与抖动不在仓库内。",
+  "why": "这条链路的起点在仓库之外，这决定了排查方式：你无法从代码推断「硬件 vsync 到底准不准」，只能通过 present fence 与 trace 打点间接观察。很多「系统性掉帧」的根因其实在面板时序或 HAL 上报抖动，如果一上来就盯着 Android 侧代码，会在正确的代码里找不到错误。",
+  "concepts": [
+    {
+      "term": "垂直消隐",
+      "text": "每帧画完到下一帧开始之间的间隙，vsync 通常在这里产生。"
+    },
+    {
+      "term": "monotonic 时间戳",
+      "text": "上报携带的时钟基准，Android 侧所有计算都基于它。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void SurfaceFlinger::onComposerHalVsync(hal::HWDisplayId hwcDisplayId, int64_t timestamp,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2535",
+      "what": "HAL 上报在 SF 侧的落点。"
+    },
+    {
+      "call": "void HWComposer::onVsync(hal::HWDisplayId displayId, int64_t timestamp,",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:155",
+      "what": "去重与打点。"
+    },
+    {
+      "call": "bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t> hwcVsyncPeriod,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:201",
+      "what": "上报最终进入校准模型。"
+    },
+    {
+      "call": "void Scheduler::onFrameSignal(ICompositor& compositor, VsyncId vsyncId,",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:411",
+      "what": "这一拍最终驱动一帧合成。"
+    }
+  ],
+  "state": [
+    {
+      "field": "硬件 vsync 源",
+      "before": "持续上报",
+      "after": "预测稳定后可被关闭",
+      "note": "由 VSyncReactor 返回值决定。"
+    }
+  ],
+  "threads": "HAL 回调线程（仓库外决定优先级）。",
+  "pitfalls": [
+    "把 vsync 抖动全归因到 Android：先看 HW_VSYNC 打点的时间间隔。",
+    "以为 vsync 一直开着：预测稳定后 SF 会关掉硬件 vsync。"
+  ],
+  "debug": [
+    "Perfetto 里 HW_VSYNC_<displayId> 轨道。",
+    "`dumpsys SurfaceFlinger --vsync` 看模型状态。"
+  ],
+  "next": "SF 收到 vsync 后先做什么？见第 2 步。"
+}

@@ -1,0 +1,90 @@
+{
+  "id": "cfg-offset",
+  "title": "sfOffsetToDuration / appOffsetToDuration",
+  "file": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+  "sig": "std::chrono::nanoseconds sfOffsetToDuration",
+  "span": [
+    146,
+    158
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::chrono::nanoseconds sfOffsetToDuration(nsecs_t sfOffset, nsecs_t vsyncDuration) {",
+      "kind": "note",
+      "text": "sf 相位换算：把「偏移」变成「工作时长」。这是整个相位机制的唯一换算点。"
+    },
+    {
+      "at": 2,
+      "quote": "return std::chrono::nanoseconds(vsyncDuration - sfOffset);",
+      "kind": "call",
+      "text": "**sf = P − sfOffset**：sf 提前 sfOffset 唤醒。"
+    },
+    {
+      "at": 3,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭函数。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "std::chrono::nanoseconds appOffsetToDuration(nsecs_t appOffset, nsecs_t sfOffset,",
+      "kind": "note",
+      "text": "app 相位换算：需要同时考虑两个 offset。"
+    },
+    {
+      "at": 6,
+      "quote": "nsecs_t vsyncDuration) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 7,
+      "quote": "auto duration = vsyncDuration + (sfOffset - appOffset);",
+      "kind": "call",
+      "text": "**app = P + sfOffset − appOffset**。"
+    },
+    {
+      "at": 8,
+      "quote": "if (duration < vsyncDuration) {",
+      "kind": "branch",
+      "text": "算出来比一个周期还大（appOffset 为负等极端配置）。"
+    },
+    {
+      "at": 9,
+      "quote": "duration += vsyncDuration;",
+      "kind": "state",
+      "text": "按周期折叠，保证落在 (0, P] 内。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "return std::chrono::nanoseconds(duration);",
+      "kind": "note",
+      "text": "返回时长。"
+    },
+    {
+      "at": 13,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭函数。"
+    }
+  ]
+}

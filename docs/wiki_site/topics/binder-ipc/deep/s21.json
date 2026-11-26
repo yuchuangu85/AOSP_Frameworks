@@ -1,0 +1,51 @@
+{
+  "step": "s21",
+  "title": "分支：RPC（跨设备/跨 VM）",
+  "tldr": "标为 RPC 的 Parcel 走另一套传输（rpcSession），与本地 binder 驱动通道互不混用。",
+  "why": "本分支的 binder 支持 binder over RPC：同一套 IBinder/AIDL 接口可以在不共享内核驱动的两个域之间调用（例如跨 VM 或跨设备）。它对传统链路的实际意义是：读代码时如果看到 isForRpc 或 rpcSession，不要以为它是死代码；同时也解释了为什么 transact 开头要硬断言「RPC Parcel 不许走本地 binder」——两条通道的语义与错误模型都不同。",
+  "concepts": [
+    {
+      "term": "isForRpc",
+      "text": "Parcel 是否用于 RPC。"
+    },
+    {
+      "term": "rpcSession",
+      "text": "RPC 传输会话。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "LOG_ALWAYS_FATAL_IF(data.isForRpc(), \"Parcel constructed for RPC, but being used with binder.\");",
+      "ref": "native/libs/binder/IPCThreadState.cpp:925",
+      "what": "通道混用会 FATAL。"
+    },
+    {
+      "call": "if (isRpcBinder()) [[unlikely]] {",
+      "ref": "native/libs/binder/BpBinder.cpp:421",
+      "what": "RPC 分叉。"
+    },
+    {
+      "call": "status = rpcSession()->transact(sp<IBinder>::fromExisting(this), code, data, reply,",
+      "ref": "native/libs/binder/BpBinder.cpp:422",
+      "what": "走 RPC 会话。"
+    }
+  ],
+  "state": [
+    {
+      "field": "传输通道",
+      "before": "内核 binder",
+      "after": "RPC 会话",
+      "note": "两者不混用。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "把 RPC 路径当死代码删掉。",
+    "跨通道复用同一个 Parcel。"
+  ],
+  "debug": [
+    "RPC 场景下没有 binder 驱动的 trace 轨道。",
+    "日志 RpcSession 前缀。"
+  ],
+  "next": "哪些东西不在本仓库？见第 22 步。"
+}

@@ -1,0 +1,51 @@
+{
+  "step": "s24",
+  "title": "分支：发送失败与诊断",
+  "tldr": "WOULD_BLOCK 留在 outbound 等下一轮；DEAD_OBJECT/EPIPE 才作废通道。诊断靠 dumpsys input 与 atrace。",
+  "why": "这一组分支解释了「应用忙但输入没丢」与「通道确实坏了」的区别。前者是可恢复的反压：条目留在 outboundQueue，应用 finish 后继续发；后者才让连接作废并通知 policy。诊断时最有价值的三件东西是：dumpsys input 的 ANR 段（失败时的队列快照）、atrace 的 deliverInputEvent/dispatchOnce 切片、以及最近一次队列长度。",
+  "concepts": [
+    {
+      "term": "abortBrokenDispatchCycleLocked",
+      "text": "通道不可用时的清理与通知。"
+    },
+    {
+      "term": "updateLastAnrStateLocked",
+      "text": "把当前 dispatcher 状态存成快照，供 dumpsys 查看。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (status == WOULD_BLOCK) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3998",
+      "what": "反压分支。"
+    },
+    {
+      "call": "abortBrokenDispatchCycleLocked(connection, /*notify=*/true);",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4006",
+      "what": "作废通道。"
+    },
+    {
+      "call": "void InputDispatcher::updateLastAnrStateLocked(",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:6861",
+      "what": "保存 ANR 现场快照。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mLastAnrState",
+      "before": "上一次快照",
+      "after": "最近一次",
+      "note": "dumpsys input 直接打印它。"
+    }
+  ],
+  "threads": "dispatcher 线程。",
+  "pitfalls": [
+    "把 EPIPE 当成应用崩溃：也可能是窗口被销毁。",
+    "不看 outboundQueue 长度就下结论。"
+  ],
+  "debug": [
+    "dumpsys input 的 ANR 段与 waitQueue 段。",
+    "atrace 的 input 分类 + Perfetto 的输入轨道。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 view-traversal 主题看「事件如何变成一帧」。"
+}

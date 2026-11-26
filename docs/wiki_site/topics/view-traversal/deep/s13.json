@@ -1,0 +1,34 @@
+{
+  "step": "s13",
+  "title": "onDraw 的绘制调用被录成 draw op",
+  "tldr": "RecordingCanvas 不画像素，它把每个 drawXxx 调用追加成一条 op，等 RT 回放。",
+  "why": "「录制」是硬件加速最反直觉的一环：应用写的 onDraw 在 UI 线程上执行，但屏幕上什么都不会出现，因为所有 drawXxx 都只是往一张 op 列表里追加记录。这带来两个后果：一是 UI 线程的成本只与「多少条 op」相关，而实际像素填充成本被推迟到 RT；二是 display list 可以被缓存与复用，于是「内容没变就不重录」成为可能。理解这一点，才能解释为什么频繁改变 op 数量（例如每帧重建大量 TextView）比改变像素面积更伤性能。",
+  "concepts": [
+    { "term": "RecordingCanvas", "text": "只在录制期存在的 Canvas 实现，所有 draw 方法都被改写为「追加 op」。" },
+    { "term": "SkiaDisplayList", "text": "录制产物：一组带变换与属性的 draw op 序列。" },
+    { "term": "PFLAG_SKIP_DRAW", "text": "无背景容器的快路径，跳过 draw() 直接 dispatchDraw。" }
+  ],
+  "walk": [
+    { "call": "static RecordingCanvas obtain(@NonNull RenderNode node, int width, int height)", "ref": "base/graphics/java/android/graphics/RecordingCanvas.java:63", "what": "从对象池取一个录制画布，绑定到 RenderNode。" },
+    { "call": "if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {", "ref": "base/core/java/android/view/View.java:24358", "what": "无背景容器快路径。" },
+    { "call": "dispatchDraw(canvas);", "ref": "base/core/java/android/view/View.java:24359", "what": "直接派发给子节点，省掉 onDraw 调用。" },
+    { "call": "draw(canvas);", "ref": "base/core/java/android/view/View.java:24368", "what": "常规路径：背景 + onDraw + dispatchDraw 全部录进同一张 display list。" },
+    { "call": "renderNode.endRecording();", "ref": "base/core/java/android/view/View.java:24377", "what": "收尾：op 序列封存进 staging 槽。" }
+  ],
+  "state": [
+    { "field": "RenderNode 当前录制画布", "before": "null", "after": "obtain 后非空 → endRecording 后清空", "note": "未回收就再次 beginRecording 会抛 IllegalStateException。" },
+    { "field": "mPrivateFlags", "before": "PFLAG_DIRTY", "after": "已清脏、置 DRAWN", "note": "录制期间再次 invalidate 不会引发递归。" }
+  ],
+  "threads": "录制全程在 UI 线程；GPU 一行指令都没执行，回放要等 RT。",
+  "pitfalls": [
+    "在 onDraw 里创建对象：每次重录都会分配，GC 压力直接体现在录制耗时上。",
+    "以为 onDraw 慢就一定 GPU 慢：录制慢和回放慢是两件事，看 trace 才能区分。",
+    "在 onDraw 里读尺寸并依赖它最新：录制时的尺寸来自本帧布局结果，布局没跑就用旧值。"
+  ],
+  "debug": [
+    "trace 里 Record View#draw() 的宽度随 op 数量增长，与像素面积无直接关系。",
+    "dumpsys gfxinfo 的 draw 阶段耗时对应录制，process/prepare 对应 RT 的同步与回放。",
+    "debug.hwui.overdraw 可看 op 之间的重叠程度。"
+  ],
+  "next": "根节点自己那张 display list 什么时候录？见第 14 步。"
+}

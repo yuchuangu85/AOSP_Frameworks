@@ -1,0 +1,979 @@
+{
+  "meta": {
+    "slug": "binder-ipc",
+    "title": "Binder：调用 → 驱动 → 对端执行 → 回包",
+    "subtitle": "从 Java 侧 transact 与 Parcel 编组开始：经 JNI 落到 BpBinder/IPCThreadState，用 BC_TRANSACTION 写进 /dev/binder，由内核完成一次拷贝与线程唤醒，对端 joinThreadPool 取出 BR_TRANSACTION 并分发到 onTransact，回包再用 BR_REPLY 走完同步语义；含 oneway、死亡通知与 RPC 分支",
+    "version": "android17-release",
+    "built": "2026-11-26",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "只讲 binder 这一条：Java 的 BinderProxy.transact 经 JNI 进入 BpBinder::transact，IPCThreadState::transact 用 writeTransactionData 打包 BC_TRANSACTION，talkWithDriver 用 ioctl(BINDER_WRITE_READ) 交给内核；内核完成目标和数据的单次拷贝、把接收线程插入队列（驱动本身在仓库外）；对端 IPCThreadState::joinThreadPool 醒来后用 executeCommand 处理 BR_TRANSACTION，进入 BBinder::transact → onTransact；回包由 BBinder 侧发送 BR_REPLY，发起方 waitForResponse 收下并取出 status 或数据。oneway 走 BC_TRANSACTION 后不等回复，死亡通知走 BC_REQUEST_DEATH_NOTIFICATION。",
+    "kicker": "AOSP · android17-release · Binder IPC"
+  },
+  "lanes": [
+    {
+      "id": "JAVA",
+      "label": "Java 进程（app/服务）",
+      "color": "#7bd88f"
+    },
+    {
+      "id": "JNI",
+      "label": "JNI 桥",
+      "color": "#ff9f43"
+    },
+    {
+      "id": "NAT",
+      "label": "libbinder（进程内）",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "DRV",
+      "label": "binder 驱动（仓库外）",
+      "color": "#c792ea"
+    },
+    {
+      "id": "PEER",
+      "label": "对端进程",
+      "color": "#33d6c0"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "调用与编组",
+      "hint": "Parcel 写参数"
+    },
+    {
+      "id": "P1",
+      "label": "进 native",
+      "hint": "JNI → BpBinder"
+    },
+    {
+      "id": "P2",
+      "label": "打包与 ioctl",
+      "hint": "BC_TRANSACTION"
+    },
+    {
+      "id": "P3",
+      "label": "内核接管",
+      "hint": "拷贝 + 唤醒（仓库外）"
+    },
+    {
+      "id": "P4",
+      "label": "对端执行",
+      "hint": "joinThreadPool → onTransact"
+    },
+    {
+      "id": "P5",
+      "label": "回包与同步",
+      "hint": "BR_REPLY → waitForResponse"
+    },
+    {
+      "id": "P6",
+      "label": "oneway 与死亡通知",
+      "hint": "异步与 observer"
+    },
+    {
+      "id": "P7",
+      "label": "分支与诊断",
+      "hint": "失败码与排障"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01",
+      "num": 1,
+      "phase": "P0",
+      "lane": "JAVA",
+      "title": "调用方：拿到 IBinder 代理",
+      "brief": "调用方持有的通常不是真对象，而是 BinderProxy（跨进程）或本地 Binder。二者的 transact 都会落到同一个 native 入口，区别只在 target 是 handle 还是本地指针。",
+      "refs": [
+        {
+          "file": "base/core/java/android/os/BinderProxy.java",
+          "line": 568,
+          "symbol": "BinderProxy.transact"
+        },
+        {
+          "file": "base/core/java/android/os/Binder.java",
+          "line": 1223,
+          "symbol": "Binder.transact"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 2,
+      "phase": "P0",
+      "lane": "JAVA",
+      "title": "Parcel：参数编组",
+      "brief": "AIDL 生成的 Stub/Proxy 把参数逐个写进 Parcel。binder 对象写的是扁平化句柄（flatten），不是内存地址——这是跨进程传递对象的唯一方式。",
+      "refs": [
+        {
+          "file": "base/core/java/android/os/Parcel.java",
+          "line": 1400,
+          "symbol": "writeStrongBinder"
+        },
+        {
+          "file": "base/core/java/android/os/Parcel.java",
+          "line": 1418,
+          "symbol": "writeStrongBinder 内部"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 3,
+      "phase": "P1",
+      "lane": "JNI",
+      "title": "JNI 桥：Java transact → BpBinder",
+      "brief": "BinderProxy.transact 是 native 方法，JNI 把它翻译成 IBinder::transact；Parcel 对象本身也在 JNI 层被转成 native Parcel。这条边界决定了「一次调用的数据要复制几次」。",
+      "refs": [
+        {
+          "file": "base/core/java/android/os/BinderProxy.java",
+          "line": 658,
+          "symbol": "transactNative"
+        },
+        {
+          "file": "base/core/jni/android_util_Binder.cpp",
+          "line": 1644,
+          "symbol": "android_os_BinderProxy_transact"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 4,
+      "phase": "P1",
+      "lane": "NAT",
+      "title": "BpBinder::transact：找到 IPCThreadState",
+      "brief": "BpBinder 持有目标 handle，把调用转给当前线程的 IPCThreadState。注意 IPCThreadState 是 **thread_local** 的——每个线程有自己的收发缓冲区，这也是 binder 服务端要 joinThreadPool 的原因。",
+      "refs": [
+        {
+          "file": "native/libs/binder/BpBinder.cpp",
+          "line": 394,
+          "symbol": "BpBinder::transact"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 921,
+          "symbol": "IPCThreadState::transact"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 5,
+      "phase": "P2",
+      "lane": "NAT",
+      "title": "writeTransactionData：打包 BC_TRANSACTION",
+      "brief": "把 code、flags、handle 与数据拼成 binder_transaction_data，写进 mOut。同步调用会在 data 里追加一个「需要回复」的标记；oneway 只写命令。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1365,
+          "symbol": "writeTransactionData"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 941,
+          "symbol": "调用点"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 6,
+      "phase": "P2",
+      "lane": "NAT",
+      "title": "talkWithDriver：一次 ioctl 同时收发",
+      "brief": "组装 binder_write_read：write_size 是 mOut 待发数据、read_size 是 mIn 剩余容量。只有当输入缓冲区读完（needRead）且要求接收时才读——这是「一个线程同一时刻只有一个未完成事务」的实现方式。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1246,
+          "symbol": "talkWithDriver"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1255,
+          "symbol": "needRead"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1304,
+          "symbol": "ioctl BINDER_WRITE_READ"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 7,
+      "phase": "P2",
+      "lane": "NAT",
+      "title": "写缓冲被消费与提交后释放",
+      "brief": "ioctl 返回后检查 write_consumed：只有全部被内核消费才算成功，否则 LOG_ALWAYS_FATAL（驱动契约被破坏）。成功后清空 mOut 并执行 processPostWriteDerefs——写时临时提升的强引用在此时释放。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1332,
+          "symbol": "write_consumed"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1343,
+          "symbol": "processPostWriteDerefs"
+        }
+      ]
+    },
+    {
+      "id": "s08",
+      "num": 8,
+      "phase": "P3",
+      "lane": "DRV",
+      "title": "内核：一次拷贝与线程唤醒（仓库外）",
+      "brief": "驱动按 handle 找到目标节点，把数据从发送方用户空间直接映射到接收方（只有一次拷贝），把接收线程从等待队列摘下并唤醒。发起方若无 TF_ONE_WAY 则阻塞在 ioctl 里等回包。这部分实现不在本仓库。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1304,
+          "symbol": "ioctl 进入驱动"
+        }
+      ]
+    },
+    {
+      "id": "s09",
+      "num": 9,
+      "phase": "P4",
+      "lane": "PEER",
+      "title": "服务线程：joinThreadPool",
+      "brief": "服务进程在启动时把若干线程加入 binder 线程池。线程进入循环后 talkWithDriver(false) 阻塞等命令，拿到 BR_TRANSACTION 就 executeCommand，处理完再回 ioctl 等待。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 841,
+          "symbol": "joinThreadPool"
+        },
+        {
+          "file": "native/libs/binder/ProcessState.cpp",
+          "line": 106,
+          "symbol": "ProcessState::self"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 10,
+      "phase": "P4",
+      "lane": "PEER",
+      "title": "executeCommand：分发 BR_TRANSACTION",
+      "brief": "读 binder_transaction_data，校验 code 与 flags，从目标 BBinder 调 onTransact。这里是 native 与业务实现的分界：之后就是各服务的 switch(code) 逻辑。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1408,
+          "symbol": "executeCommand"
+        },
+        {
+          "file": "native/libs/binder/Binder.cpp",
+          "line": 76,
+          "symbol": "BBinder::transact"
+        }
+      ]
+    },
+    {
+      "id": "s11",
+      "num": 11,
+      "phase": "P4",
+      "lane": "PEER",
+      "title": "Java 服务端：Binder.onTransact",
+      "brief": "对端若是 Java 服务，native 会通过 JNI 回调 Binder.execTransact → onTransact(code, data, reply, flags)。reply 用的仍是同一个 Parcel 机制，只是方向反过来。",
+      "refs": [
+        {
+          "file": "base/core/java/android/os/Binder.java",
+          "line": 1304,
+          "symbol": "execTransact"
+        },
+        {
+          "file": "base/core/java/android/os/Binder.java",
+          "line": 915,
+          "symbol": "onTransact"
+        }
+      ]
+    },
+    {
+      "id": "s12",
+      "num": 12,
+      "phase": "P5",
+      "lane": "PEER",
+      "title": "回包：sendReply",
+      "brief": "处理完成后 executeCommand 调 sendReply，把 reply Parcel 与 status 打包成 BR_REPLY 写回驱动。status 与数据二选一：有异常时只回 status。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1143,
+          "symbol": "sendReply"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1221,
+          "symbol": "status 回包（waitForResponse）"
+        }
+      ]
+    },
+    {
+      "id": "s13",
+      "num": 13,
+      "phase": "P5",
+      "lane": "NAT",
+      "title": "waitForResponse：同步等待的循环",
+      "brief": "发起方在 waitForResponse 里反复 talkWithDriver，直到收到 BR_REPLY / BR_DEAD_REPLY / BR_FAILED_REPLY。非回复类命令（例如服务端反向调用过来的 BR_TRANSACTION）会在这里就地 executeCommand 处理掉。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1153,
+          "symbol": "waitForResponse"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1208,
+          "symbol": "BR_REPLY"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1221,
+          "symbol": "status 回包"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 14,
+      "phase": "P5",
+      "lane": "NAT",
+      "title": "把数据交回上层",
+      "brief": "BR_REPLY 里若是正常数据，用 ipcSetDataReference 直接把内核映射区挂到 reply Parcel 上（不再拷贝）；若是 status 回包，直接读 status 并释放缓冲。之后 JNI 把结果与异常一起交回 Java。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1215,
+          "symbol": "ipcSetDataReference"
+        },
+        {
+          "file": "native/libs/binder/Parcel.cpp",
+          "line": 1195,
+          "symbol": "ipcSetDataReference"
+        }
+      ]
+    },
+    {
+      "id": "s15",
+      "num": 15,
+      "phase": "P6",
+      "lane": "NAT",
+      "title": "oneway：不等回包",
+      "brief": "TF_ONE_WAY 的调用在 writeTransactionData 后直接 waitForResponse(nullptr, nullptr)，它只等 BR_TRANSACTION_COMPLETE 就返回。所以 oneway 的语义是「已提交给驱动」，不是「对端已执行」。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 992,
+          "symbol": "oneway 分支"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1179,
+          "symbol": "BR_TRANSACTION_COMPLETE"
+        }
+      ]
+    },
+    {
+      "id": "s16",
+      "num": 16,
+      "phase": "P6",
+      "lane": "NAT",
+      "title": "死亡通知：observer 机制",
+      "brief": "调用方可以注册 DeathRecipient。native 侧发 BC_REQUEST_DEATH_NOTIFICATION，驱动在对端进程死亡时投 BR_DEAD_BINDER，IPCThreadState 再把结果转回 Java 的 binderDied 回调。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1755,
+          "symbol": "BC_REQUEST_DEATH_NOTIFICATION"
+        },
+        {
+          "file": "native/libs/binder/BpBinder.cpp",
+          "line": 297,
+          "symbol": "sendObituary"
+        },
+        {
+          "file": "base/core/java/android/os/BinderProxy.java",
+          "line": 348,
+          "symbol": "binderDied"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 17,
+      "phase": "P6",
+      "lane": "NAT",
+      "title": "句柄到代理：getStrongProxyForHandle",
+      "brief": "收到 BR_TRANSACTION 时，数据里携带的是对端的 binder 节点句柄。ProcessState 维护 handle→BpBinder 的表，同一 handle 通常复用同一个 BpBinder，避免每次调用都新建对象。",
+      "refs": [
+        {
+          "file": "native/libs/binder/ProcessState.cpp",
+          "line": 339,
+          "symbol": "getStrongProxyForHandle"
+        },
+        {
+          "file": "native/libs/binder/ProcessState.cpp",
+          "line": 407,
+          "symbol": "缓存表"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 18,
+      "phase": "P6",
+      "lane": "JNI",
+      "title": "服务注册与查找",
+      "brief": "服务端通过 ServiceManager 注册（一句话协议：code=ADD_SERVICE 的 binder 调用），客户端用 defaultServiceManager()->getService 查 handle。这一段本身也是普通 binder 调用，只是目标固定为 handle 0。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IServiceManager.cpp",
+          "line": 333,
+          "symbol": "defaultServiceManager"
+        },
+        {
+          "file": "native/libs/binder/ProcessState.cpp",
+          "line": 559,
+          "symbol": "getContextObject"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 19,
+      "phase": "P7",
+      "lane": "NAT",
+      "title": "分支：失败码含义",
+      "brief": "BR_DEAD_REPLY → DEAD_OBJECT（对端已死）、BR_FAILED_REPLY → FAILED_TRANSACTION（对端没处理）、BR_FROZEN_REPLY → FROZEN_OBJECT（对端被冻结）。三者的排查方向完全不同。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1187,
+          "symbol": "BR_DEAD_REPLY"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1191,
+          "symbol": "BR_FAILED_REPLY"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1195,
+          "symbol": "BR_FROZEN_REPLY"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 20,
+      "phase": "P7",
+      "lane": "NAT",
+      "title": "分支：限流与 oneway 洪泛",
+      "brief": "进程可被设置为只允许 oneway（CallRestriction）。oneway 调用过多时驱动/框架会报 BR_ONEWAY_SPAM_SUSPECT。两者都是「防止一个进程拖垮 binder 服务」的保护。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 949,
+          "symbol": "CallRestriction"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1174,
+          "symbol": "BR_ONEWAY_SPAM_SUSPECT"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 21,
+      "phase": "P7",
+      "lane": "NAT",
+      "title": "分支：RPC（跨设备/跨 VM）",
+      "brief": "本分支还支持 binder over RPC：数据被标记为 RPC 后走另一套传输，不与本地 binder 混用（transact 开头会 FATAL 掉误用）。传统链路里可以忽略，但排查「为什么这次调用没走 binder 驱动」时要想到它。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 925,
+          "symbol": "isForRpc 断言"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 22,
+      "phase": "P7",
+      "lane": "DRV",
+      "title": "驱动边界：哪些不在本仓库",
+      "brief": "binder 驱动（内核态数据拷贝、线程优先级继承、节点引用计数）、SELinux 策略、servicemanager 的进程实现都不在本仓库。所以「一次调用到底拷贝几次」「谁是驱动线程」只能按接口假设描述。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 1304,
+          "symbol": "ioctl 是唯一入口"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 23,
+      "phase": "P7",
+      "lane": "JNI",
+      "title": "诊断：三种常用手段",
+      "brief": "dumpsys（看服务与事务耗时）、binder 的 debug 开关（BC_TRANSACTION 明文日志）、Perfetto 的 binder 轨道。最有效的是看「谁的 onTransact 慢」而不是只看调用方等待时间。",
+      "refs": [
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 931,
+          "symbol": "IF_LOG_TRANSACTIONS"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 358,
+          "symbol": "flushCommands"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 24,
+      "phase": "P7",
+      "lane": "PEER",
+      "title": "线程池容量与并发语义",
+      "brief": "服务端能同时处理多少并发调用，取决于 joinThreadPool 的线程数（常见 1、4 或 MAX_THREADS）。线程数不足时，同步调用会在对端排队——这常被误判成「服务端慢」，其实是并发度不够。",
+      "refs": [
+        {
+          "file": "native/libs/binder/ProcessState.cpp",
+          "line": 168,
+          "symbol": "startThreadPool"
+        },
+        {
+          "file": "native/libs/binder/IPCThreadState.cpp",
+          "line": 851,
+          "symbol": "线程池循环"
+        }
+      ]
+    }
+  ],
+  "extends": [
+    "topic_render.json"
+  ],
+  "pitfalls": [
+    {
+      "case": "oneway 只保证「已交给驱动」",
+      "behavior": "TF_ONE_WAY 的 transact 只等 BR_TRANSACTION_COMPLETE，对端是否执行、何时执行都不保证",
+      "ref": "IPCThreadState.cpp:992 / 1179"
+    },
+    {
+      "case": "IPCThreadState 是 thread_local",
+      "behavior": "每个线程有自己的 mIn/mOut；同一线程同一时刻只有一个未完成事务，所以服务端要线程池",
+      "ref": "IPCThreadState.cpp:841"
+    },
+    {
+      "case": "一个线程不能并发发起两次同步调用",
+      "behavior": "mIn 是单缓冲，needRead 为假时不会再读，等回复期间该线程被占用",
+      "ref": "IPCThreadState.cpp:1255"
+    },
+    {
+      "case": "BR_DEAD_REPLY / BR_FAILED_REPLY / BR_FROZEN_REPLY 含义不同",
+      "behavior": "分别为对端死亡、未处理、被冻结，排查方向完全不同",
+      "ref": "IPCThreadState.cpp:1187-1197"
+    },
+    {
+      "case": "waitForResponse 会就地处理对端反击",
+      "behavior": "非回复命令（BR_TRANSACTION 等）在等待循环里直接 executeCommand，所以会出现「我在等回复却在执行别人的调用」",
+      "ref": "IPCThreadState.cpp:1228"
+    },
+    {
+      "case": "回包成功路径不再拷贝",
+      "behavior": "BR_REPLY 用 ipcSetDataReference 把内核映射区挂到 Parcel 上，是一次拷贝的另一半",
+      "ref": "IPCThreadState.cpp:1215"
+    },
+    {
+      "case": "驱动未消费写缓冲是致命契约破坏",
+      "behavior": "write_consumed < write_size 会 LOG_ALWAYS_FATAL，说明 libbinder 与驱动版本不匹配",
+      "ref": "IPCThreadState.cpp:1336"
+    },
+    {
+      "case": "服务并发度取决于线程池",
+      "behavior": "joinThreadPool 的线程数决定了能同时处理多少调用，线程不足会让同步调用在对端排队",
+      "ref": "ProcessState.cpp:168"
+    },
+    {
+      "case": "oneway 洪泛会被警告甚至拒绝",
+      "behavior": "BR_ONEWAY_SPAM_SUSPECT 说明发送过量 oneway；CallRestriction 可限制进程只能发 oneway",
+      "ref": "IPCThreadState.cpp:1174 / 949"
+    },
+    {
+      "case": "RPC 通道与本地 binder 不能混用",
+      "behavior": "data.isForRpc() 为真却走本地 transact 会直接 FATAL",
+      "ref": "IPCThreadState.cpp:925"
+    }
+  ],
+  "facts": [
+    "<b>一次调用 = 两次拷贝的一半</b>：发送方数据被驱动直接映射到接收方，只有一次拷贝；回包同样如此。",
+    "<b>每个线程一套缓冲</b>：IPCThreadState 是 thread_local，mIn/mOut 属于线程而不是进程。",
+    "<b>同步调用的本质是循环 ioctl</b>：waitForResponse 反复 talkWithDriver，直到拿到 BR_REPLY 或失败码。",
+    "<b>服务端并发 = 线程池容量</b>：joinThreadPool 的线程数决定同时能处理多少调用。",
+    "<b>句柄是唯一的跨进程身份</b>：Parcel 里传的是扁平化句柄，ProcessState 用 handle→BpBinder 缓存复用代理。"
+  ],
+  "glossary": [
+    {
+      "term": "BC_TRANSACTION",
+      "text": "发起调用的驱动命令。",
+      "note": ""
+    },
+    {
+      "term": "BR_TRANSACTION",
+      "text": "接收方拿到的调用命令。",
+      "note": ""
+    },
+    {
+      "term": "BR_REPLY",
+      "text": "回包命令，携带数据或 status。",
+      "note": ""
+    },
+    {
+      "term": "handle",
+      "text": "进程内的 binder 引用编号，0 固定为 ServiceManager。",
+      "note": ""
+    },
+    {
+      "term": "TF_ONE_WAY",
+      "text": "不等待回复的标志。",
+      "note": ""
+    },
+    {
+      "term": "IPCThreadState",
+      "text": "thread_local 的收发器。",
+      "note": ""
+    },
+    {
+      "term": "BpBinder",
+      "text": "native 侧代理对象。",
+      "note": ""
+    },
+    {
+      "term": "BBinder",
+      "text": "native 侧实体对象。",
+      "note": ""
+    },
+    {
+      "term": "DeathRecipient",
+      "text": "对端死亡的回调接口。",
+      "note": ""
+    },
+    {
+      "term": "BR_DEAD_BINDER",
+      "text": "对端死亡通知命令。",
+      "note": ""
+    },
+    {
+      "term": "servicemanager",
+      "text": "服务注册表，handle 0。",
+      "note": ""
+    },
+    {
+      "term": "mIn / mOut",
+      "text": "线程的接收/发送 Parcel。",
+      "note": ""
+    },
+    {
+      "term": "TF_STATUS_CODE",
+      "text": "回包里表示「只有 status 没有数据」。",
+      "note": ""
+    },
+    {
+      "term": "CallRestriction",
+      "text": "进程级限制：只允许 oneway。",
+      "note": ""
+    },
+    {
+      "term": "binder_write_read",
+      "text": "一次 ioctl 的收发描述结构。",
+      "note": ""
+    },
+    {
+      "term": "BR_TRANSACTION_COMPLETE",
+      "text": "写操作已被驱动接受的确认。",
+      "note": ""
+    }
+  ],
+  "scenario": {
+    "title": "一次同步 binder 调用（数量级示意）",
+    "events": [
+      {
+        "t": "0.00 ms",
+        "label": "Java 调用",
+        "detail": "Proxy.transact(code, data, reply)"
+      },
+      {
+        "t": "0.02 ms",
+        "label": "编组",
+        "detail": "Parcel 写参数，binder 对象扁平化成句柄"
+      },
+      {
+        "t": "0.03 ms",
+        "label": "进 native",
+        "detail": "JNI → BpBinder::transact"
+      },
+      {
+        "t": "0.05 ms",
+        "label": "打包",
+        "detail": "writeTransactionData 写 BC_TRANSACTION 到 mOut"
+      },
+      {
+        "t": "0.06 ms",
+        "label": "ioctl",
+        "detail": "talkWithDriver 交给驱动，线程阻塞"
+      },
+      {
+        "t": "0.10 ms",
+        "label": "内核",
+        "detail": "一次拷贝 + 唤醒对端线程"
+      },
+      {
+        "t": "0.20 ms",
+        "label": "对端执行",
+        "detail": "executeCommand → onTransact 的业务逻辑"
+      },
+      {
+        "t": "0.30 ms",
+        "label": "回包",
+        "detail": "sendReply 写 BC_REPLY"
+      },
+      {
+        "t": "0.32 ms",
+        "label": "唤醒",
+        "detail": "发起方从 ioctl 返回 BR_REPLY"
+      }
+    ]
+  },
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：一次调用经过谁",
+      "route": "全景·架构 → 流程图 → 时序图"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：编组 → ioctl → 对端 → 回包",
+      "route": "精读第 1→14 步"
+    },
+    {
+      "time": "60 分钟",
+      "goal": "理解 oneway / 死亡通知 / 线程池",
+      "route": "精读第 15→18 步 + 第 19→24 步"
+    },
+    {
+      "time": "半天",
+      "goal": "能抓现场",
+      "route": "代码逐行 12 个 P0 函数 + dumpsys binder 与 Perfetto"
+    }
+  ],
+  "cards": [
+    {
+      "fn": "IPCThreadState::transact",
+      "file": "native/libs/binder/IPCThreadState.cpp",
+      "line": 921,
+      "size": 76,
+      "thread": "调用线程",
+      "lock": "无（线程本地）",
+      "purpose": "同步/oneway 分叉与限流检查。",
+      "risk": "把 oneway 当同步用会误判「已执行」。",
+      "status": "card"
+    },
+    {
+      "fn": "IPCThreadState::talkWithDriver",
+      "file": "native/libs/binder/IPCThreadState.cpp",
+      "line": 1246,
+      "size": 118,
+      "thread": "调用线程",
+      "lock": "无",
+      "purpose": "唯一与驱动交互的函数。",
+      "risk": "needRead 判断错误会导致丢包或忙等。",
+      "status": "card"
+    },
+    {
+      "fn": "IPCThreadState::waitForResponse",
+      "file": "native/libs/binder/IPCThreadState.cpp",
+      "line": 1153,
+      "size": 92,
+      "thread": "调用线程",
+      "lock": "无",
+      "purpose": "同步等待循环与错误码翻译。",
+      "risk": "在此执行的「对端反击」如果慢，会拖长本次调用。",
+      "status": "card"
+    },
+    {
+      "fn": "IPCThreadState::executeCommand",
+      "file": "native/libs/binder/IPCThreadState.cpp",
+      "line": 1408,
+      "size": 287,
+      "thread": "接收线程",
+      "lock": "无",
+      "purpose": "命令分派：BR_TRANSACTION/BR_REPLY/BR_DEAD_BINDER。",
+      "risk": "onTransact 的耗时直接体现在这里的栈上。",
+      "status": "card"
+    },
+    {
+      "fn": "IPCThreadState::joinThreadPool",
+      "file": "native/libs/binder/IPCThreadState.cpp",
+      "line": 841,
+      "size": 43,
+      "thread": "服务线程",
+      "lock": "无",
+      "purpose": "服务端常驻循环。",
+      "risk": "线程数不足会让调用在对端排队。",
+      "status": "card"
+    },
+    {
+      "fn": "ProcessState::getStrongProxyForHandle",
+      "file": "native/libs/binder/ProcessState.cpp",
+      "line": 339,
+      "size": 70,
+      "thread": "任意",
+      "lock": "mLock",
+      "purpose": "handle→BpBinder 的缓存。",
+      "risk": "缓存失效会导致同一目标生成多个代理对象。",
+      "status": "card"
+    }
+  ],
+  "branchTables": [
+    {
+      "step": "s06",
+      "fn": "talkWithDriver 收发判据",
+      "ref": "IPCThreadState.cpp:1255-1272",
+      "rows": [
+        {
+          "cond": "mIn 已读完（needRead）且要求接收",
+          "then": "同时写 mOut 与读 mIn",
+          "effect": "一次 ioctl 完成收发"
+        },
+        {
+          "cond": "mIn 还有未处理数据",
+          "then": "只写不读",
+          "effect": "先处理完再读"
+        },
+        {
+          "cond": "write_size 与 read_size 都为 0",
+          "then": "直接返回",
+          "effect": "无操作"
+        }
+      ]
+    },
+    {
+      "step": "s13",
+      "fn": "waitForResponse 的命令分支",
+      "ref": "IPCThreadState.cpp:1173-1232",
+      "rows": [
+        {
+          "cond": "BR_REPLY",
+          "then": "取出数据或 status",
+          "effect": "同步调用结束"
+        },
+        {
+          "cond": "BR_DEAD_REPLY / BR_FAILED_REPLY / BR_FROZEN_REPLY",
+          "then": "转成本地错误码",
+          "effect": "DEAD_OBJECT / FAILED_TRANSACTION / FROZEN_OBJECT"
+        },
+        {
+          "cond": "其它命令（如 BR_TRANSACTION）",
+          "then": "就地 executeCommand",
+          "effect": "等待期间处理反向调用"
+        }
+      ]
+    },
+    {
+      "step": "s15",
+      "fn": "oneway 语义",
+      "ref": "IPCThreadState.cpp:991-993",
+      "rows": [
+        {
+          "cond": "TF_ONE_WAY",
+          "then": "waitForResponse(nullptr,nullptr)",
+          "effect": "只等 BR_TRANSACTION_COMPLETE"
+        },
+        {
+          "cond": "同步",
+          "then": "waitForResponse(reply)",
+          "effect": "等到 BR_REPLY 才返回"
+        }
+      ]
+    },
+    {
+      "step": "s20",
+      "fn": "限流与洪泛",
+      "ref": "IPCThreadState.cpp:949-957 / 1174-1181",
+      "rows": [
+        {
+          "cond": "ERROR_IF_NOT_ONEWAY 且发同步调用",
+          "then": "打错误日志与调用栈",
+          "effect": "调用仍继续"
+        },
+        {
+          "cond": "FATAL_IF_NOT_ONEWAY 且发同步调用",
+          "then": "FATAL",
+          "effect": "进程崩溃"
+        },
+        {
+          "cond": "oneway 过载",
+          "then": "BR_ONEWAY_SPAM_SUSPECT",
+          "effect": "打错误栈提示"
+        }
+      ]
+    }
+  ],
+  "verify": {
+    "minSteps": 20,
+    "minMethods": 6,
+    "minCards": 4,
+    "minPitfalls": 8,
+    "minFiles": 6
+  },
+  "scope": [
+    "native/libs/binder/IPCThreadState.cpp",
+    "native/libs/binder/BpBinder.cpp",
+    "native/libs/binder/Binder.cpp",
+    "native/libs/binder/ProcessState.cpp",
+    "native/libs/binder/IServiceManager.cpp",
+    "native/libs/binder/Parcel.cpp",
+    "base/core/jni/android_util_Binder.cpp",
+    "base/core/java/android/os/BinderProxy.java",
+    "base/core/java/android/os/Binder.java",
+    "base/core/java/android/os/Parcel.java"
+  ],
+  "inventorySpans": [
+    "transact",
+    "talkWithDriver",
+    "waitForResponse",
+    "joinThreadPool",
+    "executeCommand",
+    "sendReply",
+    "writeTransactionData",
+    "getStrongProxyForHandle",
+    "startThreadPool",
+    "self",
+    "defaultServiceManager",
+    "getContextObject",
+    "onTransact",
+    "binderDied",
+    "sendObituary",
+    "ipcSetDataReference",
+    "android_os_BinderProxy_transact",
+    "execTransact",
+    "writeStrongBinder",
+    "flushCommands"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "step": "s04",
+  "title": "VSyncReactor：周期确认与样本接受",
+  "tldr": "用 10% 容差确认周期；未确认时缓存时间戳继续要样本，确认后打开 tracker 并决定是否还需硬件 vsync。",
+  "why": "周期确认是模型可信的前提：HWC 上报的周期和实际时间戳之间的距离必须一致（10% 容差），否则说明显示模式仍在切换或上报异常。确认期间的样本不能直接喂给 tracker（会污染），所以先缓存进 mLastHwVsync，确认后再一起补进去。这个「先缓存后补」的细节决定了模型能否快速收敛。",
+  "concepts": [
+    {
+      "term": "periodConfirmed",
+      "text": "10% 容差的周期一致性判断。"
+    },
+    {
+      "term": "mMoreSamplesNeeded",
+      "text": "是否继续要硬件 vsync。"
+    },
+    {
+      "term": "endPeriodTransition",
+      "text": "结束过渡态。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t> hwcVsyncPeriod,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:201",
+      "what": "入口。"
+    },
+    {
+      "call": "if (periodConfirmed(timestamp, hwcVsyncPeriod)) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:206",
+      "what": "确认分支。"
+    },
+    {
+      "call": "mMoreSamplesNeeded = mTracker.needsMoreSamples();",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:219",
+      "what": "由预测器决定是否继续要样本。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPeriodConfirmationInProgress",
+      "before": "false",
+      "after": "切换期间 true",
+      "note": "期间样本被缓存而不是直接喂。"
+    }
+  ],
+  "threads": "HAL 回调线程，持 mMutex。",
+  "pitfalls": [
+    "以为每个 vsync 都进 tracker：确认期间不进。",
+    "忽略 needsMoreSamples：它是关硬件 vsync 的开关。"
+  ],
+  "debug": [
+    "trace 里 VSR N: period confirmed / still confirming period。",
+    "dumpsys 的 reactor 段有过渡态布尔。"
+  ],
+  "next": "present fence 这条通道怎么用？见第 5 步。"
+}

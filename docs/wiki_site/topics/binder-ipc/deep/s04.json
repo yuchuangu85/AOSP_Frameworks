@@ -1,0 +1,60 @@
+{
+  "step": "s04",
+  "title": "BpBinder::transact：找 IPCThreadState",
+  "tldr": "BpBinder 先做稳定性检查、剥掉私有 flag，再交给当前线程的 IPCThreadState（thread_local）。",
+  "why": "这里有两件事容易被忽略。第一是稳定性检查：platform 进程调用 vendor 服务时，code 落在用户事务区间就会检查 Stability 等级，不匹配直接返回 BAD_TYPE——这是「调用莫名失败但看不懂原因」的常见来源。第二是 IPCThreadState 是 thread_local：每个线程有自己的缓冲，所以「多线程发 binder 调用」并不是共享状态，而是各用各的。",
+  "concepts": [
+    {
+      "term": "Stability",
+      "text": "platform / vendor / system 等级，跨分区调用要匹配。"
+    },
+    {
+      "term": "FLAG_PRIVATE_VENDOR",
+      "text": "只在进程内使用的标志，不能传给内核。"
+    },
+    {
+      "term": "rpcSession",
+      "text": "RPC binder 走另一条通道。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t BpBinder::transact(",
+      "ref": "native/libs/binder/BpBinder.cpp:394",
+      "what": "入口。"
+    },
+    {
+      "call": "if (!Stability::check(stability, required)) [[unlikely]] {",
+      "ref": "native/libs/binder/BpBinder.cpp:411",
+      "what": "等级检查，失败返回 BAD_TYPE。"
+    },
+    {
+      "call": "status = IPCThreadState::self()->transact(binderHandle(), code, data, reply, flags);",
+      "ref": "native/libs/binder/BpBinder.cpp:430",
+      "what": "交给线程本地状态。"
+    },
+    {
+      "call": "if (status == DEAD_OBJECT) mAlive = 0;",
+      "ref": "native/libs/binder/BpBinder.cpp:440",
+      "what": "记住死亡，之后直接失败。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mAlive",
+      "before": "1",
+      "after": "0（收到 DEAD_OBJECT 后）",
+      "note": "之后所有调用不再触发 ioctl。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "把 BAD_TYPE 当对端错误：其实是稳定性等级不匹配。",
+    "以为多线程共享 binder 缓冲：IPCThreadState 是 thread_local。"
+  ],
+  "debug": [
+    "日志 Cannot do a user transaction on a ... binder。",
+    "dumpsys 可看接口描述符与稳定性。"
+  ],
+  "next": "调用怎么编码？见第 5 步。"
+}

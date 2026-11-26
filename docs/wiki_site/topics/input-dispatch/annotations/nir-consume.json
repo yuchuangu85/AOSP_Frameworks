@@ -1,0 +1,1170 @@
+{
+  "id": "nir-consume",
+  "title": "NativeInputEventReceiver::consumeEvents",
+  "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+  "sig": "status_t NativeInputEventReceiver::consumeEvents(",
+  "span": [
+    455,
+    647
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t NativeInputEventReceiver::consumeEvents(JNIEnv* env,",
+      "kind": "note",
+      "text": "应用侧收包的主循环。运行在**应用 UI 线程**（由 Looper 回调进入），负责把 socket 里的消息还原成 Java 事件对象并分发。"
+    },
+    {
+      "at": 2,
+      "quote": "bool consumeBatches, nsecs_t frameTime, bool* outConsumedBatch) {",
+      "kind": "note",
+      "text": "参数：是否消费批量、当前帧时间、是否消费了批量事件（出参）。"
+    },
+    {
+      "at": 3,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志开关。"
+    },
+    {
+      "at": 4,
+      "quote": "ALOGD(\"channel '%s' ~ Consuming input events, consumeBatches=%s, frameTime=%\" PRId64,",
+      "kind": "note",
+      "text": "打印通道名与参数。"
+    },
+    {
+      "at": 5,
+      "quote": "mName.c_str(), toString(consumeBatches), frameTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试分支。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "if (consumeBatches) {",
+      "kind": "branch",
+      "text": "允许消费批量。"
+    },
+    {
+      "at": 9,
+      "quote": "mBatchedInputEventPending = false;",
+      "kind": "state",
+      "text": "清掉「有待处理批量」标志。"
+    },
+    {
+      "at": 10,
+      "quote": "traceBoolVariable(\"mBatchedInputEventPending\", mBatchedInputEventPending);",
+      "kind": "trace",
+      "text": "把标志写进 trace，便于观察批量行为。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 12,
+      "quote": "if (outConsumedBatch) {",
+      "kind": "branch",
+      "text": "调用方关心「是否消费了批量」。"
+    },
+    {
+      "at": 13,
+      "quote": "*outConsumedBatch = false;",
+      "kind": "state",
+      "text": "默认 false。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "ScopedLocalRef<jobject> receiverObj(env, nullptr);",
+      "kind": "data",
+      "text": "Java 侧 receiver 对象的强引用（每次回调需要）。"
+    },
+    {
+      "at": 17,
+      "quote": "bool skipCallbacks = false;",
+      "kind": "data",
+      "text": "一旦 Java 回调抛异常，后续跳过回调，只做消费。"
+    },
+    {
+      "at": 18,
+      "quote": "for (;;) {",
+      "kind": "note",
+      "text": "无限循环消费，直到 socket 空（WOULD_BLOCK）。"
+    },
+    {
+      "at": 19,
+      "quote": "// Invoking callbacks may cause the consumer to become null (the user may call \"dispose\"",
+      "kind": "note",
+      "text": "**重要注释**：回调里用户可能 dispose，所以每轮都要重新检查 consumer 是否为空。"
+    },
+    {
+      "at": 20,
+      "quote": "// while processing a callback), so we need to check for nullness on each iteration.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "if (mInputConsumer == nullptr) {",
+      "kind": "branch",
+      "text": "consumer 已被销毁。"
+    },
+    {
+      "at": 22,
+      "quote": "return DEAD_OBJECT;",
+      "kind": "note",
+      "text": "返回 DEAD_OBJECT，上层据此停止监听。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 24,
+      "quote": "uint32_t seq;",
+      "kind": "data",
+      "text": "本轮事件的序号；dispatcher 靠它配对 finish。"
+    },
+    {
+      "at": 25,
+      "quote": "InputEvent* inputEvent;",
+      "kind": "data",
+      "text": "事件对象指针。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "const auto& [result, unfinishedInputMessages] =",
+      "kind": "data",
+      "text": "从 socket 消费一条消息，同时取回「未完成消息」列表。"
+    },
+    {
+      "at": 28,
+      "quote": "mInputConsumer->consume(&mInputEventFactory, consumeBatches, frameTime, &seq,",
+      "kind": "call",
+      "text": "InputConsumer::consume 是真正的 read + 反序列化。"
+    },
+    {
+      "at": 29,
+      "quote": "&inputEvent);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "status_t status;",
+      "kind": "data",
+      "text": "状态码。"
+    },
+    {
+      "at": 31,
+      "quote": "if (result.ok()) {",
+      "kind": "branch",
+      "text": "成功。"
+    },
+    {
+      "at": 32,
+      "quote": "status = OK;",
+      "kind": "state",
+      "text": "OK。"
+    },
+    {
+      "at": 33,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 34,
+      "quote": "status = result.error().code();",
+      "kind": "state",
+      "text": "取出错误码。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 36,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "for (const InputMessage& msg : unfinishedInputMessages) {",
+      "kind": "note",
+      "text": "处理那些「上一轮收到但没 finish」的消息。"
+    },
+    {
+      "at": 38,
+      "quote": "// We ignore the result here as we are concerned with the status of the",
+      "kind": "note",
+      "text": "注释：这里忽略写回结果，因为关心的是读状态；写失败会由 outbound 队列重试。"
+    },
+    {
+      "at": 39,
+      "quote": "// socket read in our function, whereas this result is related to the",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 40,
+      "quote": "// socket write status. On failure, processOutboundEvents will keep retrying",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "// until the finish is sent from the outbound queue.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 42,
+      "quote": "finishInputEvent(msg.header.seq, /*handled=*/false);",
+      "kind": "call",
+      "text": "**替它们补一个 handled=false 的回执**，避免 dispatcher 一直等。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 44,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 45,
+      "quote": "if (status != OK && status != WOULD_BLOCK) {",
+      "kind": "branch",
+      "text": "真错误（非 WOULD_BLOCK）。"
+    },
+    {
+      "at": 46,
+      "quote": "ALOGE(\"channel '%s' ~ Failed to consume input event.  status=%s(%d)\", mName.c_str(),",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 47,
+      "quote": "statusToString(status).c_str(), status);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 48,
+      "quote": "return status;",
+      "kind": "note",
+      "text": "向上返回错误，监听会停止。"
+    },
+    {
+      "at": 49,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭错误分支。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 51,
+      "quote": "if (status == WOULD_BLOCK) {",
+      "kind": "branch",
+      "text": "WOULD_BLOCK：socket 暂无数据。"
+    },
+    {
+      "at": 52,
+      "quote": "if (!skipCallbacks && !mBatchedInputEventPending && mInputConsumer->hasPendingBatch()) {",
+      "kind": "decision",
+      "text": "还有待处理的批量事件。"
+    },
+    {
+      "at": 53,
+      "quote": "// There is a pending batch.  Come back later.",
+      "kind": "note",
+      "text": "注释：稍后再来。"
+    },
+    {
+      "at": 54,
+      "quote": "if (!receiverObj.get()) {",
+      "kind": "branch",
+      "text": "还没拿到 Java receiver 引用。"
+    },
+    {
+      "at": 55,
+      "quote": "receiverObj.reset(GetReferent(env, mReceiverWeakGlobal));",
+      "kind": "call",
+      "text": "从弱引用取回 Java 对象。"
+    },
+    {
+      "at": 56,
+      "quote": "if (!receiverObj.get()) {",
+      "kind": "branch",
+      "text": "取不到（对象已被回收）。"
+    },
+    {
+      "at": 57,
+      "quote": "ALOGW(\"channel '%s' ~ Receiver object was finalized \"",
+      "kind": "note",
+      "text": "W 级日志：未 dispose 就被回收了。"
+    },
+    {
+      "at": 58,
+      "quote": "\"without being disposed.\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 59,
+      "quote": "mName.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 60,
+      "quote": "return DEAD_OBJECT;",
+      "kind": "note",
+      "text": "返回 DEAD_OBJECT。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 62,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭引用判断。"
+    },
+    {
+      "at": 63,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 64,
+      "quote": "mBatchedInputEventPending = true;",
+      "kind": "state",
+      "text": "标记「有待处理批量」。"
+    },
+    {
+      "at": 65,
+      "quote": "traceBoolVariable(\"mBatchedInputEventPending\", mBatchedInputEventPending);",
+      "kind": "trace",
+      "text": "写 trace。"
+    },
+    {
+      "at": 66,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 67,
+      "quote": "ALOGD(\"channel '%s' ~ Dispatching batched input event pending notification.\",",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 68,
+      "quote": "mName.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 69,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 70,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 71,
+      "quote": "env->CallVoidMethod(receiverObj.get(),",
+      "kind": "call",
+      "text": "回调 Java：onBatchedInputEventPending(source)。"
+    },
+    {
+      "at": 72,
+      "quote": "gInputEventReceiverClassInfo.onBatchedInputEventPending,",
+      "kind": "call",
+      "text": "方法引用在类信息里预先取好。"
+    },
+    {
+      "at": 73,
+      "quote": "mInputConsumer->getPendingBatchSource());",
+      "kind": "data",
+      "text": "传 pending batch 的 source 位。"
+    },
+    {
+      "at": 74,
+      "quote": "if (env->ExceptionCheck()) {",
+      "kind": "branch",
+      "text": "Java 侧抛异常。"
+    },
+    {
+      "at": 75,
+      "quote": "LOG(ERROR) << \"Exception dispatching batched input events for \" << mName;",
+      "kind": "note",
+      "text": "ERROR 日志。"
+    },
+    {
+      "at": 76,
+      "quote": "mBatchedInputEventPending = false; // try again later",
+      "kind": "state",
+      "text": "复位标志，下次再试。"
+    },
+    {
+      "at": 77,
+      "quote": "traceBoolVariable(\"mBatchedInputEventPending\", mBatchedInputEventPending);",
+      "kind": "trace",
+      "text": "写 trace。"
+    },
+    {
+      "at": 78,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭异常分支。"
+    },
+    {
+      "at": 79,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 80,
+      "quote": "return OK;",
+      "kind": "note",
+      "text": "返回 OK：本轮正常结束，等下次 fd 就绪。"
+    },
+    {
+      "at": 81,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 WOULD_BLOCK 分支。"
+    },
+    {
+      "at": 82,
+      "quote": "assert(inputEvent);",
+      "kind": "note",
+      "text": "断言：成功路径必有事件对象。"
+    },
+    {
+      "at": 83,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 84,
+      "quote": "if (!skipCallbacks) {",
+      "kind": "branch",
+      "text": "没有因异常跳过回调。"
+    },
+    {
+      "at": 85,
+      "quote": "if (!receiverObj.get()) {",
+      "kind": "branch",
+      "text": "还没取 Java receiver。"
+    },
+    {
+      "at": 86,
+      "quote": "receiverObj.reset(GetReferent(env, mReceiverWeakGlobal));",
+      "kind": "call",
+      "text": "取弱引用。"
+    },
+    {
+      "at": 87,
+      "quote": "if (!receiverObj.get()) {",
+      "kind": "branch",
+      "text": "对象已回收。"
+    },
+    {
+      "at": 88,
+      "quote": "ALOGW(\"channel '%s' ~ Receiver object was finalized \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 89,
+      "quote": "\"without being disposed.\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 90,
+      "quote": "mName.c_str());",
+      "kind": "note",
+      "text": "返回 DEAD_OBJECT。"
+    },
+    {
+      "at": 91,
+      "quote": "return DEAD_OBJECT;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 92,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭引用判断。"
+    },
+    {
+      "at": 93,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "",
+      "kind": "data",
+      "text": "待构造的 Java 事件对象。"
+    },
+    {
+      "at": 95,
+      "quote": "ScopedLocalRef<jobject> inputEventObj(env);",
+      "kind": "decision",
+      "text": "按事件类型分派。"
+    },
+    {
+      "at": 96,
+      "quote": "switch (inputEvent->getType()) {",
+      "kind": "branch",
+      "text": "按键事件。"
+    },
+    {
+      "at": 97,
+      "quote": "case InputEventType::KEY:",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 98,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 99,
+      "quote": "ALOGD(\"channel '%s' ~ Received key event.\", mName.c_str());",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 100,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 101,
+      "quote": "inputEventObj =",
+      "kind": "call",
+      "text": "把 native KeyEvent 拷贝成 Java KeyEvent。"
+    },
+    {
+      "at": 102,
+      "quote": "android_view_KeyEvent_obtainAsCopy(env,",
+      "kind": "call",
+      "text": "obtainAsCopy 走对象池，避免分配。"
+    },
+    {
+      "at": 103,
+      "quote": "static_cast<KeyEvent&>(*inputEvent));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 105,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 106,
+      "quote": "case InputEventType::MOTION: {",
+      "kind": "branch",
+      "text": "Motion 事件（触摸/鼠标）。"
+    },
+    {
+      "at": 107,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 108,
+      "quote": "ALOGD(\"channel '%s' ~ Received motion event.\", mName.c_str());",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 109,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 110,
+      "quote": "const MotionEvent& motionEvent = static_cast<const MotionEvent&>(*inputEvent);",
+      "kind": "data",
+      "text": "安全的向下转换。"
+    },
+    {
+      "at": 111,
+      "quote": "if ((motionEvent.getAction() & AMOTION_EVENT_ACTION_MOVE) && outConsumedBatch) {",
+      "kind": "decision",
+      "text": "MOVE 且调用方关心批量。"
+    },
+    {
+      "at": 112,
+      "quote": "*outConsumedBatch = true;",
+      "kind": "state",
+      "text": "标记「消费了批量」。"
+    },
+    {
+      "at": 113,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 114,
+      "quote": "inputEventObj = android_view_MotionEvent_obtainAsCopy(env, motionEvent);",
+      "kind": "call",
+      "text": "拷贝成 Java MotionEvent。"
+    },
+    {
+      "at": 115,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出 switch。"
+    },
+    {
+      "at": 116,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 MOTION 分支。"
+    },
+    {
+      "at": 117,
+      "quote": "case InputEventType::FOCUS: {",
+      "kind": "branch",
+      "text": "焦点事件。"
+    },
+    {
+      "at": 118,
+      "quote": "FocusEvent* focusEvent = static_cast<FocusEvent*>(inputEvent);",
+      "kind": "data",
+      "text": "取出 FocusEvent。"
+    },
+    {
+      "at": 119,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 120,
+      "quote": "ALOGD(\"channel '%s' ~ Received focus event: hasFocus=%s.\", mName.c_str(),",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 121,
+      "quote": "toString(focusEvent->getHasFocus()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 122,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 123,
+      "quote": "env->CallVoidMethod(receiverObj.get(),",
+      "kind": "call",
+      "text": "回调 Java onFocusEvent(hasFocus)。"
+    },
+    {
+      "at": 124,
+      "quote": "gInputEventReceiverClassInfo.onFocusEvent,",
+      "kind": "call",
+      "text": "方法引用。"
+    },
+    {
+      "at": 125,
+      "quote": "jboolean(focusEvent->getHasFocus()));",
+      "kind": "note",
+      "text": "传 hasFocus。"
+    },
+    {
+      "at": 126,
+      "quote": "finishInputEvent(seq, /*handled=*/true);",
+      "kind": "call",
+      "text": "**立即回执 handled=true**（焦点事件不需要走 View 分发）。"
+    },
+    {
+      "at": 127,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "继续下一条，不再走下面的 dispatchInputEvent。"
+    },
+    {
+      "at": 128,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 FOCUS。"
+    },
+    {
+      "at": 129,
+      "quote": "case InputEventType::CAPTURE: {",
+      "kind": "branch",
+      "text": "指针捕获事件。"
+    },
+    {
+      "at": 130,
+      "quote": "const CaptureEvent* captureEvent = static_cast<CaptureEvent*>(inputEvent);",
+      "kind": "data",
+      "text": "取出 CaptureEvent。"
+    },
+    {
+      "at": 131,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 132,
+      "quote": "ALOGD(\"channel '%s' ~ Received capture event: pointerCaptureEnabled=%s\",",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 133,
+      "quote": "mName.c_str(), toString(captureEvent->getPointerCaptureEnabled()));",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 134,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 135,
+      "quote": "env->CallVoidMethod(receiverObj.get(),",
+      "kind": "call",
+      "text": "回调 Java。"
+    },
+    {
+      "at": 136,
+      "quote": "gInputEventReceiverClassInfo.onPointerCaptureEvent,",
+      "kind": "call",
+      "text": "方法引用。"
+    },
+    {
+      "at": 137,
+      "quote": "jboolean(captureEvent->getPointerCaptureEnabled()));",
+      "kind": "note",
+      "text": "传 pointerCaptureEnabled。"
+    },
+    {
+      "at": 138,
+      "quote": "finishInputEvent(seq, /*handled=*/true);",
+      "kind": "call",
+      "text": "立即回执。"
+    },
+    {
+      "at": 139,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "继续下一条。"
+    },
+    {
+      "at": 140,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 CAPTURE。"
+    },
+    {
+      "at": 141,
+      "quote": "case InputEventType::DRAG: {",
+      "kind": "branch",
+      "text": "拖拽事件。"
+    },
+    {
+      "at": 142,
+      "quote": "const DragEvent* dragEvent = static_cast<DragEvent*>(inputEvent);",
+      "kind": "data",
+      "text": "取出 DragEvent。"
+    },
+    {
+      "at": 143,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 144,
+      "quote": "ALOGD(\"channel '%s' ~ Received drag event: isExiting=%s\", mName.c_str(),",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 145,
+      "quote": "toString(dragEvent->isExiting()));",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 146,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 147,
+      "quote": "env->CallVoidMethod(receiverObj.get(), gInputEventReceiverClassInfo.onDragEvent,",
+      "kind": "call",
+      "text": "回调 Java onDragEvent。"
+    },
+    {
+      "at": 148,
+      "quote": "jboolean(dragEvent->isExiting()), dragEvent->getX(),",
+      "kind": "note",
+      "text": "传 isExiting 与坐标。"
+    },
+    {
+      "at": 149,
+      "quote": "dragEvent->getY(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 150,
+      "quote": "static_cast<jint>(dragEvent->getDisplayId().val()));",
+      "kind": "note",
+      "text": "传 displayId。"
+    },
+    {
+      "at": 151,
+      "quote": "finishInputEvent(seq, /*handled=*/true);",
+      "kind": "call",
+      "text": "立即回执。"
+    },
+    {
+      "at": 152,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "继续下一条。"
+    },
+    {
+      "at": 153,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 DRAG。"
+    },
+    {
+      "at": 154,
+      "quote": "case InputEventType::TOUCH_MODE: {",
+      "kind": "branch",
+      "text": "触摸模式变化。"
+    },
+    {
+      "at": 155,
+      "quote": "const TouchModeEvent* touchModeEvent = static_cast<TouchModeEvent*>(inputEvent);",
+      "kind": "data",
+      "text": "取出 TouchModeEvent。"
+    },
+    {
+      "at": 156,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 157,
+      "quote": "ALOGD(\"channel '%s' ~ Received touch mode event: isInTouchMode=%s\",",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 158,
+      "quote": "mName.c_str(), toString(touchModeEvent->isInTouchMode()));",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 159,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 160,
+      "quote": "env->CallVoidMethod(receiverObj.get(),",
+      "kind": "call",
+      "text": "回调 Java。"
+    },
+    {
+      "at": 161,
+      "quote": "gInputEventReceiverClassInfo.onTouchModeChanged,",
+      "kind": "call",
+      "text": "方法引用。"
+    },
+    {
+      "at": 162,
+      "quote": "jboolean(touchModeEvent->isInTouchMode()));",
+      "kind": "note",
+      "text": "传 isInTouchMode。"
+    },
+    {
+      "at": 163,
+      "quote": "finishInputEvent(seq, /*handled=*/true);",
+      "kind": "call",
+      "text": "立即回执。"
+    },
+    {
+      "at": 164,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "继续下一条。"
+    },
+    {
+      "at": 165,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 TOUCH_MODE。"
+    },
+    {
+      "at": 166,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 167,
+      "quote": "default:",
+      "kind": "note",
+      "text": "默认分支。"
+    },
+    {
+      "at": 168,
+      "quote": "assert(false); // InputConsumer should prevent this from ever happening",
+      "kind": "note",
+      "text": "断言：InputConsumer 不应产生未知类型。"
+    },
+    {
+      "at": 169,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 170,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 171,
+      "quote": "if (inputEventObj.get()) {",
+      "kind": "branch",
+      "text": "成功构造了 Java 事件对象。"
+    },
+    {
+      "at": 172,
+      "quote": "if (kDebugDispatchCycle) {",
+      "kind": "branch",
+      "text": "调试日志。"
+    },
+    {
+      "at": 173,
+      "quote": "ALOGD(\"channel '%s' ~ Dispatching input event.\", mName.c_str());",
+      "kind": "note",
+      "text": "INFO 日志。"
+    },
+    {
+      "at": 174,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭调试。"
+    },
+    {
+      "at": 175,
+      "quote": "if (ATRACE_ENABLED()) {",
+      "kind": "branch",
+      "text": "trace 开启。"
+    },
+    {
+      "at": 176,
+      "quote": "std::string description = getDispatchInputEventTraceDescription(*inputEvent);",
+      "kind": "data",
+      "text": "生成带事件描述的 trace 名。"
+    },
+    {
+      "at": 177,
+      "quote": "ATRACE_BEGIN(description.c_str());",
+      "kind": "trace",
+      "text": "开始切片。"
+    },
+    {
+      "at": 178,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 trace 判断。"
+    },
+    {
+      "at": 179,
+      "quote": "env->CallVoidMethod(receiverObj.get(),",
+      "kind": "call",
+      "text": "**JNI 回调 Java**：dispatchInputEvent(seq, event)。"
+    },
+    {
+      "at": 180,
+      "quote": "gInputEventReceiverClassInfo.dispatchInputEvent, seq,",
+      "kind": "call",
+      "text": "方法引用。"
+    },
+    {
+      "at": 181,
+      "quote": "inputEventObj.get());",
+      "kind": "note",
+      "text": "传 seq 与事件对象。"
+    },
+    {
+      "at": 182,
+      "quote": "ATRACE_END();",
+      "kind": "trace",
+      "text": "结束切片。"
+    },
+    {
+      "at": 183,
+      "quote": "if (env->ExceptionCheck()) {",
+      "kind": "branch",
+      "text": "Java 侧抛异常。"
+    },
+    {
+      "at": 184,
+      "quote": "ALOGE(\"Exception dispatching input event.\");",
+      "kind": "note",
+      "text": "E 级日志。"
+    },
+    {
+      "at": 185,
+      "quote": "skipCallbacks = true;",
+      "kind": "state",
+      "text": "后续跳过回调（但仍要消费，避免 dispatcher 卡住）。"
+    },
+    {
+      "at": 186,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭异常分支。"
+    },
+    {
+      "at": 187,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 188,
+      "quote": "ALOGW(\"channel '%s' ~ Failed to obtain event object.\", mName.c_str());",
+      "kind": "note",
+      "text": "W 级日志：构对象失败。"
+    },
+    {
+      "at": 189,
+      "quote": "skipCallbacks = true;",
+      "kind": "state",
+      "text": "同样跳过后续回调。"
+    },
+    {
+      "at": 190,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 191,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 skipCallbacks 判断。"
+    },
+    {
+      "at": 192,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭无限循环：靠 WOULD_BLOCK 返回。"
+    },
+    {
+      "at": 193,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

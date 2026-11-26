@@ -1,0 +1,51 @@
+{
+  "step": "s07",
+  "title": "相位被折算成两个 duration",
+  "tldr": "sfWorkDuration = P − sfOffset，appWorkDuration = P + sfOffset − appOffset；进入调度器的只有这两个时长。",
+  "why": "这是「相位」这个概念在代码里的真实形态：没有独立的 phaseOffset 变量参与调度，只有两个 duration。所以调相位（例如改 debug.sf.high_fps_late_app_phase_offset_ns）实际是在改这两个时长。理解这点，才能推导：app 比 sf 早唤醒 appWorkDuration − sfWorkDuration = sfOffset − appOffset… 而 app 的 deadline 恰好是 sf 的唤醒点。",
+  "concepts": [
+    {
+      "term": "sfOffsetToDuration",
+      "text": "P − sfOffset。"
+    },
+    {
+      "term": "appOffsetToDuration",
+      "text": "P + (sfOffset − appOffset)，并对负值按周期折叠。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::chrono::nanoseconds sfOffsetToDuration(nsecs_t sfOffset, nsecs_t vsyncDuration) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp:146",
+      "what": "sf 侧换算。"
+    },
+    {
+      "call": "std::chrono::nanoseconds appOffsetToDuration(nsecs_t appOffset, nsecs_t sfOffset,",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp:150",
+      "what": "app 侧换算。"
+    },
+    {
+      "call": ".sfWorkDuration = sfOffsetToDuration(earlySfOffset, vsyncDuration),",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp:182",
+      "what": "构造三套配置。"
+    }
+  ],
+  "state": [
+    {
+      "field": "VsyncConfig",
+      "before": "offset 三元组",
+      "after": "work/ready 时长",
+      "note": "只有后者进入调度。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为存在独立的 phase 变量：没有，只有 duration。",
+    "改了 offset 却找不到生效点：看这里。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger --vsync 显示实际 work/ready。",
+    "对比改 sysprop 前后的唤醒点。"
+  ],
+  "next": "两个时长怎么下发给两条线？见第 8 步。"
+}

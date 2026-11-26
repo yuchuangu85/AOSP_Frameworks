@@ -1,0 +1,60 @@
+{
+  "step": "s03",
+  "title": "InputReader::loopOnce 的两段锁",
+  "tldr": "锁内算超时、锁外阻塞读、锁内解析、锁外下发——四段动作对应两段锁。",
+  "why": "这是整个 inputflinger 最重要的并发设计。如果 getEvents 在锁内调用，epoll 阻塞期间任何想调用 InputReader 接口的线程都会卡住；如果 notify 在锁内调用，listener 链下游（InputDispatcher → WMS → 回到 InputReader）就会形成死锁环路。源码注释明确写了这个环路「quite plausible」，所以这不是理论风险。理解这两段锁，才能读懂后续所有「为什么这里要放锁」的写法。",
+  "concepts": [
+    {
+      "term": "mLock",
+      "text": "InputReader 的状态锁，保护设备表、pending 参数、配置。"
+    },
+    {
+      "term": "timeoutMillis",
+      "text": "本轮 epoll 的阻塞时长；有配置变更时为 0，有定时任务时为剩余毫秒。"
+    },
+    {
+      "term": "mNextListener",
+      "text": "listener 链的下一级，最终是 InputDispatcher。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::scoped_lock _l(mLock);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:180",
+      "what": "第一段锁：只做算超时这类短操作。"
+    },
+    {
+      "call": "std::vector<RawEvent> events = mEventHub->getEvents(timeoutMillis);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:196",
+      "what": "锁外阻塞读。"
+    },
+    {
+      "call": "mPendingArgs += processEventsLocked(events.data(), events.size());",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:203",
+      "what": "第二段锁：持锁解析。"
+    },
+    {
+      "call": "mNextListener.notify(args);",
+      "ref": "native/services/inputflinger/reader/InputReader.cpp:242",
+      "what": "锁外下发，避免死锁。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingArgs",
+      "before": "上一轮残留",
+      "after": "本轮解析结果（随后被 swap 出去）",
+      "note": "锁内只累积，不遍历。"
+    }
+  ],
+  "threads": "InputReader 线程。",
+  "pitfalls": [
+    "把 notify 挪进锁内：listener 回调 WMS 再回调 InputReader 会死锁。",
+    "让 getEvents 持锁阻塞：其他线程调用 getScanCodeState 会卡住。"
+  ],
+  "debug": [
+    "atrace 里 InputReader 的 loop 段与 notify 段可分辨。",
+    "若出现输入整体停止，先看 InputReader 是否卡在 getEvents。"
+  ],
+  "next": "事件进入 reader 后如何按设备切批？见第 4 步。"
+}

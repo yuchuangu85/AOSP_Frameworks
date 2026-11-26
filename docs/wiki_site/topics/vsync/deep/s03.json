@@ -1,0 +1,56 @@
+{
+  "step": "s03",
+  "title": "addResyncSample：进入校准器",
+  "tldr": "Scheduler 校验时间源后转给 VsyncSchedule，由它持 mHwVsyncLock 推进 VSyncReactor。",
+  "why": "时间源参数（HwVsync / PresentFence）在这里被强制校验：present fence 必须走 addPresentFence，传错直接 FATAL。这种「宁可崩也不静默错」的写法在调度代码里很常见，因为一旦两种时间源混进同一个 tracker，预测会长期偏差且极难发现。锁的分层也值得注意：外部锁是 mHwVsyncLock，内部才是 reactor 自己的 mMutex。",
+  "concepts": [
+    {
+      "term": "VsyncTimeSource",
+      "text": "HwVsync / PresentFence，决定样本的来源语义。"
+    },
+    {
+      "term": "mHwVsyncLock",
+      "text": "保护硬件 vsync 状态与 controller。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void Scheduler::addResyncSample(const hal::VsyncPeriodChangeTimeline&,",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:978",
+      "what": "Scheduler 侧入口。"
+    },
+    {
+      "call": "bool VsyncSchedule::addResyncSample(nsecs_t timestamp, std::optional<nsecs_t> hwcVsyncPeriod,",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp:168",
+      "what": "转给 schedule。"
+    },
+    {
+      "call": "bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t> hwcVsyncPeriod,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp:201",
+      "what": "真正的校准在这里。"
+    },
+    {
+      "call": "bool VsyncSchedule::addPresentFence(std::shared_ptr<FenceTime> fence) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp:184",
+      "what": "present fence 走另一条同名路径。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mHwVsyncState",
+      "before": "未启用",
+      "after": "启用并带 controller",
+      "note": "由 VsyncSchedule 管理。"
+    }
+  ],
+  "threads": "HAL 回调线程。",
+  "pitfalls": [
+    "把 present fence 当 vsync 样本传：会 FATAL。",
+    "在持 mHwVsyncLock 时回调 SF 的接口：注意锁序。"
+  ],
+  "debug": [
+    "trace 里 VSyncSchedule 与 VSR 相关打点。",
+    "dumpsys SurfaceFlinger --vsync 的 schedule 段。"
+  ],
+  "next": "Reactor 怎么判断样本可信？见第 4 步。"
+}

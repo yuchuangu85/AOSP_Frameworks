@@ -1,0 +1,51 @@
+{
+  "step": "s20",
+  "title": "卡住的事务：stalled 记录",
+  "tldr": "因 acquire fence 长期不 signal 而阻塞超过 4s 的事务会被登记为 stalled，dumpsys 里能看到是谁卡住了。",
+  "why": "这类问题极难从现象反推：app 侧提交成功、SF 侧没报错、画面就是不更新。stalled 记录把「谁卡住了事务队列」变成可查的事实——带 pid、layerId、layerName、bufferId、frameNumber。没有它，只能靠猜是哪个进程的哪块 buffer 没写完。注意它只在存在 releaseBufferListener 时才登记，因为那种情况下阻塞意味着 buffer 生命周期出了问题。",
+  "concepts": [
+    {
+      "term": "stalled transaction",
+      "text": "带来源信息的阻塞事务记录。"
+    },
+    {
+      "term": "onTransactionQueueStalled",
+      "text": "登记入口，4s 阈值。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mTransactionHandler",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5460",
+      "what": "登记卡住的事务。"
+    },
+    {
+      "call": ".onTransactionQueueStalled(transaction.id,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5461",
+      "what": "带上事务 id。"
+    },
+    {
+      "call": "result = mTransactionHandler.getStalledTransactionInfo(pid);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:9424",
+      "what": "供 dumpsys 查询。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mStalledTransactions",
+      "before": "空",
+      "after": "含该事务信息",
+      "note": "受 mStalledMutex 保护。"
+    }
+  ],
+  "threads": "SF 主线程登记；binder 线程查询。",
+  "pitfalls": [
+    "以为 stalled 会自动恢复：它只是记录，需要外部解决 buffer 问题。",
+    "忽略 4s 阈值：短时间阻塞不会记录。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的 stalled transaction 段。",
+    "trace 里 fence unsignaled 标签。"
+  ],
+  "next": "时间维度上为什么事务会被挡住？见第 21 步。"
+}

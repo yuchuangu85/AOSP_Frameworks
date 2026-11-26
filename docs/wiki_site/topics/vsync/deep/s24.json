@@ -1,0 +1,51 @@
+{
+  "step": "s24",
+  "title": "仓库外：驱动与面板时序",
+  "tldr": "面板 vsync 精度、HAL 上报线程与抖动、DRM 驱动时序补偿都不在本仓库，只能间接观察。",
+  "why": "把边界写清楚，是为了避免两类错误：一是用代码推断硬件时刻（做不到），二是把 vendor 侧问题当 Android bug 修。能做到的是：用 HW_VSYNC 打点看间隔、用 present fence 看实际上屏、用 VSYNC-predicted 与 HW_VSYNC 的偏差看模型质量。这三者结合，足以判断问题是否在仓库内。",
+  "concepts": [
+    {
+      "term": "present fence",
+      "text": "实际上屏的信号，唯一可靠的硬件时刻证据。"
+    },
+    {
+      "term": "HW_VSYNC 间隔",
+      "text": "硬件 vsync 周期是否稳定的直接证据。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "SFTRACE_FORMAT(\"VSYNC-predicted\");",
+      "ref": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp:55",
+      "what": "预测网格打点。"
+    },
+    {
+      "call": "nsecs_t VSyncPredictor::nextAnticipatedVSyncTimeFrom(nsecs_t timePoint,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp:380",
+      "what": "预测点来源。"
+    },
+    {
+      "call": "sp<Fence> HWComposer::getPresentFence(HalDisplayId displayId) const {",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:637",
+      "what": "实际上屏证据。"
+    }
+  ],
+  "state": [
+    {
+      "field": "模型质量",
+      "before": "未知",
+      "after": "由 predicted 与 HW_VSYNC 偏差评估",
+      "note": "偏差大说明模型需重校准。"
+    }
+  ],
+  "threads": "仓库外决定。",
+  "pitfalls": [
+    "用代码推断硬件 vsync 时刻。",
+    "把 vendor 抖动当 Android 侧 bug。"
+  ],
+  "debug": [
+    "Perfetto 三者同屏对比。",
+    "`dumpsys SurfaceFlinger --latency` 看实际上屏分布。"
+  ],
+  "next": "回到第 1 步重走一遍，或对照 view-traversal 看 doFrame 之后如何变成一帧。"
+}

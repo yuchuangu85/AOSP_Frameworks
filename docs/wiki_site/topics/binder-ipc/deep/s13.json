@@ -1,0 +1,55 @@
+{
+  "step": "s13",
+  "title": "waitForResponse：同步等待的循环",
+  "tldr": "循环 talkWithDriver，直到 BR_REPLY 或失败码；非回复类命令会就地 executeCommand 处理。",
+  "why": "「等回复时还在执行别人的调用」是 binder 最反直觉的行为。假设 A 调 B，B 又调回 A：A 的等待线程会在 waitForResponse 里收到 BR_TRANSACTION，并**就地执行**它，而不是死等。这让双向调用不会互相阻塞，但也意味着「一个同步调用的耗时」可能包含「处理了对方的某个调用」。看栈时如果发现等待中夹着业务代码，就是这里。",
+  "concepts": [
+    {
+      "term": "BR_REPLY",
+      "text": "正常回复。"
+    },
+    {
+      "term": "BR_DEAD_REPLY",
+      "text": "对端已死 → DEAD_OBJECT。"
+    },
+    {
+      "term": "就地 executeCommand",
+      "text": "等待期间处理反向调用。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if ((err=talkWithDriver()) < NO_ERROR) break;",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1159",
+      "what": "每次循环先 ioctl。"
+    },
+    {
+      "call": "case BR_REPLY:",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1208",
+      "what": "正常回复。"
+    },
+    {
+      "call": "err = executeCommand(cmd);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1229",
+      "what": "**等待期间处理反向调用**。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mCallingPid/Uid",
+      "before": "调用方自己的",
+      "after": "执行反向调用时临时改写",
+      "note": "见 executeCommand 里的保存恢复。"
+    }
+  ],
+  "threads": "调用线程（阻塞）。",
+  "pitfalls": [
+    "以为等待期间线程空闲：可能正在执行对端发来的调用。",
+    "把 BR_DEAD_REPLY 当普通失败：它意味着对端进程没了。"
+  ],
+  "debug": [
+    "binder 事务栈里若出现业务代码，说明发生了反向调用。",
+    "DEAD_OBJECT 对应 DeadObjectException。"
+  ],
+  "next": "数据怎么交回 Java？见第 14 步。"
+}

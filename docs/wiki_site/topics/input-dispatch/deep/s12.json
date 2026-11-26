@@ -1,0 +1,55 @@
+{
+  "step": "s12",
+  "title": "焦点目标：findFocusedWindowTargetLocked",
+  "tldr": "按键等非指针事件走焦点解析；有 application 无 window 时 PENDING 并起超时。",
+  "why": "「有焦点应用但没有焦点窗口」是 ANR 的常见成因之一：应用还没创建/尚未添加窗口，事件就来了。dispatcher 不会立刻丢事件，也不会永久等待，而是设置 mNoFocusedWindowAnrState 并返回 PENDING——事件停在 mPendingEvent，超时后报「does not have a focused window」。窗口一旦出现就 reset 并继续分发。这套机制让「应用启动慢」表现为可诊断的 ANR，而不是静默丢失按键。",
+  "concepts": [
+    {
+      "term": "mFocusResolver",
+      "text": "维护每个显示当前焦点窗口的组件。"
+    },
+    {
+      "term": "PENDING",
+      "text": "分发结果之一：事件留在 pending，不重新入队。"
+    },
+    {
+      "term": "mNoFocusedWindowAnrState",
+      "text": "等待焦点窗口的超时状态。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "Result<sp<WindowInfoHandle>, InputEventInjectionResult>",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2441",
+      "what": "焦点窗口解析入口。"
+    },
+    {
+      "call": "void InputDispatcher::resetNoFocusedWindowTimeoutLocked() {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2374",
+      "what": "窗口出现时清除等待状态。"
+    },
+    {
+      "call": "void InputDispatcher::dispatchKeyLocked(",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1936",
+      "what": "按键分发：先让 policy 拦截，再取焦点窗口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mNoFocusedWindowAnrState",
+      "before": "无",
+      "after": "设置并带 timeoutEndTime",
+      "note": "超时后由 processAnrsLocked 处理。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "以为没有焦点窗口时事件会被立即丢弃：是 PENDING。",
+    "忽略 PENDING 会占住 mPendingEvent：后续事件在队列里等。"
+  ],
+  "debug": [
+    "dumpsys input 的 focusedApplications / focusedWindows 段。",
+    "日志里 does not have a focused window 的 ANR 原因。"
+  ],
+  "next": "目标确定后如何真正发出去？见第 13 步。"
+}

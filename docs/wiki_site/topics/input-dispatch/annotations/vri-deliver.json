@@ -1,0 +1,330 @@
+{
+  "id": "vri-deliver",
+  "title": "ViewRootImpl.deliverInputEvent",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "private void deliverInputEvent(",
+  "span": [
+    11293,
+    11345
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void deliverInputEvent(QueuedInputEvent q) {",
+      "kind": "note",
+      "text": "应用侧「把一条已排队事件送进责任链」的唯一入口。它决定从哪一级开始，以及要不要先做 KeyEvent 预处理。"
+    },
+    {
+      "at": 2,
+      "quote": "Trace.asyncTraceBegin(Trace.TRACE_TAG_VIEW, \"deliverInputEvent\",",
+      "kind": "trace",
+      "text": "异步 trace 段（跨线程可辨），用于在 Perfetto 里对齐事件 id。"
+    },
+    {
+      "at": 3,
+      "quote": "q.mEvent.getId());",
+      "kind": "note",
+      "text": "同一 id 在 finishInputEvent 时配对。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {",
+      "kind": "branch",
+      "text": "只有开启 trace 时才拼字符串——避免正常路径承担格式化成本。"
+    },
+    {
+      "at": 6,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"deliverInputEvent src=0x\"",
+      "kind": "trace",
+      "text": "同步切片，名字里带 source 与事件时间。"
+    },
+    {
+      "at": 7,
+      "quote": "+ Integer.toHexString(q.mEvent.getSource()) + \" eventTimeNano=\"",
+      "kind": "note",
+      "text": "source 位掩码：区分触摸/按键/轨迹球来源。"
+    },
+    {
+      "at": 8,
+      "quote": "+ q.mEvent.getEventTimeNanos() + \" id=0x\"",
+      "kind": "note",
+      "text": "eventTimeNano 是事件发生时间（不是处理时间）。"
+    },
+    {
+      "at": 9,
+      "quote": "+ Integer.toHexString(q.mEvent.getId()));",
+      "kind": "note",
+      "text": "id 用于和 dispatcher 侧对账。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 trace 分支。"
+    },
+    {
+      "at": 11,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 保证 trace 一定闭合。"
+    },
+    {
+      "at": 12,
+      "quote": "if (mInputEventConsistencyVerifier != null) {",
+      "kind": "branch",
+      "text": "调试用的「事件一致性校验器」是否启用（开发者选项）。"
+    },
+    {
+      "at": 13,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"verifyEventConsistency\");",
+      "kind": "trace",
+      "text": "校验单独开一个切片。"
+    },
+    {
+      "at": 14,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try。"
+    },
+    {
+      "at": 15,
+      "quote": "mInputEventConsistencyVerifier.onInputEvent(q.mEvent, 0);",
+      "kind": "call",
+      "text": "校验事件流是否违反契约（例如缺少 DOWN），只在调试构建启用。"
+    },
+    {
+      "at": 16,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 17,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合校验切片。"
+    },
+    {
+      "at": 18,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 finally。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭校验分支。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "InputStage stage;",
+      "kind": "data",
+      "text": "责任链起点。"
+    },
+    {
+      "at": 22,
+      "quote": "if (q.shouldSendToSynthesizer()) {",
+      "kind": "branch",
+      "text": "合成事件（例如鼠标模拟触摸、手写笔预测）走专用阶段。"
+    },
+    {
+      "at": 23,
+      "quote": "stage = mSyntheticInputStage;",
+      "kind": "data",
+      "text": "从 Synthetic 阶段开始。"
+    },
+    {
+      "at": 24,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则走常规链。"
+    },
+    {
+      "at": 25,
+      "quote": "// Optimization: Skip to Post-IME stage for pointer events (touch), unless the",
+      "kind": "note",
+      "text": "优化说明：指针事件可跳过 Pre-IME 段。"
+    },
+    {
+      "at": 26,
+      "quote": "// SKIP_IME flag is set.",
+      "kind": "note",
+      "text": "前提是没有 FLAG_SKIP_IME。"
+    },
+    {
+      "at": 27,
+      "quote": "// Why? The flag implies we need to handle Pre-IME logic (for KEYCODE_BACK",
+      "kind": "note",
+      "text": "为什么不能跳过：Pre-IME 里有 KEYCODE_BACK 拦截等逻辑。"
+    },
+    {
+      "at": 28,
+      "quote": "// interception) which lives in the NativePreImeStage, so we can't take the",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 29,
+      "quote": "// shortcut.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 30,
+      "quote": "boolean canSkipToPostIme = q.shouldSkipIme()",
+      "kind": "branch",
+      "text": "判断能否走捷径。"
+    },
+    {
+      "at": 31,
+      "quote": "&& (q.mFlags & QueuedInputEvent.FLAG_SKIP_IME) == 0;",
+      "kind": "call",
+      "text": "shouldSkipIme 为真且未置 FLAG_SKIP_IME。"
+    },
+    {
+      "at": 32,
+      "quote": "stage = canSkipToPostIme ? mFirstPostImeInputStage : mFirstInputStage;",
+      "kind": "data",
+      "text": "三元选择：Post-IME 起点或完整链第一级。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 34,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 35,
+      "quote": "if (q.mEvent instanceof KeyEvent) {",
+      "kind": "branch",
+      "text": "按键事件在进链前要做「未处理按键」预处理。"
+    },
+    {
+      "at": 36,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"preDispatchToUnhandledKeyManager\");",
+      "kind": "trace",
+      "text": "单独切片。"
+    },
+    {
+      "at": 37,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try。"
+    },
+    {
+      "at": 38,
+      "quote": "mUnhandledKeyManager.preDispatch((KeyEvent) q.mEvent);",
+      "kind": "call",
+      "text": "UnhandledKeyManager 记录按键，用于后续 fallback 与快捷键处理。"
+    },
+    {
+      "at": 39,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 40,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合切片。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 finally。"
+    },
+    {
+      "at": 42,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 KeyEvent 分支。"
+    },
+    {
+      "at": 43,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 44,
+      "quote": "if (stage != null) {",
+      "kind": "branch",
+      "text": "有起点才分发。"
+    },
+    {
+      "at": 45,
+      "quote": "handleWindowFocusChanged();",
+      "kind": "call",
+      "text": "先同步窗口焦点状态，保证责任链拿到的焦点信息是最新的。"
+    },
+    {
+      "at": 46,
+      "quote": "stage.deliver(q);",
+      "kind": "call",
+      "text": "**进入责任链**：后续由各 InputStage 依次处理，最终到 ViewGroup/View。"
+    },
+    {
+      "at": 47,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 48,
+      "quote": "finishInputEvent(q);",
+      "kind": "call",
+      "text": "没有起点（例如窗口已销毁）就直接回写完成，避免 dispatcher 等到超时。"
+    },
+    {
+      "at": 49,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 50,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 51,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合外层切片。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 finally。"
+    },
+    {
+      "at": 53,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

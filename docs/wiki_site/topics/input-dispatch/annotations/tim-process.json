@@ -1,0 +1,72 @@
+{
+  "id": "tim-process",
+  "title": "TouchInputMapper::process",
+  "file": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp",
+  "sig": "std::list<NotifyArgs> TouchInputMapper::process(",
+  "span": [
+    1305,
+    1314
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::list<NotifyArgs> TouchInputMapper::process(const RawEvent& rawEvent) {",
+      "kind": "note",
+      "text": "触摸设备 mapper 的每事件入口。注意它**不做坐标换算**——真正的解析在 SYN_REPORT 触发的 sync() 里。"
+    },
+    {
+      "at": 2,
+      "quote": "mCursorButtonAccumulator.process(rawEvent);",
+      "kind": "call",
+      "text": "光标按键累加器（鼠标式按键）先吃这条事件。"
+    },
+    {
+      "at": 3,
+      "quote": "mTouchButtonAccumulator.process(rawEvent);",
+      "kind": "call",
+      "text": "触摸按键累加器（如按键笔/掌压）再吃一次。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "std::list<NotifyArgs> out;",
+      "kind": "data",
+      "text": "输出列表。"
+    },
+    {
+      "at": 6,
+      "quote": "if (rawEvent.type == EV_SYN && rawEvent.code == SYN_REPORT) {",
+      "kind": "decision",
+      "text": "**只有 SYN_REPORT 才是「一帧结束」**：evdev 的事件流按包组织，必须凑齐才解析。"
+    },
+    {
+      "at": 7,
+      "quote": "out += sync(rawEvent.when, rawEvent.readTime);",
+      "kind": "call",
+      "text": "sync() 里做完整的轴值换算、手势判定与 NotifyMotionArgs 构造。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "返回本事件产生的参数。"
+    },
+    {
+      "at": 9,
+      "quote": "return out;",
+      "kind": "note",
+      "text": "方法结束。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "（EOF 行，无内容）"
+    }
+  ]
+}

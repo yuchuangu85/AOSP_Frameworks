@@ -1,0 +1,204 @@
+{
+  "id": "et-dispatch",
+  "title": "EventThread::dispatchEvent",
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "sig": "void EventThread::dispatchEvent",
+  "span": [
+    769,
+    800
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void EventThread::dispatchEvent(const DisplayEventReceiver::Event& event,",
+      "kind": "note",
+      "text": "把一个事件真正写进每个消费者的 BitTube。注意它是逐个 consumer 处理，而不是广播同一个对象。"
+    },
+    {
+      "at": 2,
+      "quote": "const DisplayEventConsumers& consumers) {",
+      "kind": "note",
+      "text": "参数：事件与消费者列表。"
+    },
+    {
+      "at": 3,
+      "quote": "for (const auto& consumer : consumers) {",
+      "kind": "note",
+      "text": "遍历消费者。"
+    },
+    {
+      "at": 4,
+      "quote": "DisplayEventReceiver::Event copy = event;",
+      "kind": "data",
+      "text": "**每个消费者一份拷贝**：因为 timeline 要按各自 uid 生成。"
+    },
+    {
+      "at": 5,
+      "quote": "if (event.header.type == DisplayEventType::DISPLAY_EVENT_VSYNC) {",
+      "kind": "branch",
+      "text": "是 vsync 事件。"
+    },
+    {
+      "at": 6,
+      "quote": "const Period frameInterval = mCallback.getVsyncPeriod(consumer->mOwnerUid);",
+      "kind": "call",
+      "text": "按 uid 取该应用的帧间隔。"
+    },
+    {
+      "at": 7,
+      "quote": "copy.vsync.vsyncData.frameInterval = frameInterval.ns();",
+      "kind": "state",
+      "text": "写进拷贝的 frameInterval。"
+    },
+    {
+      "at": 8,
+      "quote": "generateFrameTimeline(copy.vsync.vsyncData, frameInterval.ns(), copy.header.timestamp,",
+      "kind": "call",
+      "text": "**生成候选 frame timeline**：填 vsyncId、expectedPresentTime、deadline。"
+    },
+    {
+      "at": 9,
+      "quote": "event.vsync.vsyncData.preferredExpectedPresentationTime(),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "event.vsync.vsyncData.preferredDeadlineTimestamp());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "闭合调用。"
+    },
+    {
+      "at": 12,
+      "quote": "switch (consumer->postEvent(copy)) {",
+      "kind": "note",
+      "text": "关闭 vsync 分支。"
+    },
+    {
+      "at": 13,
+      "quote": "case NO_ERROR:",
+      "kind": "decision",
+      "text": "按 postEvent 的结果分支。"
+    },
+    {
+      "at": 14,
+      "quote": "break;",
+      "kind": "branch",
+      "text": "成功。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "什么都不做。"
+    },
+    {
+      "at": 16,
+      "quote": "case -EAGAIN:",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 17,
+      "quote": "// TODO: Try again if pipe is full.",
+      "kind": "branch",
+      "text": "-EAGAIN：管道满。"
+    },
+    {
+      "at": 18,
+      "quote": "ALOGW(\"Failed dispatching %s for %s\", toString(event).c_str(),",
+      "kind": "note",
+      "text": "TODO：管道满时应当重试。"
+    },
+    {
+      "at": 19,
+      "quote": "toString(*consumer).c_str());",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 20,
+      "quote": "break;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 21,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 22,
+      "quote": "default:",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "// Treat EPIPE and other errors as fatal.",
+      "kind": "note",
+      "text": "其它错误（含 EPIPE）。"
+    },
+    {
+      "at": 24,
+      "quote": "removeDisplayEventConnectionLocked(consumer);",
+      "kind": "note",
+      "text": "注释：视为致命，直接摘除连接。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "call",
+      "text": "**移除连接**：应用侧只会看到 initCheck 报错。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 27,
+      "quote": "if (event.header.type == DisplayEventType::DISPLAY_EVENT_VSYNC) {",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 28,
+      "quote": "mLastCommittedVsyncTime =",
+      "kind": "branch",
+      "text": "是 vsync 事件。"
+    },
+    {
+      "at": 29,
+      "quote": "TimePoint::fromNs(event.vsync.vsyncData.preferredExpectedPresentationTime());",
+      "kind": "state",
+      "text": "**记录已提交的 vsync**：下次调度会以它为下界。"
+    },
+    {
+      "at": 30,
+      "quote": "mCallback.onExpectedPresentTimePosted(mLastCommittedVsyncTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "call",
+      "text": "通知 Scheduler：这个时间已经告诉过 app 了，用于对齐。"
+    },
+    {
+      "at": 32,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

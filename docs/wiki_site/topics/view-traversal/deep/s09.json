@@ -1,0 +1,38 @@
+{
+  "step": "s09",
+  "title": "performDraw：屏幕状态、脏区与 trace 区间",
+  "tldr": "先过两道闸门（息屏、无根），再取走 fullRedrawNeeded 并整体包一层 draw 切片。",
+  "why": "这一层的价值在于「不画」和「收尾」：息屏时不画能省下整帧的 GPU 与 RT 工作；没有根 View 时不画能避免 NPE；而 mIsDrawing 的置位/复位保证了绘制期间再来的 invalidate 不会递归触发第二次 draw。此外这里还承载了两个容易被忽略的时序语义：返回 false 表示本帧没画（performTraversals 据此走同步补偿），以及 usingAsyncReport 决定谁负责把窗口事务提交给 SF。",
+  "concepts": [
+    { "term": "mLastPerformDrawSkippedReason", "text": "记录本帧为何不画（screen_off / no_root_view），常见于 dumpsys 输出。" },
+    { "term": "mIsDrawing", "text": "绘制中标志；防止绘制期间的重入。" },
+    { "term": "usingAsyncReport", "text": "本帧是否依赖异步回调来提交事务；影响 performDraw 后半段的处理。" },
+    { "term": "mWindowDrawCountDown", "text": "多线程渲染下等待硬件帧完成的倒计时器。" }
+  ],
+  "walk": [
+    { "call": "private boolean performDraw(@Nullable SurfaceSyncGroup surfaceSyncGroup)", "ref": "base/core/java/android/view/ViewRootImpl.java:5940", "what": "入口；返回 false 表示本帧没画。" },
+    { "call": "if (mAttachInfo.mDisplayState == Display.STATE_OFF && !mReportNextDraw) {", "ref": "base/core/java/android/view/ViewRootImpl.java:5942", "what": "息屏且没人要求 report：直接不画。" },
+    { "call": "final boolean fullRedrawNeeded = mFullRedrawNeeded || surfaceSyncGroup != null;", "ref": "base/core/java/android/view/ViewRootImpl.java:5959", "what": "两个来源要求全量：本端标志，或带同步组。" },
+    { "call": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, mDrawTrace);", "ref": "base/core/java/android/view/ViewRootImpl.java:5963", "what": "整帧 draw 的切片，包住下面的 draw() 调用。" },
+    { "call": "usingAsyncReport = draw(fullRedrawNeeded, surfaceSyncGroup, mSyncBuffer);", "ref": "base/core/java/android/view/ViewRootImpl.java:5970", "what": "进入真正的绘制分发。" },
+    { "call": "mWindowDrawCountDown.await();", "ref": "base/core/java/android/view/ViewRootImpl.java:6002", "what": "report 路径下少数会「等 RT 真正画完」的地方。" },
+    { "call": "mAttachInfo.mThreadedRenderer.fence();", "ref": "base/core/java/android/view/ViewRootImpl.java:6029", "what": "非异步上报时同步等 GPU 完成，代价是 UI 线程被阻塞。" }
+  ],
+  "state": [
+    { "field": "mIsDrawing", "before": "false", "after": "true → false（finally 复位）", "note": "复位在 finally 里，异常也不会把它卡在 true。" },
+    { "field": "mFullRedrawNeeded", "before": "可能为 true", "after": "false", "note": "取走即清，避免下一帧被连带。" },
+    { "field": "mLastDrawScreenOff", "before": "false", "after": "息屏期间 true", "note": "用于成对打印停画/恢复日志。" }
+  ],
+  "threads": "UI 线程。注意 awit() 与 fence() 会真的阻塞 UI 线程，但它们只出现在 report 路径上，不是常规帧。",
+  "pitfalls": [
+    "把 performDraw 返回 true 当成「已经上屏」：它只表示走了绘制流程。",
+    "忽略 usingAsyncReport 的语义：异步路径下事务由回调提交，手动再提交会重复。",
+    "在息屏路径上排查「为什么没画」：先看 mLastPerformDrawSkippedReason。"
+  ],
+  "debug": [
+    "dumpsys gfxinfo 的跳过原因字段来自 mLastPerformDrawSkippedReason。",
+    "trace 里的 draw 切片（名为 mDrawTrace）包住整帧绘制，可与 measure/layout 并列比较。",
+    "在 5942 与 5949 两处断点，可区分息屏与无根两种不画的情形。"
+  ],
+  "next": "进入真正的绘制分发后，脏区与软/硬件分流怎么做？见第 10 步。"
+}

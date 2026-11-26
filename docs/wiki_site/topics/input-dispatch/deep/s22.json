@@ -1,0 +1,60 @@
+{
+  "step": "s22",
+  "title": "ANR 落地：native 判定，Java 出文案",
+  "tldr": "native 判定并给 reason，ANR 文案在 Java 的 timeoutMessage，最终经 AnrController 落地。",
+  "why": "这是一条容易记错的链路：很多人以为 ANR 文案由 native 生成，实际上 native 只判定并给出 reason，那句家喻户晓的「Input dispatching timed out」是 Java 侧 timeoutMessage 拼出来的。落地路径是 InputManagerService → WMS 的 InputManagerCallback → AnrController，后者用 input token 反查 WindowState，再调 ActivityRecord.inputDispatchingTimedOut。理解这条链路，才能在 ANR 日志里正确区分「native 判定」与「Java 加工」。",
+  "concepts": [
+    {
+      "term": "input token",
+      "text": "窗口的 InputChannel token，是 ANR 反查窗口的 key。"
+    },
+    {
+      "term": "AnrController",
+      "text": "WMS 侧的 ANR 落地组件。"
+    },
+    {
+      "term": "timeoutMessage",
+      "text": "Java 侧拼 ANR 文案的函数。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "private String timeoutMessage(OptionalInt pid, String reason) {",
+      "ref": "base/services/core/java/com/android/server/input/InputManagerService.java:4661",
+      "what": "文案在这里拼。"
+    },
+    {
+      "call": "void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,",
+      "ref": "base/services/core/java/com/android/server/wm/AnrController.java:247",
+      "what": "反查窗口并落地。"
+    },
+    {
+      "call": "nsecs_t InputDispatcher::processAnrsLocked() {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1143",
+      "what": "native 侧从这里判定超时。"
+    },
+    {
+      "call": "connection->responsive = false;",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1175",
+      "what": "判定后先标记连接不响应。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mLastAnrState",
+      "before": "上一次",
+      "after": "本帧队列快照",
+      "note": "dumpsys input 的 ANR 段就是它。"
+    }
+  ],
+  "threads": "native 在 dispatcher 线程判定；Java 在 system_server binder 线程处理。",
+  "pitfalls": [
+    "在 native 里找 ANR 文案：找不到，在 Java。",
+    "以为 token 是 binder 句柄的另一种形式：它就是 InputChannel token。"
+  ],
+  "debug": [
+    "dumpsys input 的 ANR 段。",
+    "logcat 里 Input dispatching timed out 的完整 reason。"
+  ],
+  "next": "哪些情况下根本不会有目标窗口？见第 23 步。"
+}

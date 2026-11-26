@@ -1,0 +1,55 @@
+{
+  "step": "s15",
+  "title": "app 收包：DisplayEventReceiver → Choreographer",
+  "tldr": "BitTube fd 挂在 app Looper 上，JNI 转成 Java 事件，FrameDisplayEventReceiver 投异步消息并钳时间戳。",
+  "why": "时间戳钳位（不晚于 now）是一个小而重要的细节：如果直接信任事件里的时间戳并当作「现在」，在跨进程延迟下会算出负的耗时或未来的时间，导致 Choreographer 的 jitter 判断失真。投异步消息则是为了让输入/动画能排在同步屏障之前——与普通消息的排队语义不同。",
+  "concepts": [
+    {
+      "term": "BitTube",
+      "text": "fd 形式的单向通道，被 app 的 Looper 直接监听。"
+    },
+    {
+      "term": "异步消息",
+      "text": "可越过同步屏障，保证帧回调优先。"
+    },
+    {
+      "term": "FrameDisplayEventReceiver",
+      "text": "Choreographer 内部收包器。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "DisplayEventReceiver::DisplayEventReceiver(EventConnectionInitiated,...",
+      "ref": "native/libs/gui/DisplayEventReceiver.cpp:36",
+      "what": "native 侧建连接并偷 fd。"
+    },
+    {
+      "call": "env->CallVoidMethod(thiz, gDisplayEventReceiverClassInfo.dispatchVsync,",
+      "ref": "base/core/jni/android_view_DisplayEventReceiver.cpp:203",
+      "what": "JNI 回调 Java。"
+    },
+    {
+      "call": "mChoreographer.mFrameData.update(frameTime, vsyncEventData);",
+      "ref": "base/core/java/android/view/Choreographer.java:1107",
+      "what": "时间戳与候选 timeline 进 Choreographer。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mLastVsyncEventData",
+      "before": "上一拍",
+      "after": "本拍",
+      "note": "getVsyncId 从这里取。"
+    }
+  ],
+  "threads": "app UI 线程（Looper 回调）。",
+  "pitfalls": [
+    "把 header 时间戳当硬件 vsync：它是唤醒时刻。",
+    "忽略钳位：会看到不合理的未来时间。"
+  ],
+  "debug": [
+    "Perfetto 里 Choreographer#onVsync 打点。",
+    "对比 HW_VSYNC 与 VSYNC-app 的时间差（就是相位）。"
+  ],
+  "next": "doFrame 里发生了什么？见第 16 步。"
+}

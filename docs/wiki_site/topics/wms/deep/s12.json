@@ -1,0 +1,55 @@
+{
+  "step": "s12",
+  "title": "层级排序与 z-order",
+  "tldr": "assignWindowLayers 把 layer 写进 sync transaction，但推迟到动画阶段才应用，以便与显隐同步。",
+  "why": "这段代码有一个容易忽略的设计：layer 变更不立即应用，而是累积到 pending transaction，等动画阶段 prepareSurfaces 时统一应用。源码注释解释了原因——这样能让 z 序变化与 surface 的隐藏/显示同步，避免出现「先看到层级跳变再看到显隐」的中间态。",
+  "concepts": [
+    {
+      "term": "assignChildLayers",
+      "text": "递归把 layer 写进 sync transaction。"
+    },
+    {
+      "term": "pending transaction",
+      "text": "累积到动画阶段才应用。"
+    },
+    {
+      "term": "scheduleAnimation",
+      "text": "调度一次动画帧。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void assignWindowLayers(boolean setLayoutNeeded) {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:4549",
+      "what": "入口。"
+    },
+    {
+      "call": "assignChildLayers(getSyncTransaction());",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:4551",
+      "what": "递归赋值。"
+    },
+    {
+      "call": "scheduleAnimation();",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:4560",
+      "what": "调度动画帧以应用累积事务。"
+    }
+  ],
+  "state": [
+    {
+      "field": "layer",
+      "before": "旧值",
+      "after": "按排序结果更新",
+      "note": "推迟到动画阶段生效。"
+    }
+  ],
+  "threads": "WMS 主线程。",
+  "pitfalls": [
+    "以为 layer 立刻生效：延后到动画阶段。",
+    "层级错乱同时影响遮挡与输入命中。"
+  ],
+  "debug": [
+    "dumpsys window 每个窗口的 mLayer。",
+    "trace 里 assignWindowLayers 切片。"
+  ],
+  "next": "焦点怎么定？见第 13 步。"
+}

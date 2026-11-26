@@ -1,0 +1,96 @@
+{
+  "id": "dc-layers",
+  "title": "DisplayContent.assignWindowLayers",
+  "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+  "sig": "void assignWindowLayers(boolean setLayoutNeeded) {",
+  "span": [
+    4549,
+    4562
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void assignWindowLayers(boolean setLayoutNeeded) {",
+      "kind": "note",
+      "text": "z-order 的赋值入口。注意它把变更累积进 pending transaction，而不是立刻应用。"
+    },
+    {
+      "at": 2,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"assignWindowLayers\");",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 3,
+      "quote": "assignChildLayers(getSyncTransaction());",
+      "kind": "call",
+      "text": "**逐子节点递归赋值 layer**，写进 sync transaction。"
+    },
+    {
+      "at": 4,
+      "quote": "if (setLayoutNeeded) {",
+      "kind": "branch",
+      "text": "调用方要求重新布局。"
+    },
+    {
+      "at": 5,
+      "quote": "setLayoutNeeded();",
+      "kind": "call",
+      "text": "打上 layoutNeeded 标记。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "// We accumlate the layer changes in-to \"getPendingTransaction()\" but we defer",
+      "kind": "note",
+      "text": "**关键注释**：layer 变更先累积到 pending transaction，推迟到动画阶段 prepareSurfaces 时才应用。"
+    },
+    {
+      "at": 9,
+      "quote": "// the application of this transaction until the animation pass triggers",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "// prepareSurfaces. This allows us to synchronize Z-ordering changes with",
+      "kind": "note",
+      "text": "续行：这样能把 z 序变化与 surface 的显隐同步起来。"
+    },
+    {
+      "at": 11,
+      "quote": "// the hiding and showing of surfaces.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 12,
+      "quote": "scheduleAnimation();",
+      "kind": "call",
+      "text": "调度一次动画帧，让上面累积的 transaction 有机会被应用。"
+    },
+    {
+      "at": 13,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "结束切片。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

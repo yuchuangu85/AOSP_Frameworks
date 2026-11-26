@@ -1,0 +1,1590 @@
+{
+  "id": "sf-presented",
+  "title": "SurfaceFlinger::onCompositionPresented",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "void SurfaceFlinger::onCompositionPresented(",
+  "span": [
+    3775,
+    4037
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId,",
+      "kind": "note",
+      "text": "present 之后的回填：读 present fence、写 FrameTimeline、逐层释放 buffer。这是「上屏闭环」的落点。"
+    },
+    {
+      "at": 2,
+      "quote": "const scheduler::FrameTargeters& frameTargeters,",
+      "kind": "note",
+      "text": "frameTargeters 提供每个显示的 frame target（fence 要写回它）。"
+    },
+    {
+      "at": 3,
+      "quote": "nsecs_t presentStartTime) {",
+      "kind": "note",
+      "text": "presentStartTime 是进入 present 阶段的时刻，用于可信呈现状态统计。"
+    },
+    {
+      "at": 4,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片 onCompositionPresented。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "ui::PhysicalDisplayMap<PhysicalDisplayId, std::shared_ptr<FenceTime>> presentFences;",
+      "kind": "data",
+      "text": "每个显示的 present fence（包装成 FenceTime 才能安全跨线程观察）。"
+    },
+    {
+      "at": 7,
+      "quote": "ui::PhysicalDisplayMap<PhysicalDisplayId, const sp<Fence>> gpuCompositionDoneFences;",
+      "kind": "data",
+      "text": "每个显示的 GPU 合成完成 fence（client target 的 acquire fence）。"
+    },
+    {
+      "at": 8,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "for (const auto& [id, targeter] : frameTargeters) {",
+      "kind": "note",
+      "text": "遍历本拍所有显示。"
+    },
+    {
+      "at": 10,
+      "quote": "auto presentFence = getHwComposer().getPresentFence(id);",
+      "kind": "call",
+      "text": "从 HWComposer 取 present fence：它就是刚才 present 时存下的那个。"
+    },
+    {
+      "at": 11,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 12,
+      "quote": "if (id == pacesetterId) {",
+      "kind": "branch",
+      "text": "pacesetter 的 fence 要额外给事务回调用。"
+    },
+    {
+      "at": 13,
+      "quote": "mTransactionCallbackInvoker.addPresentFence(presentFence);",
+      "kind": "call",
+      "text": "登记到 TransactionCallbackInvoker，供 app 的帧提交回调读取上屏时间。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 15,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 16,
+      "quote": "if (auto fenceTime = targeter->setPresentFence(std::move(presentFence));",
+      "kind": "call",
+      "text": "写回 frame target 并转成 FenceTime；这一步让 FrameTargeter 能判定本拍是否按时上屏。"
+    },
+    {
+      "at": 17,
+      "quote": "fenceTime->isValid()) {",
+      "kind": "branch",
+      "text": "fence 有效才记录。"
+    },
+    {
+      "at": 18,
+      "quote": "presentFences.try_emplace(id, std::move(fenceTime));",
+      "kind": "data",
+      "text": "存进本地映射，后面统一处理。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭有效性判断。"
+    },
+    {
+      "at": 20,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 21,
+      "quote": "ftl::FakeGuard guard(mStateLock);",
+      "kind": "lock",
+      "text": "读 display 状态前取锁。"
+    },
+    {
+      "at": 22,
+      "quote": "if (const auto display = getCompositionDisplayLocked(id);",
+      "kind": "call",
+      "text": "取该显示的 CompositionDisplay。"
+    },
+    {
+      "at": 23,
+      "quote": "display && display->getState().usesClientComposition) {",
+      "kind": "branch",
+      "text": "本拍该显示走过 client 合成。"
+    },
+    {
+      "at": 24,
+      "quote": "gpuCompositionDoneFences",
+      "kind": "call",
+      "text": "取 client target 的 acquire fence：它是 GPU 画完的时刻，jank 归因要它。"
+    },
+    {
+      "at": 25,
+      "quote": ".try_emplace(id, display->getRenderSurface()->getClientTargetAcquireFence());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 client 合成分支。"
+    },
+    {
+      "at": 27,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 29,
+      "quote": "const auto pacesetterDisplay = FTL_FAKE_GUARD(mStateLock, getDisplayDeviceLocked(pacesetterId));",
+      "kind": "data",
+      "text": "pacesetter 的显示设备对象（后面算刷新率与电源状态都要它）。"
+    },
+    {
+      "at": 30,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "std::shared_ptr<FenceTime> pacesetterPresentFenceTime =",
+      "kind": "data",
+      "text": "pacesetter 的 present fence，取不到时退化为 NO_FENCE。"
+    },
+    {
+      "at": 32,
+      "quote": "presentFences.get(pacesetterId)",
+      "kind": "call",
+      "text": "从映射取。"
+    },
+    {
+      "at": 33,
+      "quote": ".transform([](const FenceTimePtr& ptr) { return ptr; })",
+      "kind": "call",
+      "text": "类型转换。"
+    },
+    {
+      "at": 34,
+      "quote": ".value_or(FenceTime::NO_FENCE);",
+      "kind": "call",
+      "text": "取不到时的兜底值。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "std::shared_ptr<FenceTime> pacesetterGpuCompositionDoneFenceTime =",
+      "kind": "data",
+      "text": "pacesetter 的 GPU 合成完成 fence。"
+    },
+    {
+      "at": 37,
+      "quote": "gpuCompositionDoneFences.get(pacesetterId)",
+      "kind": "call",
+      "text": "从映射取。"
+    },
+    {
+      "at": 38,
+      "quote": ".transform([](sp<Fence> fence) {",
+      "kind": "call",
+      "text": "包成 FenceTime。"
+    },
+    {
+      "at": 39,
+      "quote": "return std::make_shared<FenceTime>(std::move(fence));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 40,
+      "quote": "})",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": ".value_or(FenceTime::NO_FENCE);",
+      "kind": "call",
+      "text": "取不到时兜底。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "const TimePoint presentTime = TimePoint::now();",
+      "kind": "data",
+      "text": "本拍 present 时刻：用于 FrameTimeline 与 release 的目标时间。"
+    },
+    {
+      "at": 44,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 45,
+      "quote": "// Set presentation information before calling Layer::releasePendingBuffer, such that jank",
+      "kind": "note",
+      "text": "顺序很重要：必须先把 present 信息写进 FrameTimeline，再释放 buffer，才能让 app 尽早拿到 jank 分类。"
+    },
+    {
+      "at": 46,
+      "quote": "// information from previous' frame classification is already available when sending jank info",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 47,
+      "quote": "// to clients, so they get jank classification as early as possible.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 48,
+      "quote": "mFrameTimeline->setSfPresent(presentTime.ns(), pacesetterPresentFenceTime,",
+      "kind": "call",
+      "text": "**关键**：把 SF 的 present 时间、present fence 与 GPU 完成 fence 写入 FrameTimeline。"
+    },
+    {
+      "at": 49,
+      "quote": "pacesetterGpuCompositionDoneFenceTime);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 50,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 51,
+      "quote": "// We use the CompositionEngine::getLastFrameRefreshTimestamp() which might",
+      "kind": "note",
+      "text": "注释说明用 getLastFrameRefreshTimestamp 采样时刻的原因。"
+    },
+    {
+      "at": 52,
+      "quote": "// be sampled a little later than when we started doing work for this frame,",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 53,
+      "quote": "// but that should be okay since CompositorTiming has snapping logic.",
+      "kind": "note",
+      "text": "注释收尾。"
+    },
+    {
+      "at": 54,
+      "quote": "const TimePoint compositeTime =",
+      "kind": "data",
+      "text": "合成引擎记录的刷新时刻。"
+    },
+    {
+      "at": 55,
+      "quote": "TimePoint::fromNs(mCompositionEngine->getLastFrameRefreshTimestamp());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 56,
+      "quote": "const Duration presentLatency = mHasReliablePresentFences",
+      "kind": "data",
+      "text": "present latency：只有 present fence 可信时才追踪，否则按 0 处理。"
+    },
+    {
+      "at": 57,
+      "quote": "? mPresentLatencyTracker.trackPendingFrame(compositeTime, pacesetterPresentFenceTime)",
+      "kind": "call",
+      "text": "把本帧挂到延迟追踪器上，等 fence signal 后算出真实延迟。"
+    },
+    {
+      "at": 58,
+      "quote": ": Duration::zero();",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 59,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 60,
+      "quote": "const auto schedule = mScheduler->getVsyncSchedule();",
+      "kind": "data",
+      "text": "取 vync schedule。"
+    },
+    {
+      "at": 61,
+      "quote": "const TimePoint vsyncDeadline = schedule->vsyncDeadlineAfter(presentTime);",
+      "kind": "call",
+      "text": "算 present 之后的第一个 vsync deadline。"
+    },
+    {
+      "at": 62,
+      "quote": "const Fps renderRate = pacesetterDisplay->refreshRateSelector().getActiveMode().fps;",
+      "kind": "data",
+      "text": "pacesetter 当前刷新率。"
+    },
+    {
+      "at": 63,
+      "quote": "const nsecs_t vsyncPhase = mScheduler->getCurrentVsyncConfigs().late.sfOffset;",
+      "kind": "data",
+      "text": "sf 相位偏移，参与 CompositorTiming 构造。"
+    },
+    {
+      "at": 64,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 65,
+      "quote": "const CompositorTiming compositorTiming(vsyncDeadline.ns(), renderRate.getPeriodNsecs(),",
+      "kind": "data",
+      "text": "CompositorTiming：交给每一层做帧延迟统计与下一拍时序推算。"
+    },
+    {
+      "at": 66,
+      "quote": "vsyncPhase, presentLatency.ns());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 67,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 68,
+      "quote": "ui::DisplayMap<ui::LayerStack, const DisplayDevice*> layerStackToDisplay;",
+      "kind": "data",
+      "text": "layerStack → DisplayDevice 映射（只为下面的 released 层与 trusted 统计构建）。"
+    },
+    {
+      "at": 69,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 70,
+      "quote": "if (!mLayersWithBuffersRemoved.empty() || mNumTrustedPresentationListeners > 0) {",
+      "kind": "branch",
+      "text": "只有真的有被移除 buffer 的层，或有可信呈现监听器时才需要。"
+    },
+    {
+      "at": 71,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "读 mDisplays。"
+    },
+    {
+      "at": 72,
+      "quote": "for (const auto& [token, display] : mDisplays) {",
+      "kind": "note",
+      "text": "遍历所有显示。"
+    },
+    {
+      "at": 73,
+      "quote": "layerStackToDisplay.emplace_or_replace(display->getLayerStack(), display.get());",
+      "kind": "data",
+      "text": "建立映射。"
+    },
+    {
+      "at": 74,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 75,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域（释放锁）。"
+    },
+    {
+      "at": 76,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭条件作用域。"
+    },
+    {
+      "at": 77,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 78,
+      "quote": "for (auto layer : mLayersWithBuffersRemoved) {",
+      "kind": "note",
+      "text": "处理本拍 buffer 被移除的层：它们不参与合成，但必须还 buffer。"
+    },
+    {
+      "at": 79,
+      "quote": "std::vector<ui::LayerStack> previouslyPresentedLayerStacks =",
+      "kind": "data",
+      "text": "取并清空该层「上次呈现过的 layerStack」列表。"
+    },
+    {
+      "at": 80,
+      "quote": "std::move(layer->mPreviouslyPresentedLayerStacks);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 81,
+      "quote": "layer->mPreviouslyPresentedLayerStacks.clear();",
+      "kind": "call",
+      "text": "清空，防止重复处理。"
+    },
+    {
+      "at": 82,
+      "quote": "for (auto layerStack : previouslyPresentedLayerStacks) {",
+      "kind": "note",
+      "text": "遍历这些 layerStack。"
+    },
+    {
+      "at": 83,
+      "quote": "auto optDisplay = layerStackToDisplay.get(layerStack);",
+      "kind": "data",
+      "text": "找对应显示。"
+    },
+    {
+      "at": 84,
+      "quote": "if (optDisplay && !optDisplay->get()->isVirtual()) {",
+      "kind": "branch",
+      "text": "物理显示才需要 fence。"
+    },
+    {
+      "at": 85,
+      "quote": "auto fence = getHwComposer().getPresentFence(optDisplay->get()->getPhysicalId());",
+      "kind": "call",
+      "text": "取该显示的 present fence。"
+    },
+    {
+      "at": 86,
+      "quote": "layer->prepareReleaseCallbacks(ftl::yield<FenceResult>(fence),",
+      "kind": "call",
+      "text": "用 present fence 作为 release 依据（本帧没画它，用整屏 fence 兜底）。"
+    },
+    {
+      "at": 87,
+      "quote": "ui::UNASSIGNED_LAYER_STACK);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 88,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭物理显示判断。"
+    },
+    {
+      "at": 89,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 90,
+      "quote": "layer->releasePendingBuffer(presentTime.ns());",
+      "kind": "call",
+      "text": "触发实际的 buffer 释放（回调与 BufferReleaseChannel）。"
+    },
+    {
+      "at": 91,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 92,
+      "quote": "mLayersWithBuffersRemoved.clear();",
+      "kind": "call",
+      "text": "清空集合。"
+    },
+    {
+      "at": 93,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 94,
+      "quote": "for (const auto& [layer, gameMode] : mLayersWithQueuedFrames) {",
+      "kind": "note",
+      "text": "处理本拍参与合成的层：顺序与 78 行那批不同，这里是正常路径。"
+    },
+    {
+      "at": 95,
+      "quote": "layer->onCompositionPresented(pacesetterDisplay.get(),",
+      "kind": "call",
+      "text": "通知层本次已在哪个显示呈现、present fence 与 GPU fence 是什么。"
+    },
+    {
+      "at": 96,
+      "quote": "pacesetterGpuCompositionDoneFenceTime,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 97,
+      "quote": "pacesetterPresentFenceTime, compositorTiming, gameMode);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 98,
+      "quote": "layer->releasePendingBuffer(presentTime.ns());",
+      "kind": "call",
+      "text": "**归还上一块 buffer**：这是 app 能继续生产的直接原因。"
+    },
+    {
+      "at": 99,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 100,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 101,
+      "quote": "for (const auto& layerEvent : mLayerEvents) {",
+      "kind": "note",
+      "text": "上报 layer 事件（HDR/IP 相关统计）。"
+    },
+    {
+      "at": 102,
+      "quote": "auto result =",
+      "kind": "data",
+      "text": "写 stats。"
+    },
+    {
+      "at": 103,
+      "quote": "stats::stats_write(stats::SURFACE_CONTROL_EVENT,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 104,
+      "quote": "static_cast<int32_t>(layerEvent.uid),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 105,
+      "quote": "static_cast<int64_t>(layerEvent.timeSinceLastEvent.count()),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 106,
+      "quote": "static_cast<int32_t>(layerEvent.dataspace),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 107,
+      "quote": "static_cast<bool>(layerEvent.useLuts),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 108,
+      "quote": "static_cast<float>(layerEvent.desiredHdrHeadroom));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 109,
+      "quote": "if (result < 0) {",
+      "kind": "branch",
+      "text": "写入失败。"
+    },
+    {
+      "at": 110,
+      "quote": "ALOGW(\"Failed to report layer event with error: %d\", result);",
+      "kind": "note",
+      "text": "只告警，不影响呈现。"
+    },
+    {
+      "at": 111,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 112,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 113,
+      "quote": "mLayerEvents.clear();",
+      "kind": "call",
+      "text": "清空事件队列。"
+    },
+    {
+      "at": 114,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 115,
+      "quote": "std::vector<std::pair<compositionengine::Display*, sp<HdrLayerInfoReporter>>> hdrInfoListeners;",
+      "kind": "data",
+      "text": "HDR 信息监听器列表。"
+    },
+    {
+      "at": 116,
+      "quote": "bool haveNewHdrInfoListeners = false;",
+      "kind": "data",
+      "text": "是否有新加的监听器。"
+    },
+    {
+      "at": 117,
+      "quote": "ActivePictureTracker::Listeners activePictureListenersToAdd;",
+      "kind": "data",
+      "text": "需要新增的 picture 监听器。"
+    },
+    {
+      "at": 118,
+      "quote": "ActivePictureTracker::Listeners activePictureListenersToRemove;",
+      "kind": "data",
+      "text": "需要移除的 picture 监听器。"
+    },
+    {
+      "at": 119,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 120,
+      "quote": "Mutex::Autolock lock(mStateLock);",
+      "kind": "lock",
+      "text": "读监听器与层级时持锁。"
+    },
+    {
+      "at": 121,
+      "quote": "if (mFpsReporter) {",
+      "kind": "branch",
+      "text": "FPS 报告器存在。"
+    },
+    {
+      "at": 122,
+      "quote": "mFpsReporter->dispatchLayerFps(mLayerHierarchyBuilder.getHierarchy());",
+      "kind": "call",
+      "text": "派发每层的 fps 统计。"
+    },
+    {
+      "at": 123,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 124,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 125,
+      "quote": "if (mTunnelModeEnabledReporter) {",
+      "kind": "branch",
+      "text": "Tunnel 模式报告器存在。"
+    },
+    {
+      "at": 126,
+      "quote": "mTunnelModeEnabledReporter->updateTunnelModeStatus();",
+      "kind": "call",
+      "text": "更新 tunnel 模式状态。"
+    },
+    {
+      "at": 127,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 128,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 129,
+      "quote": "hdrInfoListeners.reserve(mHdrLayerInfoListeners.size());",
+      "kind": "call",
+      "text": "预留容量。"
+    },
+    {
+      "at": 130,
+      "quote": "for (const auto& [displayId, reporter] : mHdrLayerInfoListeners) {",
+      "kind": "note",
+      "text": "遍历 HDR 监听器。"
+    },
+    {
+      "at": 131,
+      "quote": "if (reporter && reporter->hasListeners()) {",
+      "kind": "branch",
+      "text": "有真实监听者。"
+    },
+    {
+      "at": 132,
+      "quote": "if (const auto display = getDisplayDeviceLocked(displayId)) {",
+      "kind": "call",
+      "text": "取显示设备。"
+    },
+    {
+      "at": 133,
+      "quote": "hdrInfoListeners.emplace_back(display->getCompositionDisplay().get(), reporter);",
+      "kind": "data",
+      "text": "收集 (display, reporter) 对。"
+    },
+    {
+      "at": 134,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 135,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 136,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 137,
+      "quote": "haveNewHdrInfoListeners = mAddingHDRLayerInfoListener; // grab this with state lock",
+      "kind": "state",
+      "text": "在锁内取走「新增监听器」标志。"
+    },
+    {
+      "at": 138,
+      "quote": "mAddingHDRLayerInfoListener = false;",
+      "kind": "state",
+      "text": "清位。"
+    },
+    {
+      "at": 139,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 140,
+      "quote": "std::swap(activePictureListenersToAdd, mActivePictureListenersToAdd);",
+      "kind": "call",
+      "text": "换出待新增的 picture 监听器。"
+    },
+    {
+      "at": 141,
+      "quote": "std::swap(activePictureListenersToRemove, mActivePictureListenersToRemove);",
+      "kind": "call",
+      "text": "换出待移除的。"
+    },
+    {
+      "at": 142,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域（释放锁）。"
+    },
+    {
+      "at": 143,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 144,
+      "quote": "if (haveNewHdrInfoListeners || mHdrLayerInfoChanged) {",
+      "kind": "branch",
+      "text": "有新监听器或 HDR 层信息变化。"
+    },
+    {
+      "at": 145,
+      "quote": "if (FlagManager::getInstance().md_degrade_hdr()) {",
+      "kind": "branch",
+      "text": "新的 HDR 降级实现。"
+    },
+    {
+      "at": 146,
+      "quote": "updateHdrInfos(hdrInfoListeners);",
+      "kind": "call",
+      "text": "走新的 updateHdrInfos 实现。"
+    },
+    {
+      "at": 147,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 148,
+      "quote": "for (auto& [compositionDisplay, listener] : hdrInfoListeners) {",
+      "kind": "note",
+      "text": "旧的逐层统计实现。"
+    },
+    {
+      "at": 149,
+      "quote": "HdrLayerInfoReporter::HdrLayerInfo info;",
+      "kind": "data",
+      "text": "构造 HDR 层信息。"
+    },
+    {
+      "at": 150,
+      "quote": "int32_t maxArea = 0;",
+      "kind": "data",
+      "text": "记录最大区域，用于挑选主 HDR 层。"
+    },
+    {
+      "at": 151,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 152,
+      "quote": "auto updateInfoFn = [&](compositionengine::Display* compositionDisplay,",
+      "kind": "data",
+      "text": "处理单个快照的回调。"
+    },
+    {
+      "at": 153,
+      "quote": "const frontend::LayerSnapshot& snapshot,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 154,
+      "quote": "const sp<LayerFE>& layerFe) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 155,
+      "quote": "if (snapshot.isVisible &&",
+      "kind": "branch",
+      "text": "该快照可见，且属于这个显示。"
+    },
+    {
+      "at": 156,
+      "quote": "compositionDisplay->includesLayer(snapshot.outputFilter)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 157,
+      "quote": "if (isHdrLayer(snapshot)) {",
+      "kind": "branch",
+      "text": "该层是 HDR 层。"
+    },
+    {
+      "at": 158,
+      "quote": "const auto* outputLayer =",
+      "kind": "data",
+      "text": "取对应的 output layer。"
+    },
+    {
+      "at": 159,
+      "quote": "compositionDisplay->getOutputLayerForLayer(layerFe);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 160,
+      "quote": "if (outputLayer) {",
+      "kind": "branch",
+      "text": "output layer 存在。"
+    },
+    {
+      "at": 161,
+      "quote": "const float desiredHdrSdrRatio = snapshot.desiredHdrSdrRatio < 1.f",
+      "kind": "data",
+      "text": "期望的 HDR/SDR 比率，小于 1 视为「无限」。"
+    },
+    {
+      "at": 162,
+      "quote": "? std::numeric_limits<float>::infinity()",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 163,
+      "quote": ": snapshot.desiredHdrSdrRatio;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 164,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 165,
+      "quote": "float desiredRatio = desiredHdrSdrRatio;",
+      "kind": "data",
+      "text": "实际比率。"
+    },
+    {
+      "at": 166,
+      "quote": "if (desiredHdrSdrRatio == std::numeric_limits<float>::infinity()) {",
+      "kind": "branch",
+      "text": "无限大时用 dataspace 的理想上限。"
+    },
+    {
+      "at": 167,
+      "quote": "desiredRatio = getIdealizedMaxHeadroom(snapshot.dataspace);",
+      "kind": "call",
+      "text": "按 dataspace 估算最大 headroom。"
+    },
+    {
+      "at": 168,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 169,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 170,
+      "quote": "info.mergeDesiredRatio(desiredRatio);",
+      "kind": "call",
+      "text": "合并比率（取最大）。"
+    },
+    {
+      "at": 171,
+      "quote": "info.numberOfHdrLayers++;",
+      "kind": "note",
+      "text": "累加 HDR 层数。"
+    },
+    {
+      "at": 172,
+      "quote": "const auto displayFrame = outputLayer->getState().displayFrame;",
+      "kind": "data",
+      "text": "该层的显示区域。"
+    },
+    {
+      "at": 173,
+      "quote": "const int32_t area = displayFrame.width() * displayFrame.height();",
+      "kind": "data",
+      "text": "面积。"
+    },
+    {
+      "at": 174,
+      "quote": "if (area > maxArea) {",
+      "kind": "branch",
+      "text": "比当前最大还大。"
+    },
+    {
+      "at": 175,
+      "quote": "maxArea = area;",
+      "kind": "data",
+      "text": "更新最大面积。"
+    },
+    {
+      "at": 176,
+      "quote": "info.maxW = displayFrame.width();",
+      "kind": "note",
+      "text": "更新宽。"
+    },
+    {
+      "at": 177,
+      "quote": "info.maxH = displayFrame.height();",
+      "kind": "note",
+      "text": "更新高。"
+    },
+    {
+      "at": 178,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 179,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 180,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 181,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 182,
+      "quote": "};",
+      "kind": "note",
+      "text": "关闭 lambda。"
+    },
+    {
+      "at": 183,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 184,
+      "quote": "mLayerSnapshotBuilder.forEachVisibleSnapshot(",
+      "kind": "call",
+      "text": "遍历所有可见快照。"
+    },
+    {
+      "at": 185,
+      "quote": "[&, compositionDisplay = compositionDisplay](",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 186,
+      "quote": "std::unique_ptr<frontend::LayerSnapshot>&",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 187,
+      "quote": "snapshot) FTL_FAKE_GUARD(kMainThreadContext) {",
+      "kind": "note",
+      "text": "断言在主线程上下文执行。"
+    },
+    {
+      "at": 188,
+      "quote": "auto it = mLegacyLayers.find(snapshot->sequence);",
+      "kind": "data",
+      "text": "按 sequence 找 legacy 层。"
+    },
+    {
+      "at": 189,
+      "quote": "LLOG_ALWAYS_FATAL_WITH_TRACE_IF(it == mLegacyLayers.end(),",
+      "kind": "call",
+      "text": "找不到直接 fatal。"
+    },
+    {
+      "at": 190,
+      "quote": "\"Couldnt find layer object for %s\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 191,
+      "quote": "snapshot->getDebugString().c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 192,
+      "quote": "auto& legacyLayer = it->second;",
+      "kind": "data",
+      "text": "取 legacy 层。"
+    },
+    {
+      "at": 193,
+      "quote": "sp<LayerFE> layerFe =",
+      "kind": "data",
+      "text": "取对应的 LayerFE。"
+    },
+    {
+      "at": 194,
+      "quote": "legacyLayer->getCompositionEngineLayerFE(snapshot->path);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 195,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 196,
+      "quote": "updateInfoFn(compositionDisplay, *snapshot, layerFe);",
+      "kind": "call",
+      "text": "调用上面的统计回调。"
+    },
+    {
+      "at": 197,
+      "quote": "});",
+      "kind": "note",
+      "text": "关闭 lambda。"
+    },
+    {
+      "at": 198,
+      "quote": "listener->dispatchHdrLayerInfo(info);",
+      "kind": "call",
+      "text": "把统计结果派发给监听器。"
+    },
+    {
+      "at": 199,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 200,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else 分支。"
+    },
+    {
+      "at": 201,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭条件分支。"
+    },
+    {
+      "at": 202,
+      "quote": "mHdrLayerInfoChanged = false;",
+      "kind": "state",
+      "text": "清掉 HDR 信息变化标志。"
+    },
+    {
+      "at": 203,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 204,
+      "quote": "if (com_android_graphics_libgui_flags_apply_picture_profiles()) {",
+      "kind": "branch",
+      "text": "picture profile flag 打开。"
+    },
+    {
+      "at": 205,
+      "quote": "// Track, update and notify changes to active pictures - layers that are undergoing",
+      "kind": "note",
+      "text": "跟踪正在做画质处理的层。"
+    },
+    {
+      "at": 206,
+      "quote": "// picture processing",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 207,
+      "quote": "mActivePictureTracker.updateAndNotifyListeners(activePictureListenersToAdd,",
+      "kind": "call",
+      "text": "更新并通知监听器。"
+    },
+    {
+      "at": 208,
+      "quote": "activePictureListenersToRemove);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 209,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 210,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 211,
+      "quote": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);",
+      "kind": "call",
+      "text": "**发全部事务回调**：app 的 onReleaseBuffer/onCommit 在这一步被调用。"
+    },
+    {
+      "at": 212,
+      "quote": "mTransactionCallbackInvoker.clearCompletedTransactions();",
+      "kind": "call",
+      "text": "清掉已完成的事务记录。"
+    },
+    {
+      "at": 213,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 214,
+      "quote": "mTimeStats->incrementTotalFrames();",
+      "kind": "call",
+      "text": "TimeStats 帧计数。"
+    },
+    {
+      "at": 215,
+      "quote": "mTimeStats->setPresentFenceGlobal(pacesetterPresentFenceTime);",
+      "kind": "call",
+      "text": "记录全局 present fence。"
+    },
+    {
+      "at": 216,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 217,
+      "quote": "for (auto&& [id, presentFence] : presentFences) {",
+      "kind": "note",
+      "text": "把 present fence 交给 Scheduler。"
+    },
+    {
+      "at": 218,
+      "quote": "mScheduler->addPresentFence(id, std::move(presentFence));",
+      "kind": "call",
+      "text": "Scheduler 用它校正 vsync 模型（predictor 的 present fence 采样）。"
+    },
+    {
+      "at": 219,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 220,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 221,
+      "quote": "const bool hasPacesetterDisplay =",
+      "kind": "data",
+      "text": "pacesetter 是否仍然连着。"
+    },
+    {
+      "at": 222,
+      "quote": "pacesetterDisplay && getHwComposer().isConnected(pacesetterId);",
+      "kind": "call",
+      "text": "取连接状态。"
+    },
+    {
+      "at": 223,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 224,
+      "quote": "if (!hasSyncFramework) {",
+      "kind": "branch",
+      "text": "没有 Sync Framework 的设备。"
+    },
+    {
+      "at": 225,
+      "quote": "if (hasPacesetterDisplay && pacesetterDisplay->isPoweredOn()) {",
+      "kind": "branch",
+      "text": "屏幕亮着。"
+    },
+    {
+      "at": 226,
+      "quote": "mScheduler->enableHardwareVsync(pacesetterId);",
+      "kind": "call",
+      "text": "重新打开硬件 vsync。"
+    },
+    {
+      "at": 227,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 228,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 Sync Framework 分支。"
+    },
+    {
+      "at": 229,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 230,
+      "quote": "if (hasPacesetterDisplay && !pacesetterDisplay->isPoweredOn()) {",
+      "kind": "branch",
+      "text": "屏幕已关：本拍之后没什么可做。"
+    },
+    {
+      "at": 231,
+      "quote": "getRenderEngine().cleanupPostRender();",
+      "kind": "call",
+      "text": "清理 RenderEngine 的渲染资源。"
+    },
+    {
+      "at": 232,
+      "quote": "return;",
+      "kind": "note",
+      "text": "提前返回，跳过下面的 trusted 统计。"
+    },
+    {
+      "at": 233,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭息屏分支。"
+    },
+    {
+      "at": 234,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 235,
+      "quote": "// Cleanup any outstanding resources due to rendering a prior frame.",
+      "kind": "note",
+      "text": "清理上一帧遗留的渲染资源（纹理、临时 buffer）。"
+    },
+    {
+      "at": 236,
+      "quote": "getRenderEngine().cleanupPostRender();",
+      "kind": "call",
+      "text": "RenderEngine::cleanupPostRender。"
+    },
+    {
+      "at": 237,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 238,
+      "quote": "if (mNumTrustedPresentationListeners > 0) {",
+      "kind": "branch",
+      "text": "有可信呈现监听器。"
+    },
+    {
+      "at": 239,
+      "quote": "// We avoid any reverse traversal upwards so this shouldn't be too expensive",
+      "kind": "note",
+      "text": "只向下遍历，不会有反向开销。"
+    },
+    {
+      "at": 240,
+      "quote": "traverseLegacyLayers([&](Layer* layer) FTL_FAKE_GUARD(kMainThreadContext) {",
+      "kind": "call",
+      "text": "遍历所有 legacy 层。"
+    },
+    {
+      "at": 241,
+      "quote": "if (!layer->hasTrustedPresentationListener()) {",
+      "kind": "branch",
+      "text": "该层没注册监听器。"
+    },
+    {
+      "at": 242,
+      "quote": "return;",
+      "kind": "note",
+      "text": "直接跳过。"
+    },
+    {
+      "at": 243,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭跳过。"
+    },
+    {
+      "at": 244,
+      "quote": "const frontend::LayerSnapshot* snapshot =",
+      "kind": "data",
+      "text": "取快照。"
+    },
+    {
+      "at": 245,
+      "quote": "mLayerSnapshotBuilder.getSnapshot(layer->sequence);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 246,
+      "quote": "std::optional<const DisplayDevice*> displayOpt = std::nullopt;",
+      "kind": "data",
+      "text": "该层所在显示。"
+    },
+    {
+      "at": 247,
+      "quote": "if (snapshot) {",
+      "kind": "branch",
+      "text": "快照存在。"
+    },
+    {
+      "at": 248,
+      "quote": "displayOpt = layerStackToDisplay.get(snapshot->outputFilter.layerStack);",
+      "kind": "data",
+      "text": "按 layerStack 找显示。"
+    },
+    {
+      "at": 249,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 250,
+      "quote": "const DisplayDevice* display = displayOpt.value_or(nullptr);",
+      "kind": "data",
+      "text": "可能为空。"
+    },
+    {
+      "at": 251,
+      "quote": "layer->updateTrustedPresentationState(display, snapshot,",
+      "kind": "call",
+      "text": "更新可信呈现状态：app 用它判断「我的内容是否真的被用户看到」。"
+    },
+    {
+      "at": 252,
+      "quote": "nanoseconds_to_milliseconds(presentStartTime),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 253,
+      "quote": "false);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 254,
+      "quote": "});",
+      "kind": "note",
+      "text": "关闭 lambda。"
+    },
+    {
+      "at": 255,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 256,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 257,
+      "quote": "// Even though SFTRACE_INT64 already checks if tracing is enabled, it doesn't prevent the",
+      "kind": "note",
+      "text": "trace 未开启时不要调用 getTotalSize：它有副作用且很贵。"
+    },
+    {
+      "at": 258,
+      "quote": "// side-effect of getTotalSize(), so we check that again here",
+      "kind": "note",
+      "text": "注释续行。"
+    },
+    {
+      "at": 259,
+      "quote": "if (SFTRACE_ENABLED()) {",
+      "kind": "branch",
+      "text": "只有开了 trace 才统计。"
+    },
+    {
+      "at": 260,
+      "quote": "// getTotalSize returns the total number of buffers that were allocated by SurfaceFlinger",
+      "kind": "note",
+      "text": "注释说明总量含义。"
+    },
+    {
+      "at": 261,
+      "quote": "SFTRACE_INT64(\"Total Buffer Size\", GraphicBufferAllocator::get().getTotalSize());",
+      "kind": "trace",
+      "text": "把 buffer 总占用打进 trace，排查内存与抖动很有用。"
+    },
+    {
+      "at": 262,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 trace 分支。"
+    },
+    {
+      "at": 263,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。到这里这一拍的所有 fence 都已回填、所有 buffer 都已归还。"
+    }
+  ]
+}

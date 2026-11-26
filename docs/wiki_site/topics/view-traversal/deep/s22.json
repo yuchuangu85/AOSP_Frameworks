@@ -1,0 +1,32 @@
+{
+  "step": "s22",
+  "title": "分支：这一帧被合并或被裁掉",
+  "tldr": "mWillDrawSoon 让它与已排的帧合并；intersected 为假则直接作废；脏区全空则整段不画。",
+  "why": "「我明明调了 invalidate，屏幕却没动」有且只有三种合法解释：请求被合并进已排队的那一帧、脏区被窗口裁剪掉、或者脏区为空且没有动画。这三种情形在代码里分属三个不同层（ViewRootImpl 的冒泡收口、ViewRootImpl 的全量/裁剪逻辑、以及 draw() 的三条件判定），如果不掌握各自的判据，就会在白屏、残影、动画卡住之间来回猜。更隐蔽的是第三种：动画期间 dirty 为空也照画，这也是为什么「滚动结束后还在掉帧」往往与动画未结束有关。",
+  "concepts": [
+    { "term": "mWillDrawSoon", "text": "合并闸门；为真表示本帧已有排队的 traversal。" },
+    { "term": "intersected", "text": "脏区与窗口 bounds 求交的结果；false 时 localDirty 被清空。" },
+    { "term": "mIsAnimating", "text": "动画中即使脏区被裁或为空，也要排帧/画帧。" }
+  ],
+  "walk": [
+    { "call": "if (!mWillDrawSoon && (intersected || mIsAnimating)) {", "ref": "base/core/java/android/view/ViewRootImpl.java:2931", "what": "合并闸门：已排队就不再调度。" },
+    { "call": "localDirty.setEmpty();", "ref": "base/core/java/android/view/ViewRootImpl.java:2929", "what": "脏区被完全裁掉时清空，本次请求作废。" },
+    { "call": "if (!dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty) {", "ref": "base/core/java/android/view/ViewRootImpl.java:6259", "what": "绘制前的最后一道判据。" }
+  ],
+  "state": [
+    { "field": "mDirty", "before": "可能为空", "after": "可能被并集/裁剪/清空", "note": "三种操作都作用在同一个共享对象上。" },
+    { "field": "mIsAnimating", "before": "动画中为 true", "after": "本帧绘制后清 false", "note": "滚动未结束时会被重新置回（在 draw 末尾）。" }
+  ],
+  "threads": "全部在 UI 线程；这些判据都与线程状态无关，纯逻辑分叉。",
+  "pitfalls": [
+    "把「被合并」当成 bug：这是正常优化，同帧内多次 invalidate 只会产生一次 traversal。",
+    "忽略裁剪：完全落在窗口外的脏区（例如列表滚动到屏幕外的 item）不会触发重画。",
+    "滚动结束后仍掉帧：检查 mIsAnimating 是否被续期（draw 末尾的 animating 分支）。"
+  ],
+  "debug": [
+    "在 ViewRootImpl.java:2931 断点，观察 mWillDrawSoon 与 intersected 的组合。",
+    "debug.hwui.show_dirty_regions 可视化脏区，能立刻看出是否被裁剪。",
+    "dumpsys gfxinfo 的跳过原因与 trace 里是否有 draw 切片对照看。"
+  ],
+  "next": "还有两类结果是「本帧没画」：跳帧与丢 surface，它们的影响完全不同。见第 23 步。"
+}

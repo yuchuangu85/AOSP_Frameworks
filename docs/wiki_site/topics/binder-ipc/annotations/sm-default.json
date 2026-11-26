@@ -1,0 +1,60 @@
+{
+  "id": "sm-default",
+  "title": "defaultServiceManager",
+  "file": "native/libs/binder/IServiceManager.cpp",
+  "sig": "sp<IServiceManager> defaultServiceManager()",
+  "span": [
+    333,
+    340
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "sp<IServiceManager> defaultServiceManager()",
+      "kind": "note",
+      "text": "拿默认 ServiceManager：整个进程只解析一次，之后复用。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "std::call_once(gSmOnce, []() {",
+      "kind": "call",
+      "text": "**call_once**：保证多线程并发首次调用也只建一个实例。"
+    },
+    {
+      "at": 4,
+      "quote": "gDefaultServiceManager = sp<CppBackendShim>::make(getBackendUnifiedServiceManager());",
+      "kind": "call",
+      "text": "通过 backend 抽象取统一服务管理器（兼容 servicemanager 与 RPC backend）。"
+    },
+    {
+      "at": 5,
+      "quote": "});",
+      "kind": "note",
+      "text": "lambda 结束。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "return gDefaultServiceManager;",
+      "kind": "note",
+      "text": "返回缓存实例。"
+    },
+    {
+      "at": 8,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意真正的 handle 0 解析在 backend 内部（getContextObject）。"
+    }
+  ]
+}

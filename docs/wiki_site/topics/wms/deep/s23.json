@@ -1,0 +1,51 @@
+{
+  "step": "s23",
+  "title": "诊断：dumpsys window 与 trace",
+  "tldr": "dumpsys window 看窗口树/frame/焦点，dumpsys window displays 看 DisplayArea 层次，trace 看布局与应用阶段。",
+  "why": "WMS 的可观测性其实很好，只是命令多。推荐的排查顺序：先用 dumpsys window 确认「结构和数值对不对」，再用 trace 确认「时序对不对」。多数「画面不对」的问题在第一步就能定位到具体窗口，而「卡顿」类问题要靠第二步。",
+  "concepts": [
+    {
+      "term": "dumpsys window",
+      "text": "窗口树、焦点、Insets。"
+    },
+    {
+      "term": "trace 切片",
+      "text": "performLayout 与 applySurfaceChangesTransaction。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void applySurfaceChangesTransaction() {",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:5594",
+      "what": "trace 里的关键切片。"
+    },
+    {
+      "call": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5579",
+      "what": "SF 侧对应点。"
+    },
+    {
+      "call": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1672",
+      "what": "窗口生命周期起点。"
+    }
+  ],
+  "state": [
+    {
+      "field": "诊断状态",
+      "before": "不可见",
+      "after": "可枚举每窗口",
+      "note": "dumpsys 输出即状态快照。"
+    }
+  ],
+  "threads": "dumpsys 在 system_server 主线程执行。",
+  "pitfalls": [
+    "只看应用侧日志。",
+    "不去看 dumpsys 就猜 WMS 没生效。"
+  ],
+  "debug": [
+    "`adb shell dumpsys window windows`。",
+    "Perfetto 同时抓 wm 与 sf。"
+  ],
+  "next": "哪些不在本仓库？见第 24 步。"
+}

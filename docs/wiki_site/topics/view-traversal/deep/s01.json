@@ -1,0 +1,33 @@
+{
+  "step": "s01",
+  "title": "invalidate()：只在 View 上置脏",
+  "tldr": "invalidate 不画任何东西，只把 View 标脏并沿 parent 冒泡到 ViewRootImpl。",
+  "why": "如果把 invalidate 理解成「重绘」，就会误以为调用次数直接等于绘制次数，从而在滚动、动画里反复调用还以为「反正合并了」。实际上它只做两件事：置 PFLAG_DIRTY 表示自己内容需要重画，清 PFLAG_DRAWN 表示绘制缓存不再可信；然后交给 parent 继续冒泡。真正的合并发生在 ViewRootImpl 的 mWillDrawSoon 上，而不是这里。理解这一层，才能解释为什么「子 View invalidate 十次」在 trace 里可能只是一次 Record View#draw()，也才能看懂 skipInvalidate 与 ghost view 这两种提前返回。",
+  "concepts": [
+    { "term": "PFLAG_DIRTY / PFLAG_DRAWN", "text": "前者表示内容需要重画，后者表示至少画过一次；invalidate 一置一清，是后续「要不要重录」判定的原始输入。" },
+    { "term": "ghost view", "text": "处于 ViewGroup 的分离过渡态时的替身 View，invalidate 会被直接转交给它，避免脏画在错误对象上。" },
+    { "term": "skipInvalidate", "text": "未 attach、不可见等情况下直接短路，这是「调了 invalidate 却没反应」最常见的原因。" }
+  ],
+  "walk": [
+    { "call": "public void invalidate()", "ref": "base/core/java/android/view/View.java:21431", "what": "公开入口，只转调带参版本，没有任何判断。" },
+    { "call": "invalidateInternal(0, 0, mRight - mLeft, mBottom - mTop, invalidateCache, true);", "ref": "base/core/java/android/view/View.java:21450", "what": "区域取整个自身 bounds；invalidateCache 决定是否连绘制缓存一起作废。" },
+    { "call": "if (mGhostView != null) {", "ref": "base/core/java/android/view/View.java:21455", "what": "分离过渡态：把请求转交给 ghost view 后直接返回。" },
+    { "call": "if (skipInvalidate()) {", "ref": "base/core/java/android/view/View.java:21460", "what": "未 attach/不可见时短路——这是「invalidate 了但屏幕没变」的第一嫌疑点。" }
+  ],
+  "state": [
+    { "field": "mPrivateFlags", "before": "可能含 PFLAG_DRAWN，脏位不一定置位", "after": "置 PFLAG_DIRTY（并清 PFLAG_DRAWN）", "note": "状态位的变化才是 invalidate 的真正产物。" },
+    { "field": "mViewRootImpl.mDirty", "before": "本帧尚未包含该区域", "after": "尚未变化", "note": "注意：到这一步 mDirty 还没被改，冒泡发生在下一层。" }
+  ],
+  "threads": "必须在 UI 线程调用。子线程请用 postInvalidate()，否则会在 ViewRootImpl.checkThread 抛 CalledFromWrongThreadException。",
+  "pitfalls": [
+    "把 invalidate 当成「立即重绘」：它只置脏，绘制要等下一次 vsync 后的 traversal。",
+    "在不可见或无 bounds 的 View 上调用：被 skipInvalidate / canHaveDisplayList 短路，看不到任何效果。",
+    "在 onDraw 里再次 invalidate：虽然能跑通，但会让每帧都脏，白白吃掉性能。"
+  ],
+  "debug": [
+    "在 View.invalidateInternal 上下断点，看 skipInvalidate 是否为真。",
+    "打开 debug.hwui.show_dirty_regions，确认脏区确实落在预期区域。",
+    "用 trace 对比 invalidate 调用次数与 Record View#draw() 次数的差值，判断合并是否生效。"
+  ],
+  "next": "脏区怎样沿 parent 冒泡并最终被 ViewRootImpl 收口？见第 2 步。"
+}

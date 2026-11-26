@@ -1,0 +1,77 @@
+{
+  "step": "s05",
+  "title": "apply：打包、提交、可同步等待",
+  "tldr": "apply 装配回调、缓存 buffer、处理 oneway 与同步语义，move 出 mState 走 binder，返回后 clear()。",
+  "why": "apply 是客户端唯一出口，也是几个常见误解的所在地。第一，「同步」只等 commit 回调，不等上屏——想等真正显示要用 TransactionCompletedCallback。第二，apply 会把 mState move 走，所以同一个 Transaction 对象可以继续用，但已提交内容不留。第三，synchronous 与 oneWay 同时设置是矛盾请求：日志会告警，且同步优先（为了安全切到同步语义）。",
+  "concepts": [
+    {
+      "term": "SyncCallback",
+      "text": "同步提交时注册的 commit 回调，内部是条件变量。"
+    },
+    {
+      "term": "eOneWay",
+      "text": "不等 binder 返回的标志。"
+    },
+    {
+      "term": "clear()",
+      "text": "重置 mState 并生成新 id，对象可复用。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay) {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1146",
+      "what": "入口。"
+    },
+    {
+      "call": "addTransactionCommittedCallback(SyncCallback::getCallback(syncCallback),",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1154",
+      "what": "同步路径注册的是 **commit** 回调。"
+    },
+    {
+      "call": "cacheBuffers();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1188",
+      "what": "提交前把 buffer 换成句柄。"
+    },
+    {
+      "call": "status_t binderStatus = sf->setTransactionState(std::move(state), applyToken);",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1209",
+      "what": "真正的跨进程调用。"
+    },
+    {
+      "call": "clear();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1217",
+      "what": "提交后清空。"
+    },
+    {
+      "call": "syncCallback->wait();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1220",
+      "what": "同步等待 commit。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mState",
+      "before": "含待提交内容",
+      "after": "被 move 出去并 clear",
+      "note": "对象可继续复用。"
+    },
+    {
+      "field": "mStatus",
+      "before": "可能含错误",
+      "after": "NO_ERROR",
+      "note": "提交成功后复位。"
+    }
+  ],
+  "threads": "调用线程；synchronous 时会阻塞到 SF 的下一拍 commit。",
+  "pitfalls": [
+    "把 synchronous 当成「等上屏」：只等 commit。",
+    "synchronous + oneWay 同时设置：同步优先，oneWay 被忽略并告警。",
+    "apply 后继续读事务内容：已被 move。"
+  ],
+  "debug": [
+    "mLogCallPoints 打开后能看到 Applied 日志。",
+    "atrace 里 apply 段与 SF 的 setTransactionState 段之间是 binder 边界。"
+  ],
+  "next": "显式序列化的顺序是什么？见第 6 步。"
+}

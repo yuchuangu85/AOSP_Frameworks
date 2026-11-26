@@ -1,0 +1,55 @@
+{
+  "step": "s23",
+  "title": "分支：没有目标窗口",
+  "tldr": "既无焦点窗口也无焦点应用 → FAILED 丢弃不报 ANR；有应用无窗口 → PENDING 起超时；窗口无通道 → 跳过。",
+  "why": "这三种「没有目标」的后果完全不同，混在一起就会得出错误结论：完全没焦点时事件被静默丢弃（不 ANR），只有焦点应用没有焦点窗口才会 ANR，而某个窗口没有 InputChannel 只是那一个窗口收不到、其他目标照发。排查「按键没反应」时先分清属于哪一种，能省掉大量时间。",
+  "concepts": [
+    {
+      "term": "FAILED",
+      "text": "分发结果：无目标，丢弃。"
+    },
+    {
+      "term": "TARGET_MISMATCH",
+      "text": "注入事件目标不匹配。"
+    },
+    {
+      "term": "PENDING",
+      "text": "等待条件满足，事件留在 pending。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "// If we have no focused window, drop the input event",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2452",
+      "what": "无焦点时的丢弃分支。"
+    },
+    {
+      "call": "mNoFocusedWindowAnrState.emplace(",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:2475",
+      "what": "建立等待状态。"
+    },
+    {
+      "call": "void InputDispatcher::addWindowTargetLocked(",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:3058",
+      "what": "取连接；取不到只打日志。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mNoFocusedWindowAnrState",
+      "before": "无",
+      "after": "有（带到期时间）",
+      "note": "到期即 ANR。"
+    }
+  ],
+  "threads": "dispatcher 线程。",
+  "pitfalls": [
+    "以为按键没反应就一定有 ANR：完全无焦点时是静默丢弃。",
+    "忽略 Not creating InputTarget ... no input channel 日志。"
+  ],
+  "debug": [
+    "dumpsys input 的 focusedApplications / focusedWindows。",
+    "日志里 no input channel 关键字。"
+  ],
+  "next": "发送失败时会发生什么？见第 24 步。"
+}

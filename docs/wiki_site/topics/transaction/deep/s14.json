@@ -1,0 +1,51 @@
+{
+  "step": "s14",
+  "title": "applyTransactionsLocked：加锁逐笔应用",
+  "tldr": "拿到可应用的一批后，在 mStateLock 下逐笔调 applyTransactionState。",
+  "why": "这里是锁的边界：flush 阶段（挑选）不需要 mStateLock，因为它只读自己的队列；而应用阶段必须持锁，因为要改 Layer 状态、跑回调登记、累加 SF 事务标志。把「挑选」与「应用」分开的好处是挑选可以更自由（比如 barrier 判定要与 Scheduler 交互），而应用阶段的持锁时间被压缩到最小。",
+  "concepts": [
+    {
+      "term": "mStateLock",
+      "text": "SF 的核心状态锁，合成与事务应用共享。"
+    },
+    {
+      "term": "needsTraversal",
+      "text": "任一事务要求遍历，本拍就要 traversal。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool SurfaceFlinger::applyTransactions(std::vector<QueuedTransactionState>& transactions)",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5495",
+      "what": "外层：加锁。"
+    },
+    {
+      "call": "bool SurfaceFlinger::applyTransactionsLocked(std::vector<QueuedTransactionState>& transactions)",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5501",
+      "what": "内层：逐笔应用。"
+    },
+    {
+      "call": "applyTransactionState(transaction.frameTimelineInfo, transaction.states,",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5507",
+      "what": "单笔应用。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mStateLock",
+      "before": "未持有",
+      "after": "应用期间持有",
+      "note": "批量应用共享一次加锁。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "在持锁期间做耗时操作：会拖慢整拍合成。",
+    "以为每笔事务各加一次锁：是一批一起加。"
+  ],
+  "debug": [
+    "atrace 里 applyTransactionsLocked 的时长反映应用成本。",
+    "mStateLock 竞争可从 SF 卡顿轨迹看出。"
+  ],
+  "next": "单笔事务具体做了什么？见第 15 步。"
+}

@@ -1,0 +1,60 @@
+{
+  "step": "s11",
+  "title": "relayout 与 measure",
+  "tldr": "relayoutWindow 按策略算出 parentFrame 与 displayFrame，返回 frames 给客户端 setFrame。",
+  "why": "这个函数是 WMS 与 View 系统的接缝：WMS 决定「你能用多大空间」，View 决定「内容怎么摆」。所以窗口尺寸问题要么在 WMS 侧（frame 算错），要么在 View 侧（measure 用错 frame）。返回的 result 标志（如 FIRST_TIME、CANCEL_AND_REDRAW）也在这里累积，客户端据此决定是否重建。",
+  "concepts": [
+    {
+      "term": "ClientWindowFrames",
+      "text": "parentFrame / displayFrame / frame 等。"
+    },
+    {
+      "term": "RELAYOUT_RES_FIRST_TIME",
+      "text": "首次显示，客户端做首帧特殊处理。"
+    },
+    {
+      "term": "relayoutSeq",
+      "text": "防乱序的序号。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public int relayoutWindow(Session session, IWindow client, LayoutParams attrs,",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2548",
+      "what": "入口。"
+    },
+    {
+      "call": "if (win.mRelayoutSeq < seq) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:2584",
+      "what": "序号校验，防乱序。"
+    },
+    {
+      "call": "int relayoutVisibleWindow(int result) {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowState.java:5103",
+      "what": "可见路径。"
+    },
+    {
+      "call": "result |= (!wasVisible || !isDrawn()) ? RELAYOUT_RES_FIRST_TIME : 0;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowState.java:5106",
+      "what": "首次显示标志。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mRelayoutSeq",
+      "before": "上一轮",
+      "after": "本轮",
+      "note": "旧序号请求被直接丢弃。"
+    }
+  ],
+  "threads": "binder 线程，持 mGlobalLock。",
+  "pitfalls": [
+    "type 在 relayout 里改了：直接抛 IllegalArgumentException。",
+    "忽略 FIRST_TIME：客户端可能跳过动画。"
+  ],
+  "debug": [
+    "DEBUG_LAYOUT 打印每次 relayout 的请求尺寸。",
+    "trace 里 relayoutWindow 的耗时。"
+  ],
+  "next": "层级顺序如何确定？见第 12 步。"
+}

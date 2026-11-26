@@ -1,0 +1,29 @@
+{
+  "step": "s07",
+  "title": "mustComposite 与 commit 的返回值",
+  "tldr": "有新 latch、有事务或有 property 变化才返回 true；否则 Scheduler 直接跳过整帧合成。",
+  "why": "这条返回值是 SF 的省电开关。静止界面下绝大多数帧其实没有新内容，如果每拍都合成，GPU 与 DPU 会持续耗电；返回 false 让 Scheduler 只排下一拍、不做任何合成工作。反过来，如果这个判断漏掉了某个变化（例如某层的 property 改了但没置 mustComposite 位），就会出现「内容变了但屏幕没刷新」这种最难查的问题——因此 reading 顺序是：先看 latch，再看事务，最后看 property 位。",
+  "concepts": [
+    { "term": "mustComposite", "text": "本拍是否有事可做的总标志。" },
+    { "term": "commitTransactions", "text": "把本拍事务状态收尾，准备交给合成阶段。" },
+    { "term": "BootStage::BOOTLOADER", "text": "开机动画之前的状态；这段特殊时期不走正常合成路径。" }
+  ],
+  "walk": [
+    { "call": "mustComposite |= (getTransactionFlags() & ~eTransactionFlushNeeded) || newDataLatched;", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2988", "what": "事务标志或新 latch 都算有事。" },
+    { "call": "commitTransactions();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2990", "what": "收尾事务。" },
+    { "call": "return mustComposite && CC_LIKELY(mBootStage != BootStage::BOOTLOADER);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3201", "what": "最终返回值：还要排除 bootloader 阶段。" }
+  ],
+  "state": [
+    { "field": "mMustComposite", "before": "可能被外部请求置位", "after": "exchange(false) 取走", "note": "外部也可以强制要求合成一拍。" }
+  ],
+  "threads": "SF 主线程；返回值直接决定 Scheduler 是否调用 composite。",
+  "pitfalls": [
+    "把返回 false 当成异常：这是最正常不过的省电路径。",
+    "漏置 mustComposite 位导致不刷新：新增层属性时需要同步补上判断。"
+  ],
+  "debug": [
+    "trace 里有 commit 切片但紧跟其后没有 composite 切片，就是这条路径。",
+    "dumpsys SurfaceFlinger 的 frame 统计能看到有多少拍被跳过。"
+  ],
+  "next": "决定要合成之后，composite 如何组装参数？见第 8 步。"
+}

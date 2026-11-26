@@ -1,0 +1,60 @@
+{
+  "step": "s07",
+  "title": "InputDispatcher::notifyMotion 入队",
+  "tldr": "仍在 reader 线程：policy 拦截可改写标志、可过滤吞事件，最后构造 MotionEntry 入 mInboundQueue 并唤醒 dispatcher。",
+  "why": "很多人以为 notifyMotion 运行在 dispatcher 线程——其实它跑在 InputReader 线程上，只做入队。这解释了为什么「输入到达时间」与「分发时间」之间有 gap：dispatcher 可能正忙或正在等上一个事件。另外这里有两处跨模块调用（interceptMotionBeforeQueueing 与 filterInputEvent），两者都可能耗时甚至吞掉事件，是输入延迟的常见来源。",
+  "concepts": [
+    {
+      "term": "MotionEntry",
+      "text": "dispatcher 内部的队列元素，是 NotifyMotionArgs 的落地形式。"
+    },
+    {
+      "term": "PASS_TO_USER",
+      "text": "策略位；没置位时事件不会送给应用。"
+    },
+    {
+      "term": "enqueueInboundEventLocked",
+      "text": "入队并返回是否需要唤醒 dispatcher。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void InputDispatcher::notifyMotion(const NotifyMotionArgs& args) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4679",
+      "what": "入口，运行在 reader 线程。"
+    },
+    {
+      "call": "mPolicy.interceptMotionBeforeQueueing(args.displayId, args.source, args.action, args.eventTime,",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4751",
+      "what": "跨到 policy，可改写 policyFlags。"
+    },
+    {
+      "call": "if (!mPolicy.filterInputEvent(event, policyFlags)) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4785",
+      "what": "被过滤器吞掉的事件到此为止，不入队。"
+    },
+    {
+      "call": "needWake = enqueueInboundEventLocked(std::move(newEntry));",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4813",
+      "what": "入队并决定是否唤醒。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mInboundQueue",
+      "before": "可能为空",
+      "after": "追加一条 MotionEntry",
+      "note": "原本为空才会让 needWake 为真。"
+    }
+  ],
+  "threads": "InputReader 线程（不是 dispatcher）。",
+  "pitfalls": [
+    "以为过滤只影响投递：被吞的事件连 ANR 计时都不会启动。",
+    "忽略 intercept 耗时告警：Excessive delay in interceptMotionBeforeQueueing 是真实卡顿信号。"
+  ],
+  "debug": [
+    "atrace 里 notifyMotion 在 reader 线程的轨道上。",
+    "debugInboundEventDetails 可打印完整事件内容。"
+  ],
+  "next": "队列积压时如何剪枝？见第 8 步。"
+}

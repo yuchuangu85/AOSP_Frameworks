@@ -1,0 +1,420 @@
+{
+  "id": "task-resume",
+  "title": "Task.resumeTopActivityUncheckedLocked",
+  "file": "base/services/core/java/com/android/server/wm/Task.java",
+  "sig": "boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,",
+  "span": [
+    5369,
+    5436
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "boolean resumeTopActivityUncheckedLocked(ActivityRecord prev, ActivityOptions options,",
+      "kind": "note",
+      "text": "栈顶 Activity 恢复的**外层防重入壳**。真正的逻辑在 resumeTopActivityInnerLocked 里。"
+    },
+    {
+      "at": 2,
+      "quote": "boolean deferPause) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 3,
+      "quote": "if (mInResumeTopActivity) {",
+      "kind": "branch",
+      "text": "**已在恢复中**（重入）。"
+    },
+    {
+      "at": 4,
+      "quote": "// Don't even start recursing.",
+      "kind": "note",
+      "text": "注释：连递归都不开始。"
+    },
+    {
+      "at": 5,
+      "quote": "return false;",
+      "kind": "note",
+      "text": "直接返回 false——这是防死循环的关键。"
+    },
+    {
+      "at": 6,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 8,
+      "quote": "boolean someActivityResumed = false;",
+      "kind": "data",
+      "text": "是否有 Activity 被恢复。"
+    },
+    {
+      "at": 9,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 开始。"
+    },
+    {
+      "at": 10,
+      "quote": "// Protect against recursion.",
+      "kind": "note",
+      "text": "注释：置标志防止递归。"
+    },
+    {
+      "at": 11,
+      "quote": "mInResumeTopActivity = true;",
+      "kind": "state",
+      "text": "**标记正在恢复**。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "if (isLeafTask()) {",
+      "kind": "branch",
+      "text": "**是叶子任务**（没有子 Task）。"
+    },
+    {
+      "at": 14,
+      "quote": "if (isFocusableAndVisible()) {",
+      "kind": "branch",
+      "text": "**任务可聚焦且可见**。"
+    },
+    {
+      "at": 15,
+      "quote": "someActivityResumed = resumeTopActivityInnerLocked(prev, options, deferPause);",
+      "kind": "call",
+      "text": "**真正的恢复逻辑**。"
+    },
+    {
+      "at": 16,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 17,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（有子任务）。"
+    },
+    {
+      "at": 18,
+      "quote": "// Find visible tasks top-to-bottom.",
+      "kind": "note",
+      "text": "注释：自上而下找可见的子任务。"
+    },
+    {
+      "at": 19,
+      "quote": "final List<Task> tasksToResumeTopToBottom = new ArrayList<>();",
+      "kind": "data",
+      "text": "待恢复子任务列表。"
+    },
+    {
+      "at": 20,
+      "quote": "for (int i = mChildren.size() - 1; i >= 0; i--) {",
+      "kind": "note",
+      "text": "从最上层往下遍历。"
+    },
+    {
+      "at": 21,
+      "quote": "final Task child = (Task) getChildAt(i);",
+      "kind": "data",
+      "text": "取子任务。"
+    },
+    {
+      "at": 22,
+      "quote": "if (!child.isTopActivityFocusable()) {",
+      "kind": "branch",
+      "text": "子任务不可聚焦。"
+    },
+    {
+      "at": 23,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 24,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 25,
+      "quote": "if (child.getVisibility(null /* starting */)",
+      "kind": "branch",
+      "text": "子任务不可见。"
+    },
+    {
+      "at": 26,
+      "quote": "!= TASK_FRAGMENT_VISIBILITY_VISIBLE) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "if (child.topRunningActivity() == null) {",
+      "kind": "branch",
+      "text": "没有正在运行的活动。"
+    },
+    {
+      "at": 28,
+      "quote": "// Skip the task if no running activity and continue resuming next",
+      "kind": "note",
+      "text": "注释：跳过该任务，继续看下一个。"
+    },
+    {
+      "at": 29,
+      "quote": "// task.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 30,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "继续看下一个子任务。"
+    },
+    {
+      "at": 31,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 32,
+      "quote": "// Otherwise, assuming everything behind this task should also be",
+      "kind": "note",
+      "text": "注释：否则认为该任务之后的所有任务都应不可见。"
+    },
+    {
+      "at": 33,
+      "quote": "// invisible.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 34,
+      "quote": "break;",
+      "kind": "note",
+      "text": "**跳出**：后面的都不用看。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭不可见判断。"
+    },
+    {
+      "at": 36,
+      "quote": "tasksToResumeTopToBottom.add(child);",
+      "kind": "call",
+      "text": "收集该子任务。"
+    },
+    {
+      "at": 37,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 38,
+      "quote": "// Resume them bottom-to-top, so Z order is preserved.",
+      "kind": "note",
+      "text": "注释：**自下而上恢复**，保持 z 序。"
+    },
+    {
+      "at": 39,
+      "quote": "for (int i = tasksToResumeTopToBottom.size() - 1; i >= 0; i--) {",
+      "kind": "note",
+      "text": "倒序遍历。"
+    },
+    {
+      "at": 40,
+      "quote": "final Task child = tasksToResumeTopToBottom.get(i);",
+      "kind": "data",
+      "text": "取子任务。"
+    },
+    {
+      "at": 41,
+      "quote": "someActivityResumed |= child.resumeTopActivityUncheckedLocked(prev,",
+      "kind": "call",
+      "text": "**递归恢复**。"
+    },
+    {
+      "at": 42,
+      "quote": "options, deferPause);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 44,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭子任务分支。"
+    },
+    {
+      "at": 45,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 46,
+      "quote": "// When resuming the top activity, it may be necessary to pause the top activity (for",
+      "kind": "note",
+      "text": "注释：恢复栈顶时可能需要 pause 栈顶（例如回锁屏）。"
+    },
+    {
+      "at": 47,
+      "quote": "// example, returning to the lock screen. We suppress the normal pause logic in",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 48,
+      "quote": "// {@link #resumeTopActivityUncheckedLocked}, since the top activity is resumed at the",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 49,
+      "quote": "// end. We call the {@link ActivityTaskSupervisor#checkReadyForSleepLocked} again here",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 50,
+      "quote": "// to ensure any necessary pause logic occurs. In the case where the Activity will be",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 51,
+      "quote": "// shown regardless of the lock screen, the call to",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": "// {@link ActivityTaskSupervisor#checkReadyForSleepLocked} is skipped.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 53,
+      "quote": "if (shouldSleepActivities()) {",
+      "kind": "branch",
+      "text": "**应当进入睡眠**。"
+    },
+    {
+      "at": 54,
+      "quote": "final ActivityRecord next = topRunningActivity(true /* focusableOnly */);",
+      "kind": "data",
+      "text": "取可聚焦的栈顶 Activity。"
+    },
+    {
+      "at": 55,
+      "quote": "if (next != null && next.canTurnScreenOn()",
+      "kind": "branch",
+      "text": "有栈顶、要求点亮屏幕且当前屏幕已灭。"
+    },
+    {
+      "at": 56,
+      "quote": "&& !mWmService.mPowerManager.isInteractive()) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 57,
+      "quote": "mTaskSupervisor.wakeUp(getDisplayId(), \"resumeTop-turnScreenOnFlag\");",
+      "kind": "call",
+      "text": "**唤醒屏幕**。"
+    },
+    {
+      "at": 58,
+      "quote": "next.setCurrentLaunchCanTurnScreenOn(false);",
+      "kind": "call",
+      "text": "清除标志避免重复唤醒。"
+    },
+    {
+      "at": 59,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 60,
+      "quote": "checkReadyForSleep();",
+      "kind": "call",
+      "text": "**检查是否可进入睡眠**（触发必要的 pause）。"
+    },
+    {
+      "at": 61,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 62,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭睡眠判断。"
+    },
+    {
+      "at": 63,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally。"
+    },
+    {
+      "at": 64,
+      "quote": "mInResumeTopActivity = false;",
+      "kind": "state",
+      "text": "**清除重入标志**。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 finally。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "return someActivityResumed;",
+      "kind": "note",
+      "text": "返回是否有 Activity 被恢复。"
+    },
+    {
+      "at": 68,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

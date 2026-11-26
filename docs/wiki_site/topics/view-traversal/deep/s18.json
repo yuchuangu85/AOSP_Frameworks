@@ -1,0 +1,36 @@
+{
+  "step": "s18",
+  "title": "syncFrameState → prepareTree",
+  "tldr": "喂时间线、切 EGL 上下文、释放纹理图钉，再 prepareTree 把 staging 换成 display list 并算 damage。",
+  "why": "这是 UI 线程真正被卡住的那一段。三件事按顺序发生且都会阻塞：makeCurrent 可能触发 EGL 上下文与 surface 的创建（首次绘制时尤其慢）；unpinImages 释放上一帧对纹理的图钉，可能触发上传；prepareTree 遍历整棵 RenderNode 树，把 staging 槽逐节点换掉并累加脏区。因此「UI 卡在 nSyncAndDrawFrame」时第一嫌疑是 GPU 资源操作，而不是绘制本身——这也解释了为什么大量图片刷新时卡顿往往出现在这一步。",
+  "concepts": [
+    { "term": "makeCurrent", "text": "确保 RT 当前持有正确的 EGL 上下文；失败返回 false，本帧不画。" },
+    { "term": "unpinImages", "text": "解除上一帧的纹理图钉，让 Bitmap 有机会被回收或重新上传。" },
+    { "term": "prepareTree", "text": "触发每个脏 RenderNode 的 syncDisplayList，并把 damage 累加进 DamageAccumulator。" }
+  ],
+  "walk": [
+    { "call": "bool DrawFrameTask::syncFrameState(TreeInfo& info) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:169", "what": "同步阶段入口。" },
+    { "call": "mRenderThread->timeLord().vsyncReceived(vsync, intendedVsync, vsyncId, frameDeadline,", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:176", "what": "把本帧时间线参数交给 TimeLord，供帧延迟统计。" },
+    { "call": "bool canDraw = mContext->makeCurrent();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:178", "what": "切/建 EGL 上下文；首次可能最慢。" },
+    { "call": "mContext->unpinImages();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:179", "what": "释放上一帧的纹理图钉。" },
+    { "call": "mContext->prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:191", "what": "把 staging 换成 display list，并累加 damage。" },
+    { "call": "bool hasTarget = mContext->hasOutputTarget();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:195", "what": "检查输出目标还在不在。" },
+    { "call": "return info.prepareTextures;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:216", "what": "文本纹理缓存耗尽时返回 false，UI 会继续等。" }
+  ],
+  "state": [
+    { "field": "DamageAccumulator", "before": "上一帧的脏区", "after": "本帧累加的脏区", "note": "为空且不需要重画时，后面会走 NothingToDraw。" },
+    { "field": "mSyncResult", "before": "OK", "after": "可能带 LostSurfaceRewardIfFound / ContextIsStopped / FrameDropped", "note": "由 Java 侧解析并决定下一步。" }
+  ],
+  "threads": "RenderThread。UI 线程同时被阻塞在 mSignal 上——这两条栈在 ANR 采样里是一对。",
+  "pitfalls": [
+    "以为这一段很快：makeCurrent 与纹理上传都可能耗时数十毫秒，是 UI 卡顿的常见原因。",
+    "把 prepareTextures 为 false 当成错误：它只是表示「这帧没法提前放走 UI」。",
+    "忽略 unpinImages：上一帧的图钉不释放，Bitmap 无法回收，内存会持续上涨。"
+  ],
+  "debug": [
+    "trace 里 DrawFrames 内的 prepareTree 与 makeCurrent 是「UI 被困住」的主要嫌疑段。",
+    "抓 ANR trace，同时看 UI 线程（nSyncAndDrawFrame）与 RT 线程的栈。",
+    "查看 FrameTimeline 的 SyncStart，确认同步阶段耗时。"
+  ],
+  "next": "prepareTree 里最关键的一步：staging 怎样变成 display list？见第 19 步。"
+}

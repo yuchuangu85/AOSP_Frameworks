@@ -1,0 +1,56 @@
+{
+  "step": "s10",
+  "title": "collectTransactions：按 applyToken 归并",
+  "tldr": "把无锁队列内容搬到 mPendingTransactionQueues，同一 applyToken 的事务串成一条有序队列。",
+  "why": "applyToken 就是「顺序域」的定义。为什么需要它？因为不同来源的提交之间不应该互相阻塞：窗口管理器的一批动画事务不应该因为某个游戏的 buffer 还没写好而卡住。反过来，同一个 token 内必须严格有序——否则同一窗口的「先显示后移动」会被重排成「先移动后显示」，画面就会错。默认情况下每个进程有一个全局 applyToken，需要独立顺序域时用 setApplyToken 显式指定。",
+  "concepts": [
+    {
+      "term": "applyToken",
+      "text": "顺序域标识，同 token 内严格 FIFO。"
+    },
+    {
+      "term": "mPendingTransactionQueues",
+      "text": "按 token 分组的待处理队列。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void TransactionHandler::collectTransactions() {",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:39",
+      "what": "入口。"
+    },
+    {
+      "call": "mPendingTransactionQueues[token].emplace(std::move(*maybeTransaction));",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:46",
+      "what": "按 token 入队。"
+    },
+    {
+      "call": "sp<IBinder> SurfaceComposerClient::Transaction::getDefaultApplyToken() {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:1231",
+      "what": "默认 token 是进程级的。"
+    },
+    {
+      "call": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setApplyToken(",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:2274",
+      "what": "显式指定顺序域。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mPendingTransactionQueues",
+      "before": "空",
+      "after": "若干 token 队列",
+      "note": "每个队列内部有序。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为所有事务串行：跨 token 是独立的。",
+    "以为 token 也要跨进程一致：它随事务一起传，所以是一致的。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 显示按 token 的队列。",
+    "Transaction tracing 记录 token。"
+  ],
+  "next": "何时触发 collect 与 flush？见第 11 步。"
+}

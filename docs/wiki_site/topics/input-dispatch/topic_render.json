@@ -1,0 +1,802 @@
+{
+  "p0": [
+    {
+      "id": "eh-getevents",
+      "file": "native/services/inputflinger/reader/EventHub.cpp",
+      "sig": "std::vector<RawEvent> EventHub::getEvents(int timeoutMillis)",
+      "symbol": "EventHub::getEvents",
+      "start": 2016,
+      "end": 2230,
+      "hint": 2016,
+      "why": "整个输入链路的源头：epoll 唤醒、批量 read、时间戳与 SYN_DROPPED 判定都在这里。"
+    },
+    {
+      "id": "ir-looponce",
+      "file": "native/services/inputflinger/reader/InputReader.cpp",
+      "sig": "void InputReader::loopOnce()",
+      "symbol": "InputReader::loopOnce",
+      "start": 172,
+      "end": 259,
+      "hint": 172,
+      "why": "两段锁的经典结构：锁外阻塞读、锁内解析、锁外下发，决定整条链路会不会死锁。"
+    },
+    {
+      "id": "ir-processevents",
+      "file": "native/services/inputflinger/reader/InputReader.cpp",
+      "sig": "std::list<NotifyArgs> InputReader::processEventsLocked(",
+      "symbol": "InputReader::processEventsLocked",
+      "start": 261,
+      "end": 294,
+      "hint": 261,
+      "why": "按 deviceId 切批并处理设备增删，是 RawEvent 到 NotifyArgs 的分发枢纽。"
+    },
+    {
+      "id": "tim-process",
+      "file": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp",
+      "sig": "std::list<NotifyArgs> TouchInputMapper::process(",
+      "symbol": "TouchInputMapper::process",
+      "start": 1305,
+      "end": 1314,
+      "hint": 1305,
+      "why": "触摸事件从原始轴值到 NotifyMotionArgs 的入口，包含 SYN_DROPPED 的处理。"
+    },
+    {
+      "id": "id-notifymotion",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sig": "void InputDispatcher::notifyMotion(",
+      "symbol": "InputDispatcher::notifyMotion",
+      "start": 4679,
+      "end": 4820,
+      "hint": 4679,
+      "why": "进入 dispatcher 的唯一入口：policy 过滤 + 入队 + 唤醒，全部在 reader 线程上完成。"
+    },
+    {
+      "id": "id-dispatchonce",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sig": "void InputDispatcher::dispatchOnce()",
+      "symbol": "InputDispatcher::dispatchOnce",
+      "start": 983,
+      "end": 1026,
+      "hint": 983,
+      "why": "dispatcher 的心跳：一轮分发、command 执行、ANR 检查、poll 超时的取最小值。"
+    },
+    {
+      "id": "id-touchedtargets",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sig": "InputDispatcher::DispatcherTouchState::findTouchedWindowTargets(",
+      "symbol": "DispatcherTouchState::findTouchedWindowTargets",
+      "start": 2534,
+      "end": 2955,
+      "hint": 2534,
+      "why": "触摸命中测试的核心：z-order、split touch、hover、outside、spy 都在这里决定。"
+    },
+    {
+      "id": "id-startcycle",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sig": "void InputDispatcher::startDispatchCycleLocked(",
+      "symbol": "InputDispatcher::startDispatchCycleLocked",
+      "start": 3893,
+      "end": 4035,
+      "hint": 3893,
+      "why": "真正把事件发出去的一步：设置超时、publish、处理 WOULD_BLOCK/DEAD_OBJECT。"
+    },
+    {
+      "id": "id-processanrs",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "sig": "nsecs_t InputDispatcher::processAnrsLocked()",
+      "symbol": "InputDispatcher::processAnrsLocked",
+      "start": 1143,
+      "end": 1180,
+      "hint": 1143,
+      "why": "超时判定的唯一入口：焦点窗口等待与连接超时都在这里结算成 ANR。"
+    },
+    {
+      "id": "nir-consume",
+      "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+      "sig": "status_t NativeInputEventReceiver::consumeEvents(",
+      "symbol": "NativeInputEventReceiver::consumeEvents",
+      "start": 455,
+      "end": 647,
+      "hint": 455,
+      "why": "应用侧收包：从 socketpair 取 InputMessage、还原成事件、JNI 回调 Java。"
+    },
+    {
+      "id": "vri-deliver",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "sig": "private void deliverInputEvent(",
+      "symbol": "ViewRootImpl.deliverInputEvent",
+      "start": 11293,
+      "end": 11345,
+      "hint": 11293,
+      "why": "责任链起点选择：合成事件、跳过 IME、进链或直接 finish，全在这几十行。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "EventHub",
+      "file": "native/services/inputflinger/reader/EventHub.cpp",
+      "tier": 0,
+      "side": "UI",
+      "role": "设备层：打开 /dev/input/event*，epoll 等待并读出 RawEvent",
+      "members": [
+        "getEvents",
+        "openDeviceLocked",
+        "epoll_wait"
+      ],
+      "fields": [
+        "mEpollFd",
+        "mDevices"
+      ]
+    },
+    {
+      "name": "InputReader",
+      "file": "native/services/inputflinger/reader/InputReader.cpp",
+      "tier": 1,
+      "side": "UI",
+      "role": "解析线程主循环：取事件、解析成 NotifyArgs、沿 listener 链下发",
+      "members": [
+        "loopOnce",
+        "processEventsLocked",
+        "pushNextListener"
+      ],
+      "fields": [
+        "mLock",
+        "mNextListener",
+        "mPendingArgs"
+      ]
+    },
+    {
+      "name": "TouchInputMapper",
+      "file": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp",
+      "tier": 2,
+      "side": "UI",
+      "role": "触摸映射：原始轴值 → 指针坐标与手势 → NotifyMotionArgs",
+      "members": [
+        "process",
+        "dispatchMotion",
+        "reset"
+      ],
+      "fields": [
+        "mCurrentRawPointerData",
+        "mTouchButtonAccumulator"
+      ]
+    },
+    {
+      "name": "InputDispatcher",
+      "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "分发线程：入队、命中测试、投递、超时与 ANR 判定",
+      "members": [
+        "notifyMotion",
+        "dispatchOnce",
+        "findTouchedWindowTargets",
+        "startDispatchCycleLocked",
+        "processAnrsLocked"
+      ],
+      "fields": [
+        "mInboundQueue",
+        "mAnrTracker",
+        "mLock"
+      ]
+    },
+    {
+      "name": "InputChannel",
+      "file": "native/libs/input/InputTransport.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "跨进程通道：socketpair 两端分别是 dispatcher 与应用",
+      "members": [
+        "sendMessage",
+        "openInputChannelPair"
+      ],
+      "fields": [
+        "mFd"
+      ]
+    },
+    {
+      "name": "InputConsumer",
+      "file": "native/libs/input/InputConsumer.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "应用侧消费者：从 socketpair 读消息并还原事件，回写 finished 信号",
+      "members": [
+        "consume",
+        "sendFinishedSignal"
+      ],
+      "fields": [
+        "mChannel"
+      ]
+    },
+    {
+      "name": "NativeInputEventReceiver",
+      "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+      "tier": 3,
+      "side": "UI",
+      "role": "JNI 桥：Looper 回调 → consumeEvents → 调 Java dispatchInputEvent",
+      "members": [
+        "handleEvent",
+        "consumeEvents",
+        "finishInputEvent"
+      ],
+      "fields": [
+        "mInputConsumer",
+        "mMessageQueue"
+      ]
+    },
+    {
+      "name": "ViewRootImpl",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "tier": 3,
+      "side": "UI",
+      "role": "应用侧总控：事件排队、InputStage 责任链、回收 finish",
+      "members": [
+        "enqueueInputEvent",
+        "deliverInputEvent",
+        "finishInputEvent"
+      ],
+      "fields": [
+        "mFirstInputStage",
+        "mPendingInputEventHead"
+      ]
+    },
+    {
+      "name": "InputStage",
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "tier": 4,
+      "side": "UI",
+      "role": "责任链节点：每级可选 FORWARD / FINISH_HANDLED / FINISH_NOT_HANDLED",
+      "members": [
+        "deliver",
+        "onProcess",
+        "onDeliverToNext"
+      ],
+      "fields": [
+        "mNext"
+      ]
+    },
+    {
+      "name": "ViewGroup",
+      "file": "base/core/java/android/view/ViewGroup.java",
+      "tier": 4,
+      "side": "UI",
+      "role": "视图树分发：拦截判定、touch target 管理、按 pointer 裁剪下发",
+      "members": [
+        "dispatchTouchEvent",
+        "onInterceptTouchEvent",
+        "dispatchTransformedTouchEvent"
+      ],
+      "fields": [
+        "mFirstTouchTarget",
+        "mGroupFlags"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "EventHub",
+      "to": "InputReader",
+      "label": "getEvents",
+      "kind": "uses"
+    },
+    {
+      "from": "InputReader",
+      "to": "TouchInputMapper",
+      "label": "process",
+      "kind": "uses"
+    },
+    {
+      "from": "InputReader",
+      "to": "InputDispatcher",
+      "label": "notify（listener 链）",
+      "kind": "uses"
+    },
+    {
+      "from": "InputDispatcher",
+      "to": "InputChannel",
+      "label": "sendMessage",
+      "kind": "uses"
+    },
+    {
+      "from": "InputChannel",
+      "to": "InputConsumer",
+      "label": "socketpair 另一端",
+      "kind": "owns"
+    },
+    {
+      "from": "InputConsumer",
+      "to": "NativeInputEventReceiver",
+      "label": "consume",
+      "kind": "uses"
+    },
+    {
+      "from": "NativeInputEventReceiver",
+      "to": "ViewRootImpl",
+      "label": "dispatchInputEvent",
+      "kind": "uses"
+    },
+    {
+      "from": "ViewRootImpl",
+      "to": "InputStage",
+      "label": "stage.deliver(q)",
+      "kind": "owns"
+    },
+    {
+      "from": "InputStage",
+      "to": "ViewGroup",
+      "label": "processPointerEvent",
+      "kind": "uses"
+    }
+  ],
+  "architecture": {
+    "width": 1320,
+    "height": 560,
+    "groups": [
+      {
+        "id": "kern",
+        "label": "kernel（仓库外）",
+        "x": 24,
+        "y": 24,
+        "w": 210,
+        "h": 500,
+        "color": "#ff9f43"
+      },
+      {
+        "id": "sys",
+        "label": "inputflinger（native）",
+        "x": 260,
+        "y": 24,
+        "w": 560,
+        "h": 500,
+        "color": "#4c8dff"
+      },
+      {
+        "id": "app",
+        "label": "应用进程",
+        "x": 846,
+        "y": 24,
+        "w": 450,
+        "h": 500,
+        "color": "#33d6c0"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "evdev",
+        "group": "kern",
+        "label": "/dev/input/event*",
+        "sub": "struct input_event",
+        "x": 48,
+        "y": 150,
+        "w": 165,
+        "h": 66
+      },
+      {
+        "id": "ehub",
+        "group": "sys",
+        "label": "EventHub",
+        "sub": "epoll + read",
+        "x": 286,
+        "y": 120,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "ireader",
+        "group": "sys",
+        "label": "InputReader",
+        "sub": "loopOnce / processEventsLocked",
+        "x": 286,
+        "y": 220,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "mapper",
+        "group": "sys",
+        "label": "TouchInputMapper",
+        "sub": "NotifyMotionArgs",
+        "x": 286,
+        "y": 320,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "idispatcher",
+        "group": "sys",
+        "label": "InputDispatcher",
+        "sub": "dispatchOnce / 命中测试",
+        "x": 556,
+        "y": 170,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "channel",
+        "group": "sys",
+        "label": "InputChannel",
+        "sub": "socketpair",
+        "x": 556,
+        "y": 300,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "nir",
+        "group": "app",
+        "label": "NativeInputEventReceiver",
+        "sub": "consumeEvents",
+        "x": 872,
+        "y": 140,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "vri",
+        "group": "app",
+        "label": "ViewRootImpl",
+        "sub": "InputStage 责任链",
+        "x": 872,
+        "y": 250,
+        "w": 240,
+        "h": 66
+      },
+      {
+        "id": "viewgroup",
+        "group": "app",
+        "label": "ViewGroup / View",
+        "sub": "dispatchTouchEvent",
+        "x": 872,
+        "y": 360,
+        "w": 240,
+        "h": 66
+      }
+    ],
+    "edges": [
+      {
+        "from": "evdev",
+        "to": "ehub",
+        "label": "epoll 可读",
+        "kind": "call"
+      },
+      {
+        "from": "ehub",
+        "to": "ireader",
+        "label": "RawEvent",
+        "kind": "call"
+      },
+      {
+        "from": "ireader",
+        "to": "mapper",
+        "label": "processEventsLocked",
+        "kind": "call"
+      },
+      {
+        "from": "mapper",
+        "to": "idispatcher",
+        "label": "notifyMotion（listener 链）",
+        "kind": "call"
+      },
+      {
+        "from": "idispatcher",
+        "to": "channel",
+        "label": "sendMessage",
+        "kind": "call"
+      },
+      {
+        "from": "channel",
+        "to": "nir",
+        "label": "fd 就绪",
+        "kind": "callback"
+      },
+      {
+        "from": "nir",
+        "to": "vri",
+        "label": "dispatchInputEvent",
+        "kind": "call"
+      },
+      {
+        "from": "vri",
+        "to": "viewgroup",
+        "label": "processPointerEvent",
+        "kind": "call"
+      },
+      {
+        "from": "viewgroup",
+        "to": "channel",
+        "label": "finishInputEvent 回流",
+        "kind": "oneway"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "f0",
+        "kind": "start",
+        "label": "evdev 有可读事件",
+        "x": 530,
+        "y": 60
+      },
+      {
+        "id": "f1",
+        "kind": "process",
+        "label": "EventHub::getEvents → RawEvent[]",
+        "x": 530,
+        "y": 160
+      },
+      {
+        "id": "f2",
+        "kind": "decision",
+        "label": "SYN_DROPPED ?",
+        "x": 530,
+        "y": 270
+      },
+      {
+        "id": "f3",
+        "kind": "process",
+        "label": "丢弃到下一个 SYN_REPORT",
+        "x": 180,
+        "y": 270
+      },
+      {
+        "id": "f4",
+        "kind": "process",
+        "label": "mapper → NotifyMotionArgs/NotifyKeyArgs",
+        "x": 530,
+        "y": 380
+      },
+      {
+        "id": "f5",
+        "kind": "process",
+        "label": "notifyXxx → mInboundQueue + wake",
+        "x": 530,
+        "y": 480
+      },
+      {
+        "id": "f6",
+        "kind": "decision",
+        "label": "找到目标窗口？",
+        "x": 530,
+        "y": 590
+      },
+      {
+        "id": "f7",
+        "kind": "process",
+        "label": "PENDING：等焦点窗口 / 起超时",
+        "x": 180,
+        "y": 590
+      },
+      {
+        "id": "f8",
+        "kind": "process",
+        "label": "startDispatchCycle → send + AnrTracker",
+        "x": 530,
+        "y": 700
+      },
+      {
+        "id": "f9",
+        "kind": "process",
+        "label": "应用 consumeEvents → InputStage 链 → View",
+        "x": 530,
+        "y": 810
+      },
+      {
+        "id": "f10",
+        "kind": "decision",
+        "label": "超时内 finishInputEvent ？",
+        "x": 530,
+        "y": 920
+      },
+      {
+        "id": "f11",
+        "kind": "end",
+        "label": "finishDispatchCycleLocked 清计时",
+        "x": 530,
+        "y": 1030
+      },
+      {
+        "id": "f12",
+        "kind": "process",
+        "label": "responsive=false → onAnrLocked",
+        "x": 880,
+        "y": 920
+      }
+    ],
+    "edges": [
+      {
+        "from": "f0",
+        "to": "f1"
+      },
+      {
+        "from": "f1",
+        "to": "f2"
+      },
+      {
+        "from": "f2",
+        "to": "f3",
+        "label": "是"
+      },
+      {
+        "from": "f2",
+        "to": "f4",
+        "label": "否"
+      },
+      {
+        "from": "f3",
+        "to": "f4"
+      },
+      {
+        "from": "f4",
+        "to": "f5"
+      },
+      {
+        "from": "f5",
+        "to": "f6"
+      },
+      {
+        "from": "f6",
+        "to": "f7",
+        "label": "否"
+      },
+      {
+        "from": "f6",
+        "to": "f8",
+        "label": "是"
+      },
+      {
+        "from": "f8",
+        "to": "f9"
+      },
+      {
+        "from": "f9",
+        "to": "f10"
+      },
+      {
+        "from": "f10",
+        "to": "f11",
+        "label": "是"
+      },
+      {
+        "from": "f10",
+        "to": "f12",
+        "label": "否"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s01",
+      "from": "K",
+      "to": "R",
+      "label": "epoll 可读",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "R",
+      "to": "R",
+      "label": "EventHub::getEvents → RawEvent",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "R",
+      "to": "R",
+      "label": "loopOnce：锁外读、锁内解析",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "R",
+      "to": "R",
+      "label": "processEventsLocked 按设备切批",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "R",
+      "to": "R",
+      "label": "mapper → NotifyMotionArgs",
+      "kind": "call"
+    },
+    {
+      "step": "s06",
+      "from": "R",
+      "to": "D",
+      "label": "listener 链下发",
+      "kind": "call"
+    },
+    {
+      "step": "s07",
+      "from": "R",
+      "to": "D",
+      "label": "notifyMotion → 入队 + wake",
+      "kind": "call"
+    },
+    {
+      "step": "s09",
+      "from": "D",
+      "to": "D",
+      "label": "dispatchOnce 一轮",
+      "kind": "call"
+    },
+    {
+      "step": "s11",
+      "from": "D",
+      "to": "D",
+      "label": "findTouchedWindowTargets",
+      "kind": "call"
+    },
+    {
+      "step": "s13",
+      "from": "D",
+      "to": "U",
+      "label": "startDispatchCycle → send",
+      "kind": "call"
+    },
+    {
+      "step": "s13",
+      "from": "D",
+      "to": "D",
+      "label": "AnrTracker.insert(timeout)",
+      "kind": "state"
+    },
+    {
+      "step": "s14",
+      "from": "U",
+      "to": "U",
+      "label": "consumeEvents → dispatchInputEvent",
+      "kind": "call"
+    },
+    {
+      "step": "s15",
+      "from": "U",
+      "to": "U",
+      "label": "enqueueInputEvent",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "U",
+      "to": "U",
+      "label": "deliverInputEvent 选链起点",
+      "kind": "call"
+    },
+    {
+      "step": "s18",
+      "from": "U",
+      "to": "U",
+      "label": "ViewGroup.dispatchTouchEvent → onTouchEvent",
+      "kind": "call"
+    },
+    {
+      "step": "s19",
+      "from": "U",
+      "to": "D",
+      "label": "finishInputEvent(seq, handled)",
+      "kind": "oneway"
+    },
+    {
+      "step": "s20",
+      "from": "D",
+      "to": "D",
+      "label": "finishDispatchCycleLocked 清计时",
+      "kind": "call"
+    },
+    {
+      "step": "s21",
+      "from": "D",
+      "to": "D",
+      "label": "processAnrsLocked 超时判定",
+      "kind": "call"
+    },
+    {
+      "step": "s22",
+      "from": "D",
+      "to": "S",
+      "label": "窗口无响应 → ANR",
+      "kind": "oneway"
+    }
+  ]
+}

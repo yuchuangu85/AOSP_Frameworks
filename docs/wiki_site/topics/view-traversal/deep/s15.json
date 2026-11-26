@@ -1,0 +1,36 @@
+{
+  "step": "s15",
+  "title": "syncAndDrawFrame → JNI：FrameInfo 搬进 task",
+  "tldr": "一行 Java 调用加一次数组拷贝；长度不符直接 abort，RenderProxy 只转发不解析。",
+  "why": "FrameInfo 是 UI 与 RT 之间唯一的「本帧元数据」通道：vsyncId、frameDeadline、intendedVsync、inputEventId 都在里面，它们决定了 FrameTimeline 能否对齐、jank 能否归因。这条路径的设计要点是「零解析」——Java 侧只把 long[] 交出去，JNI 校验长度后整块拷进 DrawFrameTask 自己的数组，native 侧各模块按 FrameInfoIndex 各取所需。理解这一点很重要：出问题时先查长度常量与拷贝，而不是怀疑中间的某个转发层。",
+  "concepts": [
+    { "term": "FrameInfo.frameInfo", "text": "预打包的 long[] 数组，索引与 native 的 FrameInfoIndex 一一对应。" },
+    { "term": "UI_THREAD_FRAME_INFO_SIZE", "text": "数组长度常量；Java 与 native 必须一致，否则 LOG_ALWAYS_FATAL。" },
+    { "term": "proxy->frameInfo()", "text": "返回 DrawFrameTask 内部数组的指针，GetLongArrayRegion 直接拷进去。" }
+  ],
+  "walk": [
+    { "call": "public int syncAndDrawFrame(@NonNull FrameInfo frameInfo)", "ref": "base/graphics/java/android/graphics/HardwareRenderer.java:595", "what": "Java 门面，body 只有一行 native 调用。" },
+    { "call": "return nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length);", "ref": "base/graphics/java/android/graphics/HardwareRenderer.java:596", "what": "传裸指针 + long[] + 长度。" },
+    { "call": "static int android_view_ThreadedRenderer_syncAndDrawFrame(JNIEnv* env, jobject clazz,", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:464", "what": "JNI 入口。" },
+    { "call": "LOG_ALWAYS_FATAL_IF(frameInfoSize != UI_THREAD_FRAME_INFO_SIZE,", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:467", "what": "长度校验失败即 abort，兜住 Java/native 版本不同步。" },
+    { "call": "env->GetLongArrayRegion(frameInfo, 0, frameInfoSize, proxy->frameInfo());", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:471", "what": "直接拷进 DrawFrameTask 的 mFrameInfo，没有中间缓冲。" },
+    { "call": "return proxy->syncAndDrawFrame();", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:472", "what": "拷贝完才进入真正的交棒。" },
+    { "call": "int RenderProxy::syncAndDrawFrame() {", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:237", "what": "只转发到 mDrawFrameTask.drawFrame()。" }
+  ],
+  "state": [
+    { "field": "DrawFrameTask::mFrameInfo", "before": "上一次的帧参数", "after": "本次 vsyncId/deadline 等", "note": "RT 的 syncFrameState 从这里读，随后喂给 TimeLord。" },
+    { "field": "RenderProxy", "before": "无状态", "after": "无状态", "note": "它不缓存任何东西，纯转发。" }
+  ],
+  "threads": "这一段仍在 UI 线程同步执行；真正的跨线程发生在下一步的 postAndWait。",
+  "pitfalls": [
+    "怀疑 RenderProxy 弄丢 FrameInfo：它只转发，问题在 JNI 的长度校验与拷贝。",
+    "改 FRAME_INFO_SIZE 却漏改 native 常量：会触发 LOG_ALWAYS_FATAL，进程直接崩。",
+    "以为 FrameInfo 里的时间戳由 RT 产生：它们在 UI 线程由 Choreographer 填好。"
+  ],
+  "debug": [
+    "trace 里 DrawFrames <vsyncId> 的 id 应当等于 Choreographer 的 getVsyncId。",
+    "如果 FrameTimeline 里该帧缺失，先确认 FrameInfo 是否真的下发了。",
+    "在 JNI 的 467 行下断点，可确认长度常量是否对齐。"
+  ],
+  "next": "任务入队后 UI 线程为什么会被挂起？见第 16 步。"
+}

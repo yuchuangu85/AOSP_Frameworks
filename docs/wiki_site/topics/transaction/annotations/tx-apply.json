@@ -1,0 +1,492 @@
+{
+  "id": "tx-apply",
+  "title": "Transaction::apply",
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "sig": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay)",
+  "span": [
+    1146,
+    1225
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay) {",
+      "kind": "note",
+      "text": "客户端提交的唯一出口。它做四件事：装配回调、缓存 buffer、设置 flags、发 binder；synchronous 时还会等待。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mStatus != NO_ERROR) {",
+      "kind": "branch",
+      "text": "事务之前有错误（例如非法 alpha）。"
+    },
+    {
+      "at": 3,
+      "quote": "return mStatus;",
+      "kind": "note",
+      "text": "直接返回错误，不提交半成品。"
+    },
+    {
+      "at": 4,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if。"
+    },
+    {
+      "at": 5,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 6,
+      "quote": "std::shared_ptr<SyncCallback> syncCallback = std::make_shared<SyncCallback>();",
+      "kind": "data",
+      "text": "同步提交用的回调对象。"
+    },
+    {
+      "at": 7,
+      "quote": "if (synchronous) {",
+      "kind": "branch",
+      "text": "要求同步。"
+    },
+    {
+      "at": 8,
+      "quote": "syncCallback->init();",
+      "kind": "call",
+      "text": "初始化条件变量。"
+    },
+    {
+      "at": 9,
+      "quote": "addTransactionCommittedCallback(SyncCallback::getCallback(syncCallback),",
+      "kind": "call",
+      "text": "注册一个 **commit 回调**——注意是 commit 不是 present。"
+    },
+    {
+      "at": 10,
+      "quote": "/*callbackContext=*/nullptr);",
+      "kind": "note",
+      "text": "callbackContext 为空表示不需要额外上下文。"
+    },
+    {
+      "at": 11,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭同步分支。"
+    },
+    {
+      "at": 12,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 13,
+      "quote": "TransactionListenerCallbacks& listenerCallbacks = mState.mCallbacks;",
+      "kind": "data",
+      "text": "待写进 mState 的回调描述。"
+    },
+    {
+      "at": 14,
+      "quote": "listenerCallbacks.clear();",
+      "kind": "state",
+      "text": "先清空，避免残留上一批。"
+    },
+    {
+      "at": 15,
+      "quote": "listenerCallbacks.mHasListenerCallbacks = !mListenerCallbacks.empty();",
+      "kind": "state",
+      "text": "是否有 listener 回调。"
+    },
+    {
+      "at": 16,
+      "quote": "// For every listener with registered callbacks",
+      "kind": "note",
+      "text": "注释：逐个 listener 装配。"
+    },
+    {
+      "at": 17,
+      "quote": "for (const auto& [listener, callbackInfo] : mListenerCallbacks) {",
+      "kind": "note",
+      "text": "遍历已注册的 listener。"
+    },
+    {
+      "at": 18,
+      "quote": "const auto& [callbackIds, surfaceControls] = callbackInfo;",
+      "kind": "note",
+      "text": "解构出 callbackIds 与 surfaceControls。"
+    },
+    {
+      "at": 19,
+      "quote": "if (callbackIds.empty()) {",
+      "kind": "branch",
+      "text": "没有 callback id 就跳过。"
+    },
+    {
+      "at": 20,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 22,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 23,
+      "quote": "if (surfaceControls.empty()) {",
+      "kind": "branch",
+      "text": "**没有绑定 SurfaceControl** 的 listener。"
+    },
+    {
+      "at": 24,
+      "quote": "listenerCallbacks.mFlattenedListenerCallbacks.emplace_back(IInterface::asBinder(",
+      "kind": "call",
+      "text": "走扁平化通道：直接带上 binder 与 callbackIds。"
+    },
+    {
+      "at": 25,
+      "quote": "listener),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 26,
+      "quote": "callbackIds);",
+      "kind": "note",
+      "text": "闭合构造。"
+    },
+    {
+      "at": 27,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（绑定了 SurfaceControl）。"
+    },
+    {
+      "at": 28,
+      "quote": "// If the listener has any SurfaceControls set on this Transaction update the surface",
+      "kind": "note",
+      "text": "注释：把回调信息写到对应层的状态里。"
+    },
+    {
+      "at": 29,
+      "quote": "// state",
+      "kind": "note",
+      "text": "遍历这些 SurfaceControl。"
+    },
+    {
+      "at": 30,
+      "quote": "for (const auto& surfaceControl : surfaceControls) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 31,
+      "quote": "layer_state_t* s = getLayerState(surfaceControl);",
+      "kind": "call",
+      "text": "取出（或新建）该层的 layer_state_t。"
+    },
+    {
+      "at": 32,
+      "quote": "if (!s) {",
+      "kind": "branch",
+      "text": "取不到。"
+    },
+    {
+      "at": 33,
+      "quote": "ALOGE(\"failed to get layer state\");",
+      "kind": "note",
+      "text": "ERROR 日志。"
+    },
+    {
+      "at": 34,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过这一层。"
+    },
+    {
+      "at": 35,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 36,
+      "quote": "std::vector<CallbackId> callbacks(callbackIds.begin(), callbackIds.end());",
+      "kind": "data",
+      "text": "把 callbackIds 拷成 vector。"
+    },
+    {
+      "at": 37,
+      "quote": "s->what |= layer_state_t::eHasListenerCallbacksChanged;",
+      "kind": "state",
+      "text": "置 eHasListenerCallbacksChanged 位——服务端据此知道要登记回调。"
+    },
+    {
+      "at": 38,
+      "quote": "s->listeners.emplace_back(IInterface::asBinder(listener), callbacks);",
+      "kind": "state",
+      "text": "把 listener 与 callback 写进层状态。"
+    },
+    {
+      "at": 39,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 40,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 41,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 listener 循环。"
+    },
+    {
+      "at": 42,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 43,
+      "quote": "cacheBuffers();",
+      "kind": "call",
+      "text": "**缓存 buffer**：把 GraphicBuffer 换成客户端缓存句柄，见第 4 步。"
+    },
+    {
+      "at": 44,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 45,
+      "quote": "if (oneWay) {",
+      "kind": "branch",
+      "text": "要求 oneway。"
+    },
+    {
+      "at": 46,
+      "quote": "if (synchronous) {",
+      "kind": "branch",
+      "text": "同时又要求同步——矛盾请求。"
+    },
+    {
+      "at": 47,
+      "quote": "ALOGE(\"Transaction attempted to set synchronous and one way at the same time\"",
+      "kind": "note",
+      "text": "E 级日志说明这是非法组合。"
+    },
+    {
+      "at": 48,
+      "quote": "\" this is an invalid request. Synchronous will win for safety\");",
+      "kind": "note",
+      "text": "注释：为安全起见同步优先。"
+    },
+    {
+      "at": 49,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "关闭内层。"
+    },
+    {
+      "at": 50,
+      "quote": "mState.mFlags |= ISurfaceComposer::eOneWay;",
+      "kind": "note",
+      "text": "否则。"
+    },
+    {
+      "at": 51,
+      "quote": "}",
+      "kind": "state",
+      "text": "置 eOneWay 标志，服务端据此不等确认。"
+    },
+    {
+      "at": 52,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 53,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭 oneway 分支。"
+    },
+    {
+      "at": 54,
+      "quote": "// If both ISurfaceComposer::eEarlyWakeupStart and ISurfaceComposer::eEarlyWakeupEnd are set",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 55,
+      "quote": "// it is equivalent for none",
+      "kind": "note",
+      "text": "注释：EarlyWakeupStart 与 End 同时置位等价于都没置。"
+    },
+    {
+      "at": 56,
+      "quote": "uint32_t wakeupFlags = ISurfaceComposer::eEarlyWakeupStart | ISurfaceComposer::eEarlyWakeupEnd;",
+      "kind": "data",
+      "text": "两个 flag 的掩码。"
+    },
+    {
+      "at": 57,
+      "quote": "if ((mState.mFlags & wakeupFlags) == wakeupFlags) {",
+      "kind": "branch",
+      "text": "两个都置了。"
+    },
+    {
+      "at": 58,
+      "quote": "mState.mFlags &= ~(wakeupFlags);",
+      "kind": "state",
+      "text": "把它们清掉。"
+    },
+    {
+      "at": 59,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 60,
+      "quote": "sp<IBinder> applyToken = mApplyToken ? mApplyToken : getDefaultApplyToken();",
+      "kind": "data",
+      "text": "取 applyToken：自定义优先，否则用进程级默认 token。"
+    },
+    {
+      "at": 61,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 62,
+      "quote": "sp<ISurfaceComposer> sf(ComposerService::getComposerService());",
+      "kind": "data",
+      "text": "取 SurfaceFlinger 代理。"
+    },
+    {
+      "at": 63,
+      "quote": "TransactionState state = std::move(mState);",
+      "kind": "data",
+      "text": "**把 mState move 出去**：提交后本地就不再有内容。"
+    },
+    {
+      "at": 64,
+      "quote": "status_t binderStatus = sf->setTransactionState(std::move(state), applyToken);",
+      "kind": "call",
+      "text": "**binder 调用**：事务在这里离开客户端。"
+    },
+    {
+      "at": 65,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 66,
+      "quote": "if (mLogCallPoints) {",
+      "kind": "branch",
+      "text": "调试日志开关（记录调用点）。"
+    },
+    {
+      "at": 67,
+      "quote": "ALOG(LOG_DEBUG, LOG_SURFACE_CONTROL_REGISTRY, \"Transaction %\" PRIu64 \" applied\",",
+      "kind": "note",
+      "text": "打印事务 id。"
+    },
+    {
+      "at": 68,
+      "quote": "mState.mId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 69,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭日志。"
+    },
+    {
+      "at": 70,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 71,
+      "quote": "// Clear the current states and flags",
+      "kind": "note",
+      "text": "注释：清空状态与标志。"
+    },
+    {
+      "at": 72,
+      "quote": "clear();",
+      "kind": "call",
+      "text": "**clear()**：重置 mState 并生成新 id——对象可复用，但已提交内容不保留。"
+    },
+    {
+      "at": 73,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 74,
+      "quote": "if (synchronous && binderStatus == OK) {",
+      "kind": "branch",
+      "text": "同步且提交成功。"
+    },
+    {
+      "at": 75,
+      "quote": "syncCallback->wait();",
+      "kind": "call",
+      "text": "**等 commit 回调**（不是等上屏）。"
+    },
+    {
+      "at": 76,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 77,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 78,
+      "quote": "mStatus = NO_ERROR;",
+      "kind": "state",
+      "text": "复位状态。"
+    },
+    {
+      "at": 79,
+      "quote": "return binderStatus;",
+      "kind": "note",
+      "text": "返回 binder 结果。"
+    },
+    {
+      "at": 80,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

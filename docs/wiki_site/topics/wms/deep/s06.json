@@ -1,0 +1,51 @@
+{
+  "step": "s06",
+  "title": "InputChannel 配对",
+  "tldr": "addWindow 输出一个 InputChannel：WMS/InputDispatcher 侧留一半，另一半经 binder 交给 app，直到窗口移除才关闭。",
+  "why": "这条通道是「点击落到哪个窗口」的物理路径。它解释了为什么窗口还没布局、甚至还没可见时，输入就已经有归属：通道在 addWindow 时就建立了。也解释了「窗口泄漏」为什么严重——一个没被移除的窗口会一直占着输入通道，可能持续吞掉触摸。",
+  "concepts": [
+    {
+      "term": "openInputChannel",
+      "text": "创建配对的两半。"
+    },
+    {
+      "term": "INPUT_FEATURE_NO_INPUT_CHANNEL",
+      "text": "声明不需要输入（例如纯展示层）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "final boolean openInputChannels = (outInputChannel != null",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1856",
+      "what": "判断是否需要通道。"
+    },
+    {
+      "call": "final InputChannel channel = win.openInputChannel();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1859",
+      "what": "配对。"
+    },
+    {
+      "call": "channel.copyTo(outInputChannel);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowManagerService.java:1860",
+      "what": "**交给客户端**（binder 传 fd）。"
+    }
+  ],
+  "state": [
+    {
+      "field": "InputChannel 两半",
+      "before": "未建立",
+      "after": "WMS 一半 + app 一半",
+      "note": "窗口移除时关闭。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "以为通道在 relayout 时建立：addWindow 就建了。",
+    "窗口泄漏导致输入被吞。"
+  ],
+  "debug": [
+    "dumpsys input 能看到窗口名与通道。",
+    "Perfetto 输入轨道按窗口名区分。"
+  ],
+  "next": "WindowState 何时创建？见第 7 步。"
+}

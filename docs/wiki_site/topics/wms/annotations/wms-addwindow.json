@@ -1,0 +1,2238 @@
+{
+  "id": "wms-addwindow",
+  "title": "WMS.addWindow",
+  "file": "base/services/core/java/com/android/server/wm/WindowManagerService.java",
+  "sig": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+  "span": [
+    1672,
+    2042
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public int addWindow(Session session, IWindow client, LayoutParams attrs, int viewVisibility,",
+      "kind": "note",
+      "text": "**加窗口总入口**，371 行，分四段：权限校验、token 归属、WindowState 创建、与转场协调后落库。"
+    },
+    {
+      "at": 2,
+      "quote": "int displayId, int requestUserId, @InsetsType int requestedVisibleTypes,",
+      "kind": "note",
+      "text": "续行：displayId / requestUserId / requestedVisibleTypes。"
+    },
+    {
+      "at": 3,
+      "quote": "InputChannel outInputChannel, WindowRelayoutResult result) {",
+      "kind": "note",
+      "text": "续行：输出 InputChannel 与 relayout 结果。"
+    },
+    {
+      "at": 4,
+      "quote": "result.activeControls.set(null, false /* copyControls */);",
+      "kind": "state",
+      "text": "清空回传的 controls（copyControls=false）。"
+    },
+    {
+      "at": 5,
+      "quote": "int[] appOp = new int[1];",
+      "kind": "data",
+      "text": "appOp 输出参数。"
+    },
+    {
+      "at": 6,
+      "quote": "final boolean isRoundedCornerOverlay = (attrs.privateFlags",
+      "kind": "data",
+      "text": "判定是否是圆角覆盖层。"
+    },
+    {
+      "at": 7,
+      "quote": "& PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY) != 0;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 8,
+      "quote": "int res = mPolicy.checkAddPermission(attrs.type, isRoundedCornerOverlay, attrs.packageName,",
+      "kind": "call",
+      "text": "**权限校验**：按 type 与 uid 判断能否加这类窗口。"
+    },
+    {
+      "at": 9,
+      "quote": "appOp, displayId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 10,
+      "quote": "if (res != ADD_OKAY) {",
+      "kind": "branch",
+      "text": "**校验不通过**。"
+    },
+    {
+      "at": 11,
+      "quote": "return res;",
+      "kind": "note",
+      "text": "直接返回错误码，客户端据此抛异常。"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 13,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 14,
+      "quote": "WindowState parentWindow = null;",
+      "kind": "data",
+      "text": "父窗口（子窗口才有）。"
+    },
+    {
+      "at": 15,
+      "quote": "final int callingUid = Binder.getCallingUid();",
+      "kind": "data",
+      "text": "调用方 uid。"
+    },
+    {
+      "at": 16,
+      "quote": "final int callingPid = Binder.getCallingPid();",
+      "kind": "data",
+      "text": "调用方 pid。"
+    },
+    {
+      "at": 17,
+      "quote": "final long origId = Binder.clearCallingIdentity();",
+      "kind": "call",
+      "text": "**清空 binder 身份**：后续内部逻辑不再以调用方身份执行。"
+    },
+    {
+      "at": 18,
+      "quote": "final int type = attrs.type;",
+      "kind": "data",
+      "text": "窗口 type。"
+    },
+    {
+      "at": 19,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 20,
+      "quote": "synchronized (mGlobalLock) {",
+      "kind": "lock",
+      "text": "**拿全局锁**：整个 addWindow 在 mGlobalLock 下执行。"
+    },
+    {
+      "at": 21,
+      "quote": "if (!mDisplayReady) {",
+      "kind": "branch",
+      "text": "**显示还没初始化完成**。"
+    },
+    {
+      "at": 22,
+      "quote": "throw new IllegalStateException(\"Display has not been initialialized\");",
+      "kind": "note",
+      "text": "抛异常——这是系统启动早期的典型失败。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 24,
+      "quote": "if (session.isClientDead()) {",
+      "kind": "branch",
+      "text": "**客户端已死**。"
+    },
+    {
+      "at": 25,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window with a client %s \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 26,
+      "quote": "+ \"that is dead. Aborting.\", session);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 27,
+      "quote": "return WindowManagerGlobal.ADD_APP_EXITING;",
+      "kind": "note",
+      "text": "返回 ADD_APP_EXITING：应用正在退出。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 29,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 30,
+      "quote": "if (type >= FIRST_SUB_WINDOW && type <= LAST_SUB_WINDOW) {",
+      "kind": "branch",
+      "text": "**是子窗口**（type 落在子窗口区间）。"
+    },
+    {
+      "at": 31,
+      "quote": "parentWindow = windowForClient(null /* session */, attrs.token);",
+      "kind": "call",
+      "text": "按 attrs.token 找父窗口。"
+    },
+    {
+      "at": 32,
+      "quote": "if (parentWindow == null) {",
+      "kind": "branch",
+      "text": "**找不到父窗口**。"
+    },
+    {
+      "at": 33,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window with token that is not a window: \"",
+      "kind": "note",
+      "text": "W 级日志：token 不是窗口。"
+    },
+    {
+      "at": 34,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 35,
+      "quote": "return WindowManagerGlobal.ADD_BAD_SUBWINDOW_TOKEN;",
+      "kind": "note",
+      "text": "返回 **ADD_BAD_SUBWINDOW_TOKEN**。"
+    },
+    {
+      "at": 36,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 37,
+      "quote": "if (parentWindow.mAttrs.type >= FIRST_SUB_WINDOW",
+      "kind": "branch",
+      "text": "**父窗口自己也是子窗口**（不允许二层嵌套）。"
+    },
+    {
+      "at": 38,
+      "quote": "&& parentWindow.mAttrs.type <= LAST_SUB_WINDOW) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 39,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window with token that is a sub-window: \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 40,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "return WindowManagerGlobal.ADD_BAD_SUBWINDOW_TOKEN;",
+      "kind": "note",
+      "text": "同样返回 ADD_BAD_SUBWINDOW_TOKEN。"
+    },
+    {
+      "at": 42,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 43,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭子窗口分支。"
+    },
+    {
+      "at": 44,
+      "quote": "// Update whether the session should be able to add system application overlays for any",
+      "kind": "note",
+      "text": "注释：每次加系统 overlay 都要更新该 session 的能力判定。"
+    },
+    {
+      "at": 45,
+      "quote": "// attempt to add a system application overlay.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 46,
+      "quote": "if ((attrs.privateFlags & PRIVATE_FLAG_SYSTEM_APPLICATION_OVERLAY) != 0) {",
+      "kind": "branch",
+      "text": "是系统应用 overlay。"
+    },
+    {
+      "at": 47,
+      "quote": "session.updateCanCreateSystemApplicationOverlay(mPermissionManager);",
+      "kind": "call",
+      "text": "重新计算能否创建系统 overlay。"
+    },
+    {
+      "at": 48,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 49,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 50,
+      "quote": "final DisplayContent displayContent = parentWindow != null",
+      "kind": "data",
+      "text": "**确定 DisplayContent**：有父窗口就跟着父窗口走。"
+    },
+    {
+      "at": 51,
+      "quote": "? parentWindow.mDisplayContent",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 52,
+      "quote": ": getDisplayContentOrCreate(displayId, attrs.token);",
+      "kind": "call",
+      "text": "否则按 displayId 找（必要时创建）。"
+    },
+    {
+      "at": 53,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 54,
+      "quote": "if (displayContent == null) {",
+      "kind": "branch",
+      "text": "**该 display 不存在**。"
+    },
+    {
+      "at": 55,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window to a display that does \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 56,
+      "quote": "+ \"not exist: %d. Aborting.\", displayId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 57,
+      "quote": "return WindowManagerGlobal.ADD_INVALID_DISPLAY;",
+      "kind": "note",
+      "text": "返回 ADD_INVALID_DISPLAY。"
+    },
+    {
+      "at": 58,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 59,
+      "quote": "if (!displayContent.hasAccess(session.mUid)) {",
+      "kind": "branch",
+      "text": "**uid 无权访问该 display**。"
+    },
+    {
+      "at": 60,
+      "quote": "ProtoLog.w(WM_ERROR,",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 61,
+      "quote": "\"Attempted to add window to a display for which the application \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 62,
+      "quote": "+ \"does not have access: %d.  Aborting.\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 63,
+      "quote": "displayContent.getDisplayId());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 64,
+      "quote": "return WindowManagerGlobal.ADD_INVALID_DISPLAY;",
+      "kind": "note",
+      "text": "返回 ADD_INVALID_DISPLAY。"
+    },
+    {
+      "at": 65,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 66,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 67,
+      "quote": "if (mWindowMap.containsKey(client.asBinder())) {",
+      "kind": "branch",
+      "text": "**该 client 已注册过**（重复添加）。"
+    },
+    {
+      "at": 68,
+      "quote": "ProtoLog.w(WM_ERROR, \"Window %s is already added\", client);",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 69,
+      "quote": "return WindowManagerGlobal.ADD_DUPLICATE_ADD;",
+      "kind": "note",
+      "text": "返回 ADD_DUPLICATE_ADD。"
+    },
+    {
+      "at": 70,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 71,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 72,
+      "quote": "if (type == TYPE_PRIVATE_PRESENTATION",
+      "kind": "branch",
+      "text": "是私有 presentation 窗口。"
+    },
+    {
+      "at": 73,
+      "quote": "&& !mPresentationController.canPresent(null /*win*/, displayContent, type,",
+      "kind": "call",
+      "text": "检查该 display 是否允许。"
+    },
+    {
+      "at": 74,
+      "quote": "callingUid)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 75,
+      "quote": "ProtoLog.w(WM_ERROR,",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 76,
+      "quote": "\"Attempted to add private presentation window to a non-private display.  \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 77,
+      "quote": "+ \"Aborting.\");",
+      "kind": "note",
+      "text": "返回 ADD_PERMISSION_DENIED。"
+    },
+    {
+      "at": 78,
+      "quote": "return WindowManagerGlobal.ADD_PERMISSION_DENIED;",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 79,
+      "quote": "}",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 80,
+      "quote": "",
+      "kind": "branch",
+      "text": "是普通 presentation 窗口。"
+    },
+    {
+      "at": 81,
+      "quote": "if (type == TYPE_PRESENTATION",
+      "kind": "call",
+      "text": "同样的检查。"
+    },
+    {
+      "at": 82,
+      "quote": "&& !mPresentationController.canPresent(null /*win*/, displayContent, type,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 83,
+      "quote": "callingUid)) {",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 84,
+      "quote": "ProtoLog.w(WM_ERROR,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 85,
+      "quote": "\"Attempted to add presentation window to a non-suitable display.  \"",
+      "kind": "note",
+      "text": "返回 ADD_INVALID_DISPLAY。"
+    },
+    {
+      "at": 86,
+      "quote": "+ \"Aborting.\");",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 87,
+      "quote": "return WindowManagerGlobal.ADD_INVALID_DISPLAY;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 88,
+      "quote": "}",
+      "kind": "data",
+      "text": "从 uid 推导 userId。"
+    },
+    {
+      "at": 89,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 90,
+      "quote": "int userId = UserHandle.getUserId(session.mUid);",
+      "kind": "note",
+      "text": "（后续继续解析 token 与 WindowState 创建）"
+    },
+    {
+      "at": 91,
+      "quote": "if (requestUserId != userId) {",
+      "kind": "branch",
+      "text": "请求的 user 与会话 user 不一致。"
+    },
+    {
+      "at": 92,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 开始。"
+    },
+    {
+      "at": 93,
+      "quote": "mAmInternal.handleIncomingUser(callingPid, callingUid, requestUserId,",
+      "kind": "call",
+      "text": "校验能否切到该 user。"
+    },
+    {
+      "at": 94,
+      "quote": "false /*allowAll*/, ALLOW_NON_FULL, null, null);",
+      "kind": "note",
+      "text": "续行参数。"
+    },
+    {
+      "at": 95,
+      "quote": "} catch (Exception exp) {",
+      "kind": "note",
+      "text": "catch。"
+    },
+    {
+      "at": 96,
+      "quote": "ProtoLog.w(WM_ERROR, \"Trying to add window with invalid user=%d\",",
+      "kind": "note",
+      "text": "W 级日志：非法 user。"
+    },
+    {
+      "at": 97,
+      "quote": "requestUserId);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 98,
+      "quote": "return WindowManagerGlobal.ADD_INVALID_USER;",
+      "kind": "note",
+      "text": "返回 ADD_INVALID_USER。"
+    },
+    {
+      "at": 99,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 catch。"
+    },
+    {
+      "at": 100,
+      "quote": "// It's fine to use this userId",
+      "kind": "note",
+      "text": "注释：校验通过就可以用这个 userId。"
+    },
+    {
+      "at": 101,
+      "quote": "userId = requestUserId;",
+      "kind": "state",
+      "text": "采用请求的 userId。"
+    },
+    {
+      "at": 102,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 103,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 104,
+      "quote": "ActivityRecord activity = null;",
+      "kind": "data",
+      "text": "所属 ActivityRecord（应用窗口才有）。"
+    },
+    {
+      "at": 105,
+      "quote": "final boolean hasParent = parentWindow != null;",
+      "kind": "data",
+      "text": "是否有父窗口。"
+    },
+    {
+      "at": 106,
+      "quote": "// Use existing parent window token for child windows since they go in the same token",
+      "kind": "note",
+      "text": "注释：子窗口复用父窗口的 token，保证策略一致。"
+    },
+    {
+      "at": 107,
+      "quote": "// as there parent window so we can apply the same policy on them.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 108,
+      "quote": "WindowToken token = displayContent.getWindowToken(",
+      "kind": "call",
+      "text": "**按 token 找 WindowToken**。"
+    },
+    {
+      "at": 109,
+      "quote": "hasParent ? parentWindow.mAttrs.token : attrs.token);",
+      "kind": "note",
+      "text": "续行：有父窗口就用父的 token。"
+    },
+    {
+      "at": 110,
+      "quote": "// If this is a child window, we want to apply the same type checking rules as the",
+      "kind": "note",
+      "text": "注释：子窗口按父窗口的 type 做类型检查。"
+    },
+    {
+      "at": 111,
+      "quote": "// parent window type.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 112,
+      "quote": "final int rootType = hasParent ? parentWindow.mAttrs.type : type;",
+      "kind": "data",
+      "text": "rootType：有父窗口取父的 type，否则取自己的。"
+    },
+    {
+      "at": 113,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 114,
+      "quote": "boolean addToastWindowRequiresToken = false;",
+      "kind": "data",
+      "text": "toast 是否需要 token（按 targetSdk 决定）。"
+    },
+    {
+      "at": 115,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 116,
+      "quote": "final IBinder windowContextToken = attrs.mWindowContextToken;",
+      "kind": "data",
+      "text": "window context token（新式窗口上下文）。"
+    },
+    {
+      "at": 117,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 118,
+      "quote": "if (token == null) {",
+      "kind": "branch",
+      "text": "**没有现成 token**（首次为该系统窗口类建立归属）。"
+    },
+    {
+      "at": 119,
+      "quote": "if (!unprivilegedAppCanCreateTokenWith(parentWindow, callingUid, type,",
+      "kind": "branch",
+      "text": "**无特权应用不得随意建 token**。"
+    },
+    {
+      "at": 120,
+      "quote": "rootType, attrs.token, attrs.packageName)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 121,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 **ADD_BAD_APP_TOKEN**。"
+    },
+    {
+      "at": 122,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 123,
+      "quote": "if (hasParent) {",
+      "kind": "branch",
+      "text": "有父窗口。"
+    },
+    {
+      "at": 124,
+      "quote": "// Use existing parent window token for child windows.",
+      "kind": "note",
+      "text": "注释：子窗口直接复用父的 token。"
+    },
+    {
+      "at": 125,
+      "quote": "token = parentWindow.mToken;",
+      "kind": "state",
+      "text": "复用 parentWindow.mToken。"
+    },
+    {
+      "at": 126,
+      "quote": "} else if (mWindowContextListenerController.hasListener(windowContextToken)) {",
+      "kind": "note",
+      "text": "否则若提供了 window context。"
+    },
+    {
+      "at": 127,
+      "quote": "// Respect the window context token if the user provided it.",
+      "kind": "note",
+      "text": "注释：尊重调用方给的 window context token。"
+    },
+    {
+      "at": 128,
+      "quote": "final IBinder binder = attrs.token != null ? attrs.token : windowContextToken;",
+      "kind": "data",
+      "text": "优先用 attrs.token，否则用 windowContextToken。"
+    },
+    {
+      "at": 129,
+      "quote": "final Bundle options = mWindowContextListenerController",
+      "kind": "data",
+      "text": "取该 context 的 options。"
+    },
+    {
+      "at": 130,
+      "quote": ".getOptions(windowContextToken);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 131,
+      "quote": "token = new WindowToken.Builder(this, binder, type)",
+      "kind": "call",
+      "text": "**新建 WindowToken**。"
+    },
+    {
+      "at": 132,
+      "quote": ".setOwnerCanManageAppTokens(session.mCanAddInternalSystemWindow)",
+      "kind": "call",
+      "text": "是否允许管理 app token。"
+    },
+    {
+      "at": 133,
+      "quote": ".setRoundedCornerOverlay(isRoundedCornerOverlay)",
+      "kind": "call",
+      "text": "设置圆角覆盖标志。"
+    },
+    {
+      "at": 134,
+      "quote": ".setFromClientToken(true)",
+      "kind": "call",
+      "text": "标记来自客户端 token。"
+    },
+    {
+      "at": 135,
+      "quote": ".setOptions(options)",
+      "kind": "call",
+      "text": "带上 options。"
+    },
+    {
+      "at": 136,
+      "quote": ".build();",
+      "kind": "note",
+      "text": "构建完成。"
+    },
+    {
+      "at": 137,
+      "quote": "displayContent.addWindowToken(token);",
+      "kind": "call",
+      "text": "**注册到 DisplayContent**。"
+    },
+    {
+      "at": 138,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（普通系统窗口）。"
+    },
+    {
+      "at": 139,
+      "quote": "final IBinder binder = attrs.token != null ? attrs.token : client.asBinder();",
+      "kind": "data",
+      "text": "用 attrs.token 或 client binder 作为 token 本体。"
+    },
+    {
+      "at": 140,
+      "quote": "token = new WindowToken.Builder(this, binder, type)",
+      "kind": "call",
+      "text": "新建 WindowToken。"
+    },
+    {
+      "at": 141,
+      "quote": ".setOwnerCanManageAppTokens(session.mCanAddInternalSystemWindow)",
+      "kind": "call",
+      "text": "同上。"
+    },
+    {
+      "at": 142,
+      "quote": ".setRoundedCornerOverlay(isRoundedCornerOverlay)",
+      "kind": "call",
+      "text": "同上。"
+    },
+    {
+      "at": 143,
+      "quote": ".build();",
+      "kind": "note",
+      "text": "构建完成。"
+    },
+    {
+      "at": 144,
+      "quote": "displayContent.addWindowToken(token);",
+      "kind": "call",
+      "text": "注册到 DisplayContent。"
+    },
+    {
+      "at": 145,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭三分支。"
+    },
+    {
+      "at": 146,
+      "quote": "} else if (rootType >= FIRST_APPLICATION_WINDOW",
+      "kind": "note",
+      "text": "否则（已有 token 且是应用窗口）。"
+    },
+    {
+      "at": 147,
+      "quote": "&& rootType <= LAST_APPLICATION_WINDOW) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 148,
+      "quote": "activity = token.asActivityRecord();",
+      "kind": "data",
+      "text": "**取 ActivityRecord**：应用窗口的 token 就是它。"
+    },
+    {
+      "at": 149,
+      "quote": "if (activity == null) {",
+      "kind": "branch",
+      "text": "**token 不是 ActivityRecord**。"
+    },
+    {
+      "at": 150,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window with non-application token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 151,
+      "quote": "+ \".%s Aborting.\", token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 152,
+      "quote": "return WindowManagerGlobal.ADD_NOT_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 **ADD_NOT_APP_TOKEN**。"
+    },
+    {
+      "at": 153,
+      "quote": "} else if (activity.getParent() == null) {",
+      "kind": "note",
+      "text": "否则 Activity 已从父节点摘除。"
+    },
+    {
+      "at": 154,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add window with exiting application token \"",
+      "kind": "note",
+      "text": "W 级日志：exiting application token。"
+    },
+    {
+      "at": 155,
+      "quote": "+ \".%s Aborting.\", token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 156,
+      "quote": "return WindowManagerGlobal.ADD_APP_EXITING;",
+      "kind": "note",
+      "text": "返回 ADD_APP_EXITING。"
+    },
+    {
+      "at": 157,
+      "quote": "} else if (type == TYPE_APPLICATION_STARTING) {",
+      "kind": "note",
+      "text": "否则是启动窗口。"
+    },
+    {
+      "at": 158,
+      "quote": "if (activity.mStartingWindow != null) {",
+      "kind": "branch",
+      "text": "已经有启动窗口。"
+    },
+    {
+      "at": 159,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add starting window to \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 160,
+      "quote": "+ \"token with already existing starting window\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 161,
+      "quote": "return WindowManagerGlobal.ADD_DUPLICATE_ADD;",
+      "kind": "note",
+      "text": "返回 ADD_DUPLICATE_ADD。"
+    },
+    {
+      "at": 162,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 163,
+      "quote": "if (activity.mStartingData == null) {",
+      "kind": "branch",
+      "text": "启动数据已被清理。"
+    },
+    {
+      "at": 164,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add starting window to \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 165,
+      "quote": "+ \"token but already cleaned\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 166,
+      "quote": "return WindowManagerGlobal.ADD_DUPLICATE_ADD;",
+      "kind": "note",
+      "text": "返回 ADD_DUPLICATE_ADD。"
+    },
+    {
+      "at": 167,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 168,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭启动窗口分支。"
+    },
+    {
+      "at": 169,
+      "quote": "} else if (rootType == TYPE_INPUT_METHOD) {",
+      "kind": "note",
+      "text": "否则是输入法窗口。"
+    },
+    {
+      "at": 170,
+      "quote": "if (token.windowType != TYPE_INPUT_METHOD) {",
+      "kind": "branch",
+      "text": "token 的 type 不是输入法。"
+    },
+    {
+      "at": 171,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add input method window with bad token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 172,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 173,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 174,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 175,
+      "quote": "} else if (rootType == TYPE_VOICE_INTERACTION) {",
+      "kind": "note",
+      "text": "否则是语音交互窗口。"
+    },
+    {
+      "at": 176,
+      "quote": "if (token.windowType != TYPE_VOICE_INTERACTION) {",
+      "kind": "branch",
+      "text": "type 不匹配。"
+    },
+    {
+      "at": 177,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add voice interaction window with bad token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 178,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 179,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 180,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 181,
+      "quote": "} else if (rootType == TYPE_WALLPAPER) {",
+      "kind": "note",
+      "text": "否则是壁纸窗口。"
+    },
+    {
+      "at": 182,
+      "quote": "if (token.windowType != TYPE_WALLPAPER) {",
+      "kind": "branch",
+      "text": "type 不匹配。"
+    },
+    {
+      "at": 183,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add wallpaper window with bad token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 184,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 185,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 186,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 187,
+      "quote": "} else if (rootType == TYPE_ACCESSIBILITY_OVERLAY) {",
+      "kind": "note",
+      "text": "否则是无障碍覆盖层。"
+    },
+    {
+      "at": 188,
+      "quote": "if (token.windowType != TYPE_ACCESSIBILITY_OVERLAY) {",
+      "kind": "branch",
+      "text": "type 不匹配。"
+    },
+    {
+      "at": 189,
+      "quote": "ProtoLog.w(WM_ERROR,",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 190,
+      "quote": "\"Attempted to add Accessibility overlay window with bad token \"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 191,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 192,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 193,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 194,
+      "quote": "} else if (type == TYPE_TOAST) {",
+      "kind": "note",
+      "text": "否则是 toast。"
+    },
+    {
+      "at": 195,
+      "quote": "// Apps targeting SDK above N MR1 cannot arbitrary add toast windows.",
+      "kind": "note",
+      "text": "注释：targetSdk 高于 N MR1 的应用不能随意加 toast。"
+    },
+    {
+      "at": 196,
+      "quote": "addToastWindowRequiresToken = doesAddToastWindowRequireToken(attrs.packageName,",
+      "kind": "call",
+      "text": "判断这个包是否需要 token。"
+    },
+    {
+      "at": 197,
+      "quote": "callingUid, parentWindow);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 198,
+      "quote": "if (addToastWindowRequiresToken && token.windowType != TYPE_TOAST) {",
+      "kind": "branch",
+      "text": "需要 token 但 token 类型不对。"
+    },
+    {
+      "at": 199,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add a toast window with bad token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 200,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 201,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 202,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 203,
+      "quote": "} else if (type == TYPE_QS_DIALOG) {",
+      "kind": "note",
+      "text": "否则是 QS 对话框。"
+    },
+    {
+      "at": 204,
+      "quote": "if (token.windowType != TYPE_QS_DIALOG) {",
+      "kind": "branch",
+      "text": "type 不匹配。"
+    },
+    {
+      "at": 205,
+      "quote": "ProtoLog.w(WM_ERROR, \"Attempted to add QS dialog window with bad token \"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 206,
+      "quote": "+ \"%s.  Aborting.\", attrs.token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 207,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 208,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 209,
+      "quote": "} else if (token.asActivityRecord() != null) {",
+      "kind": "note",
+      "text": "否则 token 竟然是个 ActivityRecord（系统窗口用了应用 token）。"
+    },
+    {
+      "at": 210,
+      "quote": "ProtoLog.w(WM_ERROR, \"Non-null activity for system window of rootType=%d\",",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 211,
+      "quote": "rootType);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 212,
+      "quote": "// It is not valid to use an app token with other system types; we will",
+      "kind": "note",
+      "text": "注释：系统 type 用 app token 不合法，改为按「token 为空」处理。"
+    },
+    {
+      "at": 213,
+      "quote": "// instead make a new token for it (as if null had been passed in for the token).",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 214,
+      "quote": "attrs.token = null;",
+      "kind": "state",
+      "text": "清掉 attrs.token。"
+    },
+    {
+      "at": 215,
+      "quote": "token = new WindowToken.Builder(this, client.asBinder(), type)",
+      "kind": "call",
+      "text": "用 client binder 新建 token。"
+    },
+    {
+      "at": 216,
+      "quote": ".setOwnerCanManageAppTokens(session.mCanAddInternalSystemWindow)",
+      "kind": "call",
+      "text": "同上。"
+    },
+    {
+      "at": 217,
+      "quote": ".build();",
+      "kind": "note",
+      "text": "构建完成。"
+    },
+    {
+      "at": 218,
+      "quote": "displayContent.addWindowToken(token);",
+      "kind": "call",
+      "text": "注册到 DisplayContent。"
+    },
+    {
+      "at": 219,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭全部 token 分支。"
+    },
+    {
+      "at": 220,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 221,
+      "quote": "final WindowState win = new WindowState(this, session, client, token, parentWindow,",
+      "kind": "call",
+      "text": "**创建 WindowState**：携带 session/client/token/父窗口/attrs/可见性/uid。"
+    },
+    {
+      "at": 222,
+      "quote": "appOp[0], attrs, viewVisibility, session.mUid, userId,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 223,
+      "quote": "session.mCanAddInternalSystemWindow);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 224,
+      "quote": "final DisplayPolicy displayPolicy = displayContent.getDisplayPolicy();",
+      "kind": "data",
+      "text": "取该 display 的策略对象。"
+    },
+    {
+      "at": 225,
+      "quote": "displayPolicy.adjustWindowParamsLw(win, win.mAttrs);",
+      "kind": "call",
+      "text": "**让策略调整参数**（例如给某些 type 补默认 flag）。"
+    },
+    {
+      "at": 226,
+      "quote": "attrs.flags = sanitizeFlagSlippery(attrs.flags, win.getName(), callingUid, callingPid);",
+      "kind": "call",
+      "text": "清洗 FLAG_SLIPPERY（防止不受信任窗口自设）。"
+    },
+    {
+      "at": 227,
+      "quote": "attrs.inputFeatures = sanitizeInputFeatures(attrs.inputFeatures, win.getName(),",
+      "kind": "call",
+      "text": "清洗 inputFeatures（防止越权特征）。"
+    },
+    {
+      "at": 228,
+      "quote": "callingUid, callingPid, win.isTrustedOverlay());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 229,
+      "quote": "win.setRequestedVisibleTypes(requestedVisibleTypes);",
+      "kind": "call",
+      "text": "记录请求的可见类型（用于 Insets 计算）。"
+    },
+    {
+      "at": 230,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 231,
+      "quote": "res = displayPolicy.validateAddingWindowLw(attrs, callingPid, callingUid);",
+      "kind": "call",
+      "text": "**策略校验能否添加**（第二道校验，针对 type 细节）。"
+    },
+    {
+      "at": 232,
+      "quote": "if (res != ADD_OKAY) {",
+      "kind": "branch",
+      "text": "校验失败。"
+    },
+    {
+      "at": 233,
+      "quote": "return res;",
+      "kind": "note",
+      "text": "返回错误。"
+    },
+    {
+      "at": 234,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 235,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 236,
+      "quote": "final boolean openInputChannels = (outInputChannel != null",
+      "kind": "data",
+      "text": "**是否需要 InputChannel**：调用方要且没声明 NO_INPUT_CHANNEL。"
+    },
+    {
+      "at": 237,
+      "quote": "&& (attrs.inputFeatures & INPUT_FEATURE_NO_INPUT_CHANNEL) == 0);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 238,
+      "quote": "if  (openInputChannels) {",
+      "kind": "branch",
+      "text": "需要。"
+    },
+    {
+      "at": 239,
+      "quote": "final InputChannel channel = win.openInputChannel();",
+      "kind": "call",
+      "text": "**配对 InputChannel**：拿到 WMS 侧一半。"
+    },
+    {
+      "at": 240,
+      "quote": "channel.copyTo(outInputChannel);",
+      "kind": "call",
+      "text": "**拷贝给客户端**（binder 传 fd）。"
+    },
+    {
+      "at": 241,
+      "quote": "channel.dispose();",
+      "kind": "call",
+      "text": "释放本地副本引用。"
+    },
+    {
+      "at": 242,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 243,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 244,
+      "quote": "// If adding a toast requires a token for this app we always schedule hiding",
+      "kind": "note",
+      "text": "注释：需要 token 的 toast 要定时隐藏，避免长期驻留。"
+    },
+    {
+      "at": 245,
+      "quote": "// toast windows to make sure they don't stick around longer then necessary.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 246,
+      "quote": "// We hide instead of remove such windows as apps aren't prepared to handle",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 247,
+      "quote": "// windows being removed under them.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 248,
+      "quote": "//",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 249,
+      "quote": "// If the app is older it can add toasts without a token and hence overlay",
+      "kind": "note",
+      "text": "续行：老应用可以无 token 加 toast，为兼容只在焦点属别人才隐藏。"
+    },
+    {
+      "at": 250,
+      "quote": "// other apps. To be maximally compatible with these apps we will hide the",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 251,
+      "quote": "// window after the toast timeout only if the focused window is from another",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 252,
+      "quote": "// UID, otherwise we allow unlimited duration. When a UID looses focus we",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 253,
+      "quote": "// schedule hiding all of its toast windows.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 254,
+      "quote": "if (type == TYPE_TOAST) {",
+      "kind": "branch",
+      "text": "**是 toast 窗口**。"
+    },
+    {
+      "at": 255,
+      "quote": "if (!displayContent.canAddToastWindowForUid(callingUid)) {",
+      "kind": "branch",
+      "text": "**同一 uid 已有 toast**。"
+    },
+    {
+      "at": 256,
+      "quote": "ProtoLog.w(WM_ERROR, \"Adding more than one toast window for UID at a time.\");",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 257,
+      "quote": "return WindowManagerGlobal.ADD_DUPLICATE_ADD;",
+      "kind": "note",
+      "text": "返回 ADD_DUPLICATE_ADD（一个 uid 同时只能有一个 toast）。"
+    },
+    {
+      "at": 258,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 259,
+      "quote": "// Because a WindowToken of TYPE_TOAST only allows one toast window, block the",
+      "kind": "note",
+      "text": "注释：TYPE_TOAST 的 token 只允许一个窗口。"
+    },
+    {
+      "at": 260,
+      "quote": "// addition of any other toast window to this token.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 261,
+      "quote": "if (addToastWindowRequiresToken && !token.isEmpty()) {",
+      "kind": "branch",
+      "text": "需要 token 但 token 非空。"
+    },
+    {
+      "at": 262,
+      "quote": "ProtoLog.w(WM_ERROR, \"Adding toast window with non-empty token.\");",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 263,
+      "quote": "return WindowManagerGlobal.ADD_BAD_APP_TOKEN;",
+      "kind": "note",
+      "text": "返回 ADD_BAD_APP_TOKEN。"
+    },
+    {
+      "at": 264,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 265,
+      "quote": "// Make sure this happens before we moved focus as one can make the",
+      "kind": "note",
+      "text": "注释：必须在移动焦点之前决定隐藏，否则可聚焦 toast 能赖着不走。"
+    },
+    {
+      "at": 266,
+      "quote": "// toast focusable to force it not being hidden after the timeout.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 267,
+      "quote": "// Focusable toasts are always timed out to prevent a focused app to",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 268,
+      "quote": "// show a focusable toasts while it has focus which will be kept on",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 269,
+      "quote": "// the screen after the activity goes away.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 270,
+      "quote": "if (addToastWindowRequiresToken",
+      "kind": "branch",
+      "text": "需要 token，或可聚焦，或当前无焦点，或焦点属于别人。"
+    },
+    {
+      "at": 271,
+      "quote": "|| (attrs.flags & FLAG_NOT_FOCUSABLE) == 0",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 272,
+      "quote": "|| displayContent.mCurrentFocus == null",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 273,
+      "quote": "|| displayContent.mCurrentFocus.mOwnerUid != callingUid) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 274,
+      "quote": "mH.sendMessageDelayed(",
+      "kind": "call",
+      "text": "**发送延时隐藏消息**。"
+    },
+    {
+      "at": 275,
+      "quote": "mH.obtainMessage(H.WINDOW_HIDE_TIMEOUT, win),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 276,
+      "quote": "win.mAttrs.hideTimeoutMilliseconds);",
+      "kind": "note",
+      "text": "续行：按 attrs.hideTimeoutMilliseconds。"
+    },
+    {
+      "at": 277,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 278,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 toast 分支。"
+    },
+    {
+      "at": 279,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 280,
+      "quote": "// Switch to listen to the {@link WindowToken token}'s configuration changes when",
+      "kind": "note",
+      "text": "注释：加入 window context 时改为监听 token 的配置变化。"
+    },
+    {
+      "at": 281,
+      "quote": "// adding a window to the window context. Filter sub window type here because the sub",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 282,
+      "quote": "// window must be attached to the parent window, which is attached to the window context",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 283,
+      "quote": "// created window token.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 284,
+      "quote": "if (!win.isChildWindow()",
+      "kind": "branch",
+      "text": "不是子窗口且确实有 window context 监听者。"
+    },
+    {
+      "at": 285,
+      "quote": "&& mWindowContextListenerController.hasListener(windowContextToken)) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 286,
+      "quote": "final int windowContextType = mWindowContextListenerController",
+      "kind": "data",
+      "text": "取 window context 的 type。"
+    },
+    {
+      "at": 287,
+      "quote": ".getWindowType(windowContextToken);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 288,
+      "quote": "final Bundle options = mWindowContextListenerController",
+      "kind": "data",
+      "text": "取它的 options。"
+    },
+    {
+      "at": 289,
+      "quote": ".getOptions(windowContextToken);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 290,
+      "quote": "if (type != windowContextType) {",
+      "kind": "branch",
+      "text": "**两个 type 不一致**。"
+    },
+    {
+      "at": 291,
+      "quote": "ProtoLog.w(WM_ERROR, \"Window types in WindowContext and\"",
+      "kind": "note",
+      "text": "W 级日志。"
+    },
+    {
+      "at": 292,
+      "quote": "+ \" LayoutParams.type should match! Type from LayoutParams is %d,\"",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 293,
+      "quote": "+ \" but type from WindowContext is %d\", type, windowContextType);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 294,
+      "quote": "// We allow WindowProviderService to add window other than windowContextType,",
+      "kind": "note",
+      "text": "注释：WindowProviderService 例外。"
+    },
+    {
+      "at": 295,
+      "quote": "// but the WindowProviderService won't be associated with the window's",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 296,
+      "quote": "// WindowToken.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 297,
+      "quote": "if (!isWindowProviderService(options)) {",
+      "kind": "branch",
+      "text": "不是 WindowProviderService。"
+    },
+    {
+      "at": 298,
+      "quote": "return WindowManagerGlobal.ADD_INVALID_TYPE;",
+      "kind": "note",
+      "text": "返回 **ADD_INVALID_TYPE**。"
+    },
+    {
+      "at": 299,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 300,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（type 一致）。"
+    },
+    {
+      "at": 301,
+      "quote": "mWindowContextListenerController.updateContainerForWindowContextListener(",
+      "kind": "call",
+      "text": "把 window context 的监听者容器更新成新 token。"
+    },
+    {
+      "at": 302,
+      "quote": "windowContextToken, token);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 303,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 else。"
+    },
+    {
+      "at": 304,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 type 判断。"
+    },
+    {
+      "at": 305,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 306,
+      "quote": "// From now on, no exceptions or errors allowed!",
+      "kind": "note",
+      "text": "**关键注释**：从这里往后不允许再出现异常或错误返回——已经产生了副作用。"
+    },
+    {
+      "at": 307,
+      "quote": "if (displayContent.mCurrentFocus == null) {",
+      "kind": "branch",
+      "text": "当前没有焦点窗口。"
+    },
+    {
+      "at": 308,
+      "quote": "displayContent.mWinAddedSinceNullFocus.add(win);",
+      "kind": "call",
+      "text": "记进「无焦点期间添加」集合（等焦点确定后统一处理）。"
+    },
+    {
+      "at": 309,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 310,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 311,
+      "quote": "win.mSession.onWindowAdded(win);",
+      "kind": "call",
+      "text": "通知 Session 有窗口加入。"
+    },
+    {
+      "at": 312,
+      "quote": "mWindowMap.put(client.asBinder(), win);",
+      "kind": "call",
+      "text": "**注册到 mWindowMap**：client binder → WindowState，这是全局窗口表。"
+    },
+    {
+      "at": 313,
+      "quote": "win.initAppOpsState();",
+      "kind": "call",
+      "text": "初始化 AppOps 状态（用于权限相关的运行时检查）。"
+    },
+    {
+      "at": 314,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 315,
+      "quote": "final boolean suspended = mPmInternal.isPackageSuspended(win.getOwningPackage(),",
+      "kind": "data",
+      "text": "包是否被挂起。"
+    },
+    {
+      "at": 316,
+      "quote": "UserHandle.getUserId(win.getOwningUid()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 317,
+      "quote": "win.setHiddenWhileSuspended(suspended);",
+      "kind": "call",
+      "text": "**挂起时隐藏**：被 suspended 的应用窗口不显示。"
+    },
+    {
+      "at": 318,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 319,
+      "quote": "if (android.security.Flags.appLockCore() && win.getOwningPackage() != null) {",
+      "kind": "branch",
+      "text": "AppLock 特性开启且包名非空。"
+    },
+    {
+      "at": 320,
+      "quote": "final boolean lockedByAppLock = isPackageLockedByAppLockLocked(",
+      "kind": "call",
+      "text": "判断该包是否被 AppLock 锁定。"
+    },
+    {
+      "at": 321,
+      "quote": "win.getOwningPackage(), UserHandle.getUserId(win.getOwningUid()));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 322,
+      "quote": "win.setHiddenWhileLockedByAppLock(lockedByAppLock);",
+      "kind": "call",
+      "text": "锁定则隐藏。"
+    },
+    {
+      "at": 323,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 324,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 325,
+      "quote": "final boolean hideSystemAlertWindows = shouldHideNonSystemOverlayWindow(win);",
+      "kind": "data",
+      "text": "是否需要隐藏非系统 overlay 窗口。"
+    },
+    {
+      "at": 326,
+      "quote": "win.setForceHideNonSystemOverlayWindowIfNeeded(hideSystemAlertWindows);",
+      "kind": "call",
+      "text": "设置强制隐藏标志（例如有 overlay 正在显示时）。"
+    },
+    {
+      "at": 327,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 328,
+      "quote": "// A presentation window needs a transition because its visibility affects the lifecycle",
+      "kind": "note",
+      "text": "注释：presentation 窗口需要走转场，因为它的可见性影响下面的应用生命周期。"
+    },
+    {
+      "at": 329,
+      "quote": "// apps below (b/390481865).",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 330,
+      "quote": "final boolean isPresentationWindow = win.isPresentation();",
+      "kind": "data",
+      "text": "是否是 presentation 窗口。"
+    },
+    {
+      "at": 331,
+      "quote": "// WindowContainer#assignLayers() is blocked for the majority of window containers if",
+      "kind": "note",
+      "text": "注释：转场进行中多数容器的 assignLayers 会被阻塞，截图窗口多层时可能错过正确 z 序。"
+    },
+    {
+      "at": 332,
+      "quote": "// a transition is playing. If there are multiple children in the display area for",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 333,
+      "quote": "// screenshot windows, we could miss the chance to set correct z-orders on layers",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 334,
+      "quote": "// without any synchronization (b/476223353).",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 335,
+      "quote": "final boolean isScreenshotWindow =",
+      "kind": "data",
+      "text": "是否是截图窗口。"
+    },
+    {
+      "at": 336,
+      "quote": "win.mAttrs.type == WindowManager.LayoutParams.TYPE_SCREENSHOT;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 337,
+      "quote": "if (isPresentationWindow || isScreenshotWindow) {",
+      "kind": "branch",
+      "text": "**需要走转场的窗口**。"
+    },
+    {
+      "at": 338,
+      "quote": "final ActionChain chain = mAtmService.mChainTracker.startTransit(\"addWin\");",
+      "kind": "data",
+      "text": "开始一个名为 addWin 的动作链。"
+    },
+    {
+      "at": 339,
+      "quote": "final boolean wasTransitionOnDisplay = chain.isCollectingOnDisplay(displayContent);",
+      "kind": "data",
+      "text": "该 display 是否已在这个链上收集。"
+    },
+    {
+      "at": 340,
+      "quote": "Transition newlyCreatedTransition = null;",
+      "kind": "data",
+      "text": "新建的转场（可能为 null）。"
+    },
+    {
+      "at": 341,
+      "quote": "if (!chain.isCollecting()) {",
+      "kind": "branch",
+      "text": "链还没开始收集。"
+    },
+    {
+      "at": 342,
+      "quote": "chain.attachTransition(",
+      "kind": "call",
+      "text": "创建并开始一个 TRANSIT_OPEN 转场。"
+    },
+    {
+      "at": 343,
+      "quote": "win.mTransitionController.createAndStartCollecting(TRANSIT_OPEN));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 344,
+      "quote": "newlyCreatedTransition = chain.getTransition();",
+      "kind": "data",
+      "text": "取出新转场。"
+    },
+    {
+      "at": 345,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 346,
+      "quote": "chain.collect(win.mToken);",
+      "kind": "call",
+      "text": "把该窗口的 token 收进转场。"
+    },
+    {
+      "at": 347,
+      "quote": "res |= addWindowInner(win, displayPolicy, activity, displayContent, client, attrs,",
+      "kind": "call",
+      "text": "**继续执行真正的加入逻辑**。"
+    },
+    {
+      "at": 348,
+      "quote": "callingUid, result);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 349,
+      "quote": "// A presentation hides all activities behind on the same display.",
+      "kind": "note",
+      "text": "注释：presentation 会遮住同屏所有 Activity。"
+    },
+    {
+      "at": 350,
+      "quote": "win.mDisplayContent.ensureActivitiesVisible(/*starting=*/ null,",
+      "kind": "call",
+      "text": "**重新计算可见性**并通知客户端。"
+    },
+    {
+      "at": 351,
+      "quote": "/*notifyClients=*/ true);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 352,
+      "quote": "if (!wasTransitionOnDisplay && chain.isCollectingOnDisplay(displayContent)) {",
+      "kind": "branch",
+      "text": "此前不在收集状态而现在进入了。"
+    },
+    {
+      "at": 353,
+      "quote": "// Set the display ready only when the display gets added to the collecting",
+      "kind": "note",
+      "text": "注释：只有本次操作让 display 进入收集，才把它标记为 ready。"
+    },
+    {
+      "at": 354,
+      "quote": "// transition in this operation.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 355,
+      "quote": "win.mTransitionController.setReady(win.mToken);",
+      "kind": "call",
+      "text": "标记该 token 就绪。"
+    },
+    {
+      "at": 356,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 357,
+      "quote": "mAtmService.mChainTracker.end();",
+      "kind": "call",
+      "text": "结束动作链。"
+    },
+    {
+      "at": 358,
+      "quote": "if (newlyCreatedTransition != null) {",
+      "kind": "branch",
+      "text": "确实新建了转场。"
+    },
+    {
+      "at": 359,
+      "quote": "win.mTransitionController.requestStartTransition(newlyCreatedTransition, null,",
+      "kind": "call",
+      "text": "请求真正启动这个转场。"
+    },
+    {
+      "at": 360,
+      "quote": "null /* remoteTransition */, null /* displayChange */);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 361,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 362,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则（普通窗口）。"
+    },
+    {
+      "at": 363,
+      "quote": "res |= addWindowInner(win, displayPolicy, activity, displayContent, client, attrs,",
+      "kind": "call",
+      "text": "**直接执行加入逻辑**，不涉及转场。"
+    },
+    {
+      "at": 364,
+      "quote": "callingUid, result);",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 365,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 366,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 synchronized 块（释放 mGlobalLock）。"
+    },
+    {
+      "at": 367,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 368,
+      "quote": "Binder.restoreCallingIdentity(origId);",
+      "kind": "call",
+      "text": "**恢复 binder 身份**。"
+    },
+    {
+      "at": 369,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 370,
+      "quote": "return res;",
+      "kind": "note",
+      "text": "返回累积的结果码。"
+    },
+    {
+      "at": 371,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

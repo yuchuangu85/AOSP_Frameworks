@@ -1,0 +1,71 @@
+{
+  "step": "s07",
+  "title": "setTransactionState：权限净化",
+  "tldr": "按调用者 uid 取权限，对每个 layer/display 状态 sanitize，再清掉无权发送的 input 命令与 wakeup 标志。",
+  "why": "这是 Android 输入与合成子系统的安全边界之一：普通应用只能改自己的 SurfaceControl，且不能注入 input window commands。净化发生在**服务端入口**而不是客户端，所以客户端可以随意写，越权字段在这里被静默剔除——这解释了「事务提交成功但没效果」这一类现象。同时这里也统计了 ADPF 负载提示（是否含效果、可见区域变化、是否提前唤醒）。",
+  "concepts": [
+    {
+      "term": "sanitize(permissions)",
+      "text": "按权限位剔除字段。"
+    },
+    {
+      "term": "ACCESS_SURFACE_FLINGER",
+      "text": "特权权限，能改别人的层与发 input 命令。"
+    },
+    {
+      "term": "WAKEUP_SURFACE_FLINGER",
+      "text": "允许使用 eEarlyWakeup 标志。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "uint32_t permissions = LayerStatePermissions::getTransactionPermissions(originPid, originUid);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5586",
+      "what": "取权限位。"
+    },
+    {
+      "call": "composerState.state.sanitize(permissions);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5591",
+      "what": "逐层净化。"
+    },
+    {
+      "call": "display.sanitize(permissions);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5604",
+      "what": "display 同样净化。"
+    },
+    {
+      "call": "inputWindowCommands.clear();",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5611",
+      "what": "非特权调用者的 input 命令被丢弃。"
+    },
+    {
+      "call": "flags &= ~(eEarlyWakeupStart | eEarlyWakeupEnd);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5623",
+      "what": "无权则清掉 wakeup 标志。"
+    }
+  ],
+  "state": [
+    {
+      "field": "inputWindowCommands",
+      "before": "可能非空",
+      "after": "非特权时为空",
+      "note": "日志 Only privileged callers are allowed。"
+    },
+    {
+      "field": "flags",
+      "before": "可能含 eEarlyWakeup",
+      "after": "无权时被清",
+      "note": "退化为普通事务。"
+    }
+  ],
+  "threads": "binder 线程。",
+  "pitfalls": [
+    "以为净化在客户端：在服务端。",
+    "忽略 clear 日志：它说明你缺权限。"
+  ],
+  "debug": [
+    "logcat 里 Only privileged callers are allowed 与 Caller needs permission。",
+    "dumpsys SurfaceFlinger 能看到层的 owner uid。"
+  ],
+  "next": "句柄如何解析成可用 id？见第 8 步。"
+}

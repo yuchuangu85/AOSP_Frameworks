@@ -1,0 +1,33 @@
+{
+  "step": "s05",
+  "title": "doTraversal：拆屏障后进 performTraversals",
+  "tldr": "先清标志、再拆屏障、最后才进遍历；顺序反了会引发重入与消息插队。",
+  "why": "这个只有 7 行的方法，是「消息队列与绘制」之间唯一的闸门。三联操作的顺序都是有理由的：先清 mTraversalScheduled，让遍历期间再来的 invalidate 能重新排下一帧；再拆屏障，使排队中的同步消息在本帧绘制完成后立刻有机会运行；最后才进 performTraversals。任何一步调换都会产生可观测的异常：先遍历后拆屏障会让 setText 后的 post 推迟一帧执行；先拆屏障后清标志会让遍历期间的 invalidate 被误判为「已排队」而丢弃。",
+  "concepts": [
+    { "term": "removeTraversalBarrier", "text": "与 scheduleTraversals 里的 postTraversalBarrier 成对；拆掉后 MessageQueue 恢复放行同步消息。" },
+    { "term": "幂等复查", "text": "if (mTraversalScheduled) 保证只有「仍然需要这一次遍历」时才执行，被 unscheduleTraversals 撤销过的直接空转。" }
+  ],
+  "walk": [
+    { "call": "void doTraversal(long frameTimeNanos)", "ref": "base/core/java/android/view/ViewRootImpl.java:3347", "what": "入口，frameTime 来自 Choreographer 的 vsync 数据。" },
+    { "call": "if (mTraversalScheduled) {", "ref": "base/core/java/android/view/ViewRootImpl.java:3348", "what": "复查：期间可能被 unscheduleTraversals 撤销（例如窗口移除）。" },
+    { "call": "mTraversalScheduled = false;", "ref": "base/core/java/android/view/ViewRootImpl.java:3349", "what": "先清标志，遍历期间的新请求才能重新排队。" },
+    { "call": "removeTraversalBarrier();", "ref": "base/core/java/android/view/ViewRootImpl.java:3350", "what": "再拆屏障——拆在遍历之前，保证不会把消息插进 measure/layout/draw 中间。" },
+    { "call": "performTraversals(frameTimeNanos);", "ref": "base/core/java/android/view/ViewRootImpl.java:3351", "what": "进入单帧总控。" }
+  ],
+  "state": [
+    { "field": "mTraversalScheduled", "before": "true", "after": "false", "note": "在进入重活之前就复位，是可重入性的前提。" },
+    { "field": "MessageQueue 同步屏障", "before": "竖立中", "after": "已拆除", "note": "排队中的同步消息在这之后才能继续跑。" }
+  ],
+  "threads": "UI 线程；这里不阻塞，但如果 performTraversals 抛异常，屏障已经拆掉，不会堵死消息队列。",
+  "pitfalls": [
+    "把 removeTraversalBarrier 放到 performTraversals 之后：setText 后的 post 会被推迟一帧。",
+    "忘记复位 mTraversalScheduled：遍历期间所有新的 invalidate 都会被当作「已排队」丢弃。",
+    "以为 doTraversal 一定执行：被 unscheduleTraversals 撤销时会静默空转。"
+  ],
+  "debug": [
+    "在 ViewRootImpl.java:3348 断点，若 mTraversalScheduled 为 false 说明这次 vsync 白等。",
+    "trace 中 draw 切片应紧跟 Choreographer#doFrame，若中间夹了别的方法说明主线程被抢占。",
+    "检查 MessageQueue 是否有泄漏的屏障：spy on postSyncBarrier 的配对调用。"
+  ],
+  "next": "进入 performTraversals 之后，measure、layout、draw 三段分别凭什么条件被跳过？见第 6 步。"
+}

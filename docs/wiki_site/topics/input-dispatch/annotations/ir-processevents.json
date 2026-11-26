@@ -1,0 +1,216 @@
+{
+  "id": "ir-processevents",
+  "title": "InputReader::processEventsLocked",
+  "file": "native/services/inputflinger/reader/InputReader.cpp",
+  "sig": "std::list<NotifyArgs> InputReader::processEventsLocked(",
+  "span": [
+    261,
+    294
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "std::list<NotifyArgs> InputReader::processEventsLocked(const RawEvent* rawEvents, size_t count) {",
+      "kind": "note",
+      "text": "RawEvent → NotifyArgs 的分发枢纽。调用方持 InputReader::mLock（函数名带 Locked）。"
+    },
+    {
+      "at": 2,
+      "quote": "std::list<NotifyArgs> out;",
+      "kind": "data",
+      "text": "输出列表：本批次生成的所有 NotifyArgs。"
+    },
+    {
+      "at": 3,
+      "quote": "for (const RawEvent* rawEvent = rawEvents; count;) {",
+      "kind": "note",
+      "text": "按「批次」推进：一次处理同一设备的一段连续事件，或一条合成事件。"
+    },
+    {
+      "at": 4,
+      "quote": "int32_t type = rawEvent->type;",
+      "kind": "data",
+      "text": "当前事件类型。"
+    },
+    {
+      "at": 5,
+      "quote": "size_t batchSize = 1;",
+      "kind": "data",
+      "text": "批次大小，默认 1。"
+    },
+    {
+      "at": 6,
+      "quote": "if (type < EventHubInterface::FIRST_SYNTHETIC_EVENT) {",
+      "kind": "branch",
+      "text": "普通设备事件（type < FIRST_SYNTHETIC_EVENT）按设备聚合。"
+    },
+    {
+      "at": 7,
+      "quote": "RawDeviceId deviceId = rawEvent->deviceId;",
+      "kind": "data",
+      "text": "取本批次的 deviceId，后续只合并同一设备的事件。"
+    },
+    {
+      "at": 8,
+      "quote": "while (batchSize < count) {",
+      "kind": "note",
+      "text": "向后扫描，直到遇到不同类型或不同设备。"
+    },
+    {
+      "at": 9,
+      "quote": "if (rawEvent[batchSize].type >= EventHubInterface::FIRST_SYNTHETIC_EVENT ||",
+      "kind": "decision",
+      "text": "遇到合成事件就要断开批次。"
+    },
+    {
+      "at": 10,
+      "quote": "rawEvent[batchSize].deviceId != deviceId) {",
+      "kind": "call",
+      "text": "或者设备变了也要断开。"
+    },
+    {
+      "at": 11,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出扫描。"
+    },
+    {
+      "at": 12,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 13,
+      "quote": "batchSize += 1;",
+      "kind": "data",
+      "text": "批次长度加一。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭扫描循环。"
+    },
+    {
+      "at": 15,
+      "quote": "ALOGD_IF(debugRawEvents(), \"BatchSize: %zu Count: %zu\", batchSize, count);",
+      "kind": "trace",
+      "text": "调试日志：打印批次与总量。"
+    },
+    {
+      "at": 16,
+      "quote": "out += processEventsForDeviceLocked(deviceId, rawEvent, batchSize);",
+      "kind": "call",
+      "text": "**核心**：把同一设备的一批事件交给该设备处理，结果并入输出。"
+    },
+    {
+      "at": 17,
+      "quote": "} else {",
+      "kind": "note",
+      "text": "否则是合成事件（设备增删等）。"
+    },
+    {
+      "at": 18,
+      "quote": "switch (rawEvent->type) {",
+      "kind": "decision",
+      "text": "按合成事件类型分派。"
+    },
+    {
+      "at": 19,
+      "quote": "case EventHubInterface::DEVICE_ADDED:",
+      "kind": "branch",
+      "text": "新设备接入。"
+    },
+    {
+      "at": 20,
+      "quote": "addDeviceLocked(rawEvent->when, rawEvent->deviceId);",
+      "kind": "call",
+      "text": "建 InputDevice 并初始化 mapper。"
+    },
+    {
+      "at": 21,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出分支。"
+    },
+    {
+      "at": 22,
+      "quote": "case EventHubInterface::DEVICE_REMOVED:",
+      "kind": "branch",
+      "text": "设备移除。"
+    },
+    {
+      "at": 23,
+      "quote": "removeDeviceLocked(rawEvent->when, rawEvent->deviceId);",
+      "kind": "call",
+      "text": "销毁设备，清理 mapper 状态。"
+    },
+    {
+      "at": 24,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出分支。"
+    },
+    {
+      "at": 25,
+      "quote": "default:",
+      "kind": "note",
+      "text": "其他合成类型理论上不会出现。"
+    },
+    {
+      "at": 26,
+      "quote": "ALOG_ASSERT(false); // can't happen",
+      "kind": "note",
+      "text": "断言失败：一旦出现说明 EventHub 与 Reader 的契约被破坏。"
+    },
+    {
+      "at": 27,
+      "quote": "break;",
+      "kind": "note",
+      "text": "跳出分支。"
+    },
+    {
+      "at": 28,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 switch。"
+    },
+    {
+      "at": 29,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 if/else。"
+    },
+    {
+      "at": 30,
+      "quote": "count -= batchSize;",
+      "kind": "data",
+      "text": "消耗掉本批次。"
+    },
+    {
+      "at": 31,
+      "quote": "rawEvent += batchSize;",
+      "kind": "data",
+      "text": "指针前移。"
+    },
+    {
+      "at": 32,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭主循环。"
+    },
+    {
+      "at": 33,
+      "quote": "return out;",
+      "kind": "note",
+      "text": "返回本批次的全部 NotifyArgs。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

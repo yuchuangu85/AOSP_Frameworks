@@ -1,0 +1,30 @@
+{
+  "step": "s23",
+  "title": "分支：合成策略回退与 validate 跳过",
+  "tldr": "HAL 报错就退化为全 CLIENT 由 GPU 兜底；反过来 canSkipValidate 时一步完成 validate+present。",
+  "why": "这两条分支方向相反却经常同时出现在排查现场：一条是「HAL 出问题，SF 悄悄降级」，另一条是「HAL 太慢，SF 想办法少往返」。前者会让 GPU 负载突然升高、功耗变差，而日志里只有一行 ALOGE；后者会让 trace 里缺少 validate 切片，容易被误判成「validate 被跳过所以合成可能不完整」。知道这两条的存在，才能在看到「功耗突然变差」或「trace 少了一段」时给出正确解释。",
+  "concepts": [
+    { "term": "resetCompositionStrategy", "text": "把策略复位成全 CLIENT，作为失败时的安全默认值。" },
+    { "term": "presentOrValidate", "text": "合并调用；成功后 validateWasSkipped=true。" },
+    { "term": "hasChangesError", "text": "区分「HAL 要求变更」与「HAL 真错误」。" }
+  ],
+  "walk": [
+    { "call": "resetCompositionStrategy();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1197", "what": "先复位：失败路径自动全 CLIENT。" },
+    { "call": "ALOGE(\"chooseCompositionStrategy failed for %s: %d (%s)\", getName().c_str(), result,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:280", "what": "失败时的唯一日志线索。" },
+    { "call": "if (state == 1) { // Present Succeeded.", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:589", "what": "快路径成功的处理。" }
+  ],
+  "state": [
+    { "field": "usesClientComposition", "before": "HAL 的结论", "after": "失败时 true", "note": "GPU 兜底。" },
+    { "field": "displayData.validateWasSkipped", "before": "false", "after": "快路径成功时 true", "note": "影响后续是否 present。" }
+  ],
+  "threads": "SF 主线程或 HwcAsyncWorker。",
+  "pitfalls": [
+    "把缺少 validate 切片当异常：快路径的预期行为。",
+    "忽略 ALOGE 那一行：它是发现 HAL 降级的唯一线索。"
+  ],
+  "debug": [
+    "grep 日志 chooseCompositionStrategy failed。",
+    "对比合成前后 GPU 负载：全 CLIENT 会让 GPU 占用明显上升。"
+  ],
+  "next": "最后，HAL 之下的一切都不在本仓库。见第 24 步。"
+}

@@ -1,0 +1,61 @@
+{
+  "step": "s23",
+  "title": "分支：权限不足被净化",
+  "tldr": "sanitize 按权限剔除字段；普通应用改别人的层、发 input 命令、用 eEarlyWakeup 都会被静默丢弃。",
+  "why": "这是最容易误判的一类「事务无效」：客户端侧一切正常（apply 返回 NO_ERROR），服务端也没报错，只是字段在入口被清掉了。判断依据只有两行日志。它的存在本身是必要的——合成层是所有应用共享的全局资源，如果谁都能改别人的层，系统就会变成一个互相干扰的环境。所以调试「改了但没效果」时，先确认调用者是否有权限。",
+  "concepts": [
+    {
+      "term": "sanitize",
+      "text": "按权限位剔除越权字段。"
+    },
+    {
+      "term": "ACCESS_SURFACE_FLINGER",
+      "text": "改他人层与发 input 命令所需。"
+    },
+    {
+      "term": "WAKEUP_SURFACE_FLINGER",
+      "text": "eEarlyWakeup 所需。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void SurfaceComposerClient::Transaction::sanitize(int pid, int uid) {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:852",
+      "what": "客户端侧也有净化（用于 delegate 前的自检）。"
+    },
+    {
+      "call": "inputWindowCommands.clear();",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5611",
+      "what": "非特权：input 命令被丢弃。"
+    },
+    {
+      "call": "flags &= ~(eEarlyWakeupStart | eEarlyWakeupEnd);",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5623",
+      "what": "非特权：wakeup 标志被清。"
+    }
+  ],
+  "state": [
+    {
+      "field": "inputWindowCommands",
+      "before": "非空",
+      "after": "空",
+      "note": "非特权调用者提交时。"
+    },
+    {
+      "field": "flags",
+      "before": "含 eEarlyWakeup",
+      "after": "被清",
+      "note": "退化为普通事务。"
+    }
+  ],
+  "threads": "binder 线程（服务端净化）。",
+  "pitfalls": [
+    "以为没生效是 SF bug：先查权限。",
+    "在非特权进程里用 eEarlyWakeup：会被静默清掉。"
+  ],
+  "debug": [
+    "logcat 里 Only privileged callers 与 Caller needs permission。",
+    "dumpsys SurfaceFlinger 查看层的 owner。"
+  ],
+  "next": "怎么系统性地排查事务问题？见第 24 步。"
+}

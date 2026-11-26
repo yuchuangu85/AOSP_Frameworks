@@ -1,0 +1,60 @@
+{
+  "step": "s13",
+  "title": "shouldConsumeEvent：按连接限流",
+  "tldr": "先按 vsyncRequest 分派（None/Single/Periodic/rate），限流类请求再做相位判断。",
+  "why": "这段代码解释了「app 帧率 30Hz 而屏幕 120Hz 时，app 只收到 30 次 vsync」是怎么实现的：数字 rate 用 count % rate 隔拍发送；而 frameRate override 或 Scheduler 的 isVsyncValid 则按相位判断。Single 的语义也值得注意——消费一次就降级为 SingleSuppressCallback，这就是 requestNextVsync 的「只要下一帧」语义。",
+  "concepts": [
+    {
+      "term": "vsyncRequest",
+      "text": "None=-2 / Single=-1 / SingleSuppressCallback=0 / Periodic=1 / 其余为 period。"
+    },
+    {
+      "term": "throttleVsync",
+      "text": "按帧率相位判断是否放行。"
+    },
+    {
+      "term": "isVSyncInPhase",
+      "text": "判断某一拍是否落在该帧率的相位上。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool EventThread::shouldConsumeEvent(const DisplayEventReceiver::Event& event,",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:637",
+      "what": "入口。"
+    },
+    {
+      "call": "return !mVsyncSchedule->getTracker()",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:641",
+      "what": "按帧率相位判断。"
+    },
+    {
+      "call": "return event.vsync.count % vsyncPeriod(connection->vsyncRequest) == 0;",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:692",
+      "what": "数字 rate 的隔拍逻辑。"
+    },
+    {
+      "call": "bool Scheduler::isVsyncValid(TimePoint expectedVsyncTime, uid_t uid) const {",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:519",
+      "what": "通用限流入口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "connection->vsyncRequest",
+      "before": "Single",
+      "after": "SingleSuppressCallback",
+      "note": "消费即降级。"
+    }
+  ],
+  "threads": "EventThread(app) 线程，持 mMutex。",
+  "pitfalls": [
+    "以为所有连接都收每个 vsync：会按 rate 与相位过滤。",
+    "把 SingleSuppressCallback 当 None：语义不同（前者是刚发过）。"
+  ],
+  "debug": [
+    "dumpsys SurfaceFlinger 的连接段显示 vsyncRequest。",
+    "trace 里 VSYNC-app 密度低于 HW_VSYNC 就是限流生效。"
+  ],
+  "next": "事件如何投递到 app？见第 14 步。"
+}

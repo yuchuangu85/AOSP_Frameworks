@@ -1,0 +1,693 @@
+{
+  "p0": [
+    {
+      "id": "tx-apply",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "sig": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay)",
+      "symbol": "Transaction::apply",
+      "start": 1146,
+      "end": 1225,
+      "hint": 1146,
+      "why": "客户端提交的唯一出口：回调装配、buffer 缓存、oneway 与同步语义、binder 调用全在这里。"
+    },
+    {
+      "id": "tx-merge",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "sig": "SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::merge(Transaction&& other)",
+      "symbol": "Transaction::merge",
+      "start": 981,
+      "end": 1020,
+      "hint": 981,
+      "why": "同批变更的合并规则，以及「被覆盖的 buffer 必须立刻归还」这条容易忽略的正确性要求。"
+    },
+    {
+      "id": "tx-cache",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "sig": "void SurfaceComposerClient::Transaction::cacheBuffers()",
+      "symbol": "Transaction::cacheBuffers",
+      "start": 1055,
+      "end": 1103,
+      "hint": 1055,
+      "why": "GraphicBuffer 如何变成句柄跨进程传递，决定了大 buffer 不会每帧重复拷贝。"
+    },
+    {
+      "id": "tx-parcel",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "sig": "status_t SurfaceComposerClient::Transaction::writeToParcel(Parcel* parcel) const",
+      "symbol": "Transaction::writeToParcel",
+      "start": 918,
+      "end": 950,
+      "hint": 918,
+      "why": "序列化顺序与 cacheBuffers 的调用点，是理解「为什么先缓存再序列化」的地方。"
+    },
+    {
+      "id": "sf-setstate",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState,",
+      "symbol": "SurfaceFlinger::setTransactionState",
+      "start": 5579,
+      "end": 5745,
+      "hint": 5579,
+      "why": "服务端入口：权限净化、句柄解析、组装 QueuedTransactionState、入队并触发排帧。"
+    },
+    {
+      "id": "sf-applystate",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "bool SurfaceFlinger::applyTransactionState(",
+      "symbol": "SurfaceFlinger::applyTransactionState",
+      "start": 5757,
+      "end": 5808,
+      "hint": 5757,
+      "why": "一笔事务真正写进 drawing state 的地方，决定这一帧是否需要 traversal。"
+    },
+    {
+      "id": "sf-applyall",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "bool SurfaceFlinger::applyTransactionsLocked(",
+      "symbol": "SurfaceFlinger::applyTransactionsLocked",
+      "start": 5501,
+      "end": 5517,
+      "hint": 5501,
+      "why": "批量应用的循环与锁边界。"
+    },
+    {
+      "id": "sf-timeline",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyTimelineCheck(",
+      "symbol": "transactionReadyTimelineCheck",
+      "start": 5315,
+      "end": 5357,
+      "hint": 5315,
+      "why": "时间维度就绪判定：desiredPresentTime、vsyncId、frameIsEarly 三条规则。"
+    },
+    {
+      "id": "sf-buffercheck",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "sig": "TransactionHandler::TransactionReadiness SurfaceFlinger::transactionReadyBufferCheck(",
+      "symbol": "transactionReadyBufferCheck",
+      "start": 5359,
+      "end": 5476,
+      "hint": 5359,
+      "why": "buffer 维度就绪判定：barrier frame、acquire fence、allowLatchUnsignaled 与 stalled 登记。"
+    },
+    {
+      "id": "th-collect",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "sig": "void TransactionHandler::collectTransactions()",
+      "symbol": "TransactionHandler::collectTransactions",
+      "start": 39,
+      "end": 48,
+      "hint": 39,
+      "why": "无锁队列到按 token 分队列的搬运点，事务顺序在此固化。"
+    },
+    {
+      "id": "th-flush",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "sig": "std::vector<QueuedTransactionState> TransactionHandler::flushTransactions()",
+      "symbol": "TransactionHandler::flushTransactions",
+      "start": 50,
+      "end": 90,
+      "hint": 50,
+      "why": "挑选「现在可应用」的事务，是 Transaction 顺序保证的核心。"
+    },
+    {
+      "id": "th-barrier",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "sig": "TransactionHandler::TransactionReadiness TransactionHandler::isBarrierSignalledOrExpired(",
+      "symbol": "TransactionHandler::isBarrierSignalledOrExpired",
+      "start": 92,
+      "end": 116,
+      "hint": 92,
+      "why": "barrier 的 signal/等待/过期三态，是显式排序原语的全部实现。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "SurfaceComposerClient",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "tier": 0,
+      "side": "UI",
+      "role": "客户端门面：创建 SurfaceControl、持有 Transaction",
+      "members": [
+        "createSurfaceControl",
+        "Transaction"
+      ],
+      "fields": [
+        "mClient"
+      ]
+    },
+    {
+      "name": "Transaction",
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "tier": 1,
+      "side": "UI",
+      "role": "变更集合：累积 layer/display 状态，merge 后 apply",
+      "members": [
+        "setXxx",
+        "merge",
+        "apply",
+        "cacheBuffers",
+        "addTransactionBarrier"
+      ],
+      "fields": [
+        "mState",
+        "mListenerCallbacks",
+        "mApplyToken"
+      ]
+    },
+    {
+      "name": "TransactionState",
+      "file": "native/libs/gui/include/gui/TransactionState.h",
+      "tier": 2,
+      "side": "UI",
+      "role": "可跨进程的载体：ComposerState/DisplayState/barrier/flags",
+      "members": [
+        "merge",
+        "writeToParcel",
+        "clear"
+      ],
+      "fields": [
+        "mComposerStates",
+        "mDisplayStates",
+        "mBarriers"
+      ]
+    },
+    {
+      "name": "SurfaceFlinger",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "服务端：净化、入队、按帧应用",
+      "members": [
+        "setTransactionState",
+        "applyTransactionState",
+        "flushTransactionQueues"
+      ],
+      "fields": [
+        "mTransactionHandler",
+        "mStateLock"
+      ]
+    },
+    {
+      "name": "TransactionHandler",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "队列与就绪判定：collect / flush / filters / barrier",
+      "members": [
+        "queueTransaction",
+        "collectTransactions",
+        "flushTransactions",
+        "isBarrierSignalledOrExpired"
+      ],
+      "fields": [
+        "mLocklessTransactionQueue",
+        "mPendingTransactionQueues",
+        "mTransactionReadyFilters"
+      ]
+    },
+    {
+      "name": "QueuedTransactionState",
+      "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.h",
+      "tier": 3,
+      "side": "RT",
+      "role": "服务端队列元素：带 applyToken、postTime、resolved states",
+      "members": [],
+      "fields": [
+        "applyToken",
+        "postTime",
+        "states",
+        "barriers"
+      ]
+    },
+    {
+      "name": "LayerLifecycleManager",
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "接收 layer_state_t，把请求状态推进到当前状态",
+      "members": [
+        "applyTransactions",
+        "commitChanges"
+      ],
+      "fields": [
+        "mLayerStates"
+      ]
+    },
+    {
+      "name": "TransactionCallbackInvoker",
+      "file": "native/services/surfaceflinger/TransactionCallbackInvoker.cpp",
+      "tier": 3,
+      "side": "RT",
+      "role": "事务回调：OnCommit 与 OnComplete 的收集与派发",
+      "members": [
+        "addCallbackHandles",
+        "sendCallbacks"
+      ],
+      "fields": [
+        "mCompletedTransactions"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "SurfaceComposerClient",
+      "to": "Transaction",
+      "label": "创建",
+      "kind": "owns"
+    },
+    {
+      "from": "Transaction",
+      "to": "TransactionState",
+      "label": "mState",
+      "kind": "owns"
+    },
+    {
+      "from": "Transaction",
+      "to": "SurfaceFlinger",
+      "label": "setTransactionState",
+      "kind": "uses"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "TransactionHandler",
+      "label": "queue/collect/flush",
+      "kind": "owns"
+    },
+    {
+      "from": "TransactionHandler",
+      "to": "QueuedTransactionState",
+      "label": "队列元素",
+      "kind": "owns"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "LayerLifecycleManager",
+      "label": "applyTransactions",
+      "kind": "uses"
+    },
+    {
+      "from": "SurfaceFlinger",
+      "to": "TransactionCallbackInvoker",
+      "label": "sendCallbacks",
+      "kind": "uses"
+    }
+  ],
+  "architecture": {
+    "width": 1320,
+    "height": 560,
+    "groups": [
+      {
+        "id": "app",
+        "label": "app 进程",
+        "x": 24,
+        "y": 24,
+        "w": 430,
+        "h": 500,
+        "color": "#33d6c0"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger 进程",
+        "x": 480,
+        "y": 24,
+        "w": 500,
+        "h": 500,
+        "color": "#c792ea"
+      },
+      {
+        "id": "lay",
+        "label": "层状态",
+        "x": 1010,
+        "y": 24,
+        "w": 286,
+        "h": 500,
+        "color": "#ffb454"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "tx",
+        "group": "app",
+        "label": "SurfaceComposerClient::Transaction",
+        "sub": "setXxx / merge / apply",
+        "x": 56,
+        "y": 130,
+        "w": 360,
+        "h": 70
+      },
+      {
+        "id": "state",
+        "group": "app",
+        "label": "TransactionState",
+        "sub": "ComposerState + DisplayState",
+        "x": 56,
+        "y": 250,
+        "w": 360,
+        "h": 70
+      },
+      {
+        "id": "binder",
+        "group": "sf",
+        "label": "setTransactionState",
+        "sub": "sanitize + resolve",
+        "x": 512,
+        "y": 110,
+        "w": 430,
+        "h": 70
+      },
+      {
+        "id": "handler",
+        "group": "sf",
+        "label": "TransactionHandler",
+        "sub": "lockless queue → collect → flush",
+        "x": 512,
+        "y": 220,
+        "w": 430,
+        "h": 70
+      },
+      {
+        "id": "filters",
+        "group": "sf",
+        "label": "ready filters",
+        "sub": "timeline / buffer / barrier",
+        "x": 512,
+        "y": 330,
+        "w": 430,
+        "h": 70
+      },
+      {
+        "id": "apply",
+        "group": "sf",
+        "label": "applyTransactionState",
+        "sub": "写 drawing state",
+        "x": 512,
+        "y": 430,
+        "w": 430,
+        "h": 62
+      },
+      {
+        "id": "llm",
+        "group": "lay",
+        "label": "LayerLifecycleManager",
+        "sub": "applyTransactions",
+        "x": 1044,
+        "y": 220,
+        "w": 230,
+        "h": 70
+      },
+      {
+        "id": "cb",
+        "group": "lay",
+        "label": "TransactionCallbackInvoker",
+        "sub": "OnCommit / OnComplete",
+        "x": 1044,
+        "y": 340,
+        "w": 230,
+        "h": 70
+      }
+    ],
+    "edges": [
+      {
+        "from": "tx",
+        "to": "state",
+        "label": "mState",
+        "kind": "call"
+      },
+      {
+        "from": "state",
+        "to": "binder",
+        "label": "binder（可 oneway）",
+        "kind": "oneway"
+      },
+      {
+        "from": "binder",
+        "to": "handler",
+        "label": "queueTransaction",
+        "kind": "call"
+      },
+      {
+        "from": "handler",
+        "to": "filters",
+        "label": "flushTransactions",
+        "kind": "call"
+      },
+      {
+        "from": "filters",
+        "to": "apply",
+        "label": "Ready 才通过",
+        "kind": "call"
+      },
+      {
+        "from": "apply",
+        "to": "llm",
+        "label": "applyTransactions",
+        "kind": "call"
+      },
+      {
+        "from": "llm",
+        "to": "cb",
+        "label": "commit / present 回调",
+        "kind": "callback"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "f0",
+        "kind": "start",
+        "label": "new Transaction()",
+        "x": 530,
+        "y": 60
+      },
+      {
+        "id": "f1",
+        "kind": "process",
+        "label": "setXxx 累积 layer_state_t.what",
+        "x": 530,
+        "y": 160
+      },
+      {
+        "id": "f2",
+        "kind": "decision",
+        "label": "需要合并同批变更？",
+        "x": 530,
+        "y": 270
+      },
+      {
+        "id": "f3",
+        "kind": "process",
+        "label": "merge()：覆盖字段并释放旧 buffer",
+        "x": 880,
+        "y": 270
+      },
+      {
+        "id": "f4",
+        "kind": "process",
+        "label": "cacheBuffers()：GraphicBuffer → 句柄",
+        "x": 530,
+        "y": 380
+      },
+      {
+        "id": "f5",
+        "kind": "process",
+        "label": "setTransactionState（binder）",
+        "x": 530,
+        "y": 480
+      },
+      {
+        "id": "f6",
+        "kind": "process",
+        "label": "sanitize 权限 + 解析句柄 + 入队",
+        "x": 530,
+        "y": 580
+      },
+      {
+        "id": "f7",
+        "kind": "decision",
+        "label": "ready filters 全过？",
+        "x": 530,
+        "y": 690
+      },
+      {
+        "id": "f8",
+        "kind": "process",
+        "label": "留在队首等下一帧",
+        "x": 180,
+        "y": 690
+      },
+      {
+        "id": "f9",
+        "kind": "process",
+        "label": "applyTransactionState 写 drawing state",
+        "x": 530,
+        "y": 800
+      },
+      {
+        "id": "f10",
+        "kind": "end",
+        "label": "commit/present 回调 → app",
+        "x": 530,
+        "y": 900
+      }
+    ],
+    "edges": [
+      {
+        "from": "f0",
+        "to": "f1"
+      },
+      {
+        "from": "f1",
+        "to": "f2"
+      },
+      {
+        "from": "f2",
+        "to": "f3",
+        "label": "是"
+      },
+      {
+        "from": "f3",
+        "to": "f4"
+      },
+      {
+        "from": "f2",
+        "to": "f4",
+        "label": "否"
+      },
+      {
+        "from": "f4",
+        "to": "f5"
+      },
+      {
+        "from": "f5",
+        "to": "f6"
+      },
+      {
+        "from": "f6",
+        "to": "f7"
+      },
+      {
+        "from": "f7",
+        "to": "f8",
+        "label": "否"
+      },
+      {
+        "from": "f7",
+        "to": "f9",
+        "label": "是"
+      },
+      {
+        "from": "f9",
+        "to": "f10"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s02",
+      "from": "APP",
+      "to": "APP",
+      "label": "setXxx → layer_state_t",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "APP",
+      "to": "APP",
+      "label": "merge（可选）",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "APP",
+      "to": "APP",
+      "label": "cacheBuffers",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "APP",
+      "to": "BIN",
+      "label": "setTransactionState",
+      "kind": "oneway"
+    },
+    {
+      "step": "s07",
+      "from": "BIN",
+      "to": "SF",
+      "label": "sanitize(permissions)",
+      "kind": "call"
+    },
+    {
+      "step": "s08",
+      "from": "BIN",
+      "to": "SF",
+      "label": "解析 layer 句柄 / buffer",
+      "kind": "call"
+    },
+    {
+      "step": "s09",
+      "from": "BIN",
+      "to": "HND",
+      "label": "queueTransaction",
+      "kind": "call"
+    },
+    {
+      "step": "s09",
+      "from": "BIN",
+      "to": "SF",
+      "label": "setTransactionFlags",
+      "kind": "call"
+    },
+    {
+      "step": "s10",
+      "from": "SF",
+      "to": "HND",
+      "label": "collectTransactions",
+      "kind": "call"
+    },
+    {
+      "step": "s11",
+      "from": "SF",
+      "to": "HND",
+      "label": "flushTransactions",
+      "kind": "call"
+    },
+    {
+      "step": "s12",
+      "from": "HND",
+      "to": "HND",
+      "label": "applyFilters（timeline/buffer/barrier）",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "SF",
+      "to": "SF",
+      "label": "applyTransactionsLocked（持 mStateLock）",
+      "kind": "call"
+    },
+    {
+      "step": "s15",
+      "from": "SF",
+      "to": "LAY",
+      "label": "applyTransactionState → 写状态",
+      "kind": "call"
+    },
+    {
+      "step": "s17",
+      "from": "SF",
+      "to": "APP",
+      "label": "OnCommit 回调",
+      "kind": "callback"
+    },
+    {
+      "step": "s18",
+      "from": "SF",
+      "to": "APP",
+      "label": "OnComplete 回调（present 后）",
+      "kind": "callback"
+    }
+  ]
+}

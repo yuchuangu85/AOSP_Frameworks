@@ -1,0 +1,55 @@
+{
+  "step": "s05",
+  "title": "mapper 生成 NotifyMotionArgs",
+  "tldr": "TouchInputMapper 只在 SYN_REPORT 时解析整包，产出带 policyFlags/displayId 的 NotifyMotionArgs。",
+  "why": "触摸事件在 evdev 里是「一包一包」的：X/Y/压力等轴值要等 SYN_REPORT 才算完整。mapper 的职责就是攒齐一包再做坐标换算、手势判定，最后产出一个语义完整的 NotifyMotionArgs。这个对象是 reader 与 dispatcher 之间的契约：dispatcher 之后不再关心原始轴值，只认它。理解这一点，才能解释为什么「同一包事件」在 trace 里只出现一次 dispatch。",
+  "concepts": [
+    {
+      "term": "SYN_REPORT",
+      "text": "一包事件的结束标记；mapper 在此刻做解析。"
+    },
+    {
+      "term": "NotifyMotionArgs",
+      "text": "包含 id/eventTime/deviceId/source/displayId/action/policyFlags/指针数组等。"
+    },
+    {
+      "term": "policyFlags",
+      "text": "策略位，例如 PASS_TO_USER、TRUSTED、FILTERED。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::list<NotifyArgs> TouchInputMapper::process(const RawEvent& rawEvent) {",
+      "ref": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp:1305",
+      "what": "每事件入口。"
+    },
+    {
+      "call": "if (rawEvent.type == EV_SYN && rawEvent.code == SYN_REPORT) {",
+      "ref": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp:1310",
+      "what": "只有包结束才解析。"
+    },
+    {
+      "call": "out += sync(rawEvent.when, rawEvent.readTime);",
+      "ref": "native/services/inputflinger/reader/mapper/TouchInputMapper.cpp:1311",
+      "what": "sync 里面才是真正的换算与构造。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mapper 内部的原始指针数据",
+      "before": "累积中",
+      "after": "SYN_REPORT 后解析并清空",
+      "note": "未完成的包不会产生事件。"
+    }
+  ],
+  "threads": "InputReader 线程，持锁。",
+  "pitfalls": [
+    "以为每个 evdev 事件都会产生一个 MotionEvent：不是，按包。",
+    "忽略 readTime：它是后续帧延迟统计的基础。"
+  ],
+  "debug": [
+    "`adb shell getevent -lt` 可看到包里的事件顺序。",
+    "dumpsys input 的 TouchStates 段显示当前按键状态。"
+  ],
+  "next": "NotifyArgs 如何穿过过滤与编排链？见第 6 步。"
+}

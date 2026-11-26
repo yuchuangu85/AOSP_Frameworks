@@ -1,0 +1,56 @@
+{
+  "step": "s06",
+  "title": "Parcel 序列化",
+  "tldr": "writeToParcel 先 cacheBuffers 再写 TransactionState、日志标志、applyToken 与回调映射。",
+  "why": "正常 apply 不需要手动序列化（binder 参数会自动做），只有 delegate 给别的进程时才会显式调用。但这段代码值得一读：它是 const 方法却调用了非 const 的 cacheBuffers，源码用一整段注释论证 const_cast 的安全性——要么对象原本非 const，要么原本 const 且没有 composer state（cacheBuffers 什么都不写）。另外它把 applyToken 也写进去了：跨进程传递后顺序域仍然保持一致。",
+  "concepts": [
+    {
+      "term": "SAFE_PARCEL",
+      "text": "宏：包住写操作并检查返回值。"
+    },
+    {
+      "term": "applyToken 序列化",
+      "text": "顺序域随事务一起跨进程。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "status_t SurfaceComposerClient::Transaction::writeToParcel(Parcel* parcel) const {",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:918",
+      "what": "入口。"
+    },
+    {
+      "call": "const_cast<SurfaceComposerClient::Transaction*>(this)->cacheBuffers();",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:930",
+      "what": "序列化前必须先缓存 buffer。"
+    },
+    {
+      "call": "SAFE_PARCEL(mState.writeToParcel, parcel);",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:932",
+      "what": "写主体状态。"
+    },
+    {
+      "call": "parcel->writeStrongBinder(mApplyToken);",
+      "ref": "native/libs/gui/SurfaceComposerClient.cpp:934",
+      "what": "顺序域一起传。"
+    }
+  ],
+  "state": [
+    {
+      "field": "cachedBufferChanged",
+      "before": "未置位",
+      "after": "置位",
+      "note": "防止对端或本端重复缓存。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为 const 方法就是只读：它会改缓存。",
+    "手动序列化却跳过 cacheBuffers：会让对端替我们缓存。"
+  ],
+  "debug": [
+    "TransactTracing 能回放序列化内容。",
+    "binder 的 tx 大小可看出是否带了大 buffer。"
+  ],
+  "next": "服务端收到后先做什么？见第 7 步。"
+}

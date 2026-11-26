@@ -1,0 +1,51 @@
+{
+  "step": "s18",
+  "title": "服务注册与查找",
+  "tldr": "defaultServiceManager() 拿 handle 0 的代理；addService/getService 本身就是普通 binder 调用。",
+  "why": "服务发现没有任何特殊机制：ServiceManager 就是一个 handle 0 上的普通 binder 服务，注册和查找都是普通 transact。唯一特殊的是它的句柄固定为 0，且首次访问要先 ping。理解这点后，「服务找不到」的排查就变成普通 binder 问题：要么 ServiceManager 没起来，要么注册还没完成（启动竞态），要么就是查的名字不对。",
+  "concepts": [
+    {
+      "term": "defaultServiceManager",
+      "text": "call_once 缓存的 handle 0 代理。"
+    },
+    {
+      "term": "getContextObject",
+      "text": "解析 handle 0。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "std::call_once(gSmOnce, []() {",
+      "ref": "native/libs/binder/IServiceManager.cpp:335",
+      "what": "只初始化一次。"
+    },
+    {
+      "call": "sp<IBinder> ProcessState::getContextObject(const sp<IBinder>& /*caller*/) {",
+      "ref": "native/libs/binder/ProcessState.cpp:559",
+      "what": "handle 0 的解析。"
+    },
+    {
+      "call": "sp<IServiceManager> defaultServiceManager()",
+      "ref": "native/libs/binder/IServiceManager.cpp:333",
+      "what": "对外入口。"
+    }
+  ],
+  "state": [
+    {
+      "field": "gDefaultServiceManager",
+      "before": "空",
+      "after": "有效代理",
+      "note": "第一次调用时阻塞解析。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为服务发现走特殊通道：就是 handle 0 的 binder 调用。",
+    "启动竞态：服务注册完成前查找会失败。"
+  ],
+  "debug": [
+    "dumpsys 里能看到已注册服务清单。",
+    "日志 ServiceManager: Waiting for service 说明在等注册。"
+  ],
+  "next": "失败码怎么区分？见第 19 步。"
+}

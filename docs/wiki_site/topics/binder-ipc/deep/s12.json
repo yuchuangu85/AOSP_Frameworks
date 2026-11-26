@@ -1,0 +1,55 @@
+{
+  "step": "s12",
+  "title": "回包：sendReply",
+  "tldr": "executeCommand 调 sendReply 发 BC_REPLY（handle=-1 由驱动填目标），然后等 BR_TRANSACTION_COMPLETE。",
+  "why": "sendReply 只有 9 行，但两个细节很关键：handle 传 -1 而不是目标编号——因为「回复给谁」由驱动根据当前线程正在处理的事务决定，用户态无法伪造；以及它等的是 COMPLETE 而不是回复，因为回包本身就是一次单向写。另外回包前会先清空输入缓冲（b/238777741 的竞态修复）。",
+  "concepts": [
+    {
+      "term": "BC_REPLY",
+      "text": "回包命令。"
+    },
+    {
+      "term": "handle = -1",
+      "text": "由驱动确定目标。"
+    },
+    {
+      "term": "TF_STATUS_CODE",
+      "text": "只有 status 的回包。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "err = writeTransactionData(BC_REPLY, flags, -1, 0, reply, &statusBuffer);",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1147",
+      "what": "打包回包。"
+    },
+    {
+      "call": "if ((tr.flags & TF_ONE_WAY) == 0) {",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1639",
+      "what": "只有同步调用才回包。"
+    },
+    {
+      "call": "status_t error2 = sendReply(reply, (tr.flags & kForwardReplyFlags));",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1654",
+      "what": "发回包。"
+    }
+  ],
+  "state": [
+    {
+      "field": "输入 Parcel",
+      "before": "含调用数据",
+      "after": "setDataSize(0)",
+      "note": "回包前清空以修竞态。"
+    }
+  ],
+  "threads": "服务线程。",
+  "pitfalls": [
+    "以为回包可以指定目标：由驱动定。",
+    "忽略 oneway 没有回包。"
+  ],
+  "debug": [
+    "BC_REPLY 命令日志。",
+    "竞态修复见源码注释 b/238777741。"
+  ],
+  "next": "发起方怎么收？见第 13 步。"
+}

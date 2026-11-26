@@ -1,0 +1,55 @@
+{
+  "step": "s23",
+  "title": "诊断：dumpsys 与 trace 打点",
+  "tldr": "dumpsys --vsync 看 work/ready/armed；trace 里 HW_VSYNC / VSYNC-app / doFrame 是三个锚点。",
+  "why": "vsync 问题的排查顺序应该固定：先在 trace 里看 HW_VSYNC 的间隔是否稳定（硬件与驱动），再看 VSYNC-app 与 HW_VSYNC 的相位差是否符合配置（相位与调度），最后看 doFrame 的时长（应用自身工作量）。这三步能把「硬件不准 / 调度偏了 / 应用慢」清晰分开，避免在错误的层次上找问题。",
+  "concepts": [
+    {
+      "term": "VSYNC-app",
+      "text": "EventThread 唤醒的 trace 名。"
+    },
+    {
+      "term": "VSYNC-predicted",
+      "text": "预测器给出网格时的打点。"
+    },
+    {
+      "term": "VsyncPendingScreenOn",
+      "text": "息屏待机的标记。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void Scheduler::dumpVsync(std::string& result, bool v) const {",
+      "ref": "native/services/surfaceflinger/Scheduler/Scheduler.cpp:1311",
+      "what": "dumpsys --vsync 入口。"
+    },
+    {
+      "call": "ATRACE_FORMAT(\"VSYNC-app\");",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:317",
+      "what": "app 侧打点名。"
+    },
+    {
+      "call": "SFTRACE_FORMAT(\"HW_VSYNC_%\" PRIu64, displayId);",
+      "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:181",
+      "what": "硬件打点。"
+    }
+  ],
+  "state": [
+    {
+      "field": "armed 信息",
+      "before": "已武装",
+      "after": "触发后清空",
+      "note": "dumpsys 可直接看到。"
+    }
+  ],
+  "threads": "诊断命令在 SF 主线程执行。",
+  "pitfalls": [
+    "只看 doFrame 慢就断定 vsync 有问题。",
+    "不看 HW_VSYNC 间隔就假设硬件正常。"
+  ],
+  "debug": [
+    "`adb shell dumpsys SurfaceFlinger --vsync`。",
+    "Perfetto 同时抓 gfx/view/hwui/sf 分类。"
+  ],
+  "next": "仓库外还有什么？见第 24 步。"
+}

@@ -1,0 +1,60 @@
+{
+  "step": "s12",
+  "title": "ready 过滤器链决定能否应用",
+  "tldr": "timeline → buffer → barrier 三个过滤器依次判定；任一 NotReady 就停在队首，同 token 后续不能越过。",
+  "why": "这条链定义了「事务什么时候算可应用」，是整个 Transaction 机制的核心。要点有三个：第一，过滤器按注册顺序执行（addTransactionReadyFilters 里显式绑定），顺序有意义；第二，**NotReady 会阻塞同 token 的后续事务**——这正是顺序保证的实现方式，也是「为什么一笔卡住的事务会让后面全等」的答案；第三，flushTransactions 会在本轮内反复扫（do-while），直到「等待中的事务数」不再变化，这样才能解开跨 token 的 barrier 依赖链。",
+  "concepts": [
+    {
+      "term": "TransactionReadiness",
+      "text": "Ready / NotReady / NotReadyBarrier / NotReadyUnsignaled 四种结果。"
+    },
+    {
+      "term": "flushPendingTransactionQueues",
+      "text": "单轮扫描，返回仍有等待的事务数。"
+    },
+    {
+      "term": "do-while 扫描",
+      "text": "反复扫直到不再变化，解开依赖链。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void SurfaceFlinger::addTransactionReadyFilters() {",
+      "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5478",
+      "what": "过滤器注册顺序。"
+    },
+    {
+      "call": "TransactionHandler::TransactionReadiness TransactionHandler::applyFilters(",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:174",
+      "what": "串联执行。"
+    },
+    {
+      "call": "do {",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:30",
+      "what": "反复扫描直到稳定。"
+    },
+    {
+      "call": "transactionsPendingBarrier = flushPendingTransactionQueues(transactions, flushState);",
+      "ref": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp:33",
+      "what": "单轮挑选。"
+    }
+  ],
+  "state": [
+    {
+      "field": "队首事务",
+      "before": "可能 NotReady",
+      "after": "条件满足后 Ready",
+      "note": "期间同 token 后续全部等待。"
+    }
+  ],
+  "threads": "SF 主线程。",
+  "pitfalls": [
+    "以为卡住只影响一笔：同 token 后面全等。",
+    "忽略 NotReadyUnsignaled：它允许应用但要特殊处理。"
+  ],
+  "debug": [
+    "trace 里的 not current desiredPresentTime / !isVsyncValid / NotReadyBarrier 标签。",
+    "dumpsys SurfaceFlinger 的 pending 队列。"
+  ],
+  "next": "barrier 的具体语义？见第 13 步。"
+}

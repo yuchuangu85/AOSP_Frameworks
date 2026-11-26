@@ -1,0 +1,51 @@
+{
+  "step": "s02",
+  "title": "Parcel：参数编组",
+  "tldr": "AIDL 生成的代码把参数逐个写进 Parcel；binder 对象被扁平化成句柄而不是地址。",
+  "why": "Parcel 不是通用序列化框架，它是为 binder 定制的：数据按写入顺序紧密排列，读取必须用完全相同的顺序和类型。这也是「跨版本 AIDL 一定要小心读写顺序」的原因——一旦顺序错位，读到的是别人的字节。binder 对象写进去的是句柄，由驱动在传递时替换成对端进程内的引用。",
+  "concepts": [
+    {
+      "term": "扁平化",
+      "text": "把 binder 对象写成一个句柄，由驱动翻译。"
+    },
+    {
+      "term": "严格读写顺序",
+      "text": "Parcel 没有字段名，顺序错了就是错。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public final void writeStrongBinder(IBinder val) {",
+      "ref": "base/core/java/android/os/Parcel.java:1400",
+      "what": "写强引用 binder。"
+    },
+    {
+      "call": "nativeWriteStrongBinder(mNativePtr, val);",
+      "ref": "base/core/java/android/os/Parcel.java:1418",
+      "what": "转 native。"
+    },
+    {
+      "call": "status_t Parcel::writeStrongBinder(const sp<IBinder>& val)",
+      "ref": "native/libs/binder/Parcel.cpp:1245",
+      "what": "native 侧写句柄。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Parcel 数据位置",
+      "before": "0",
+      "after": "写入长度",
+      "note": "读时必须从头按序读。"
+    }
+  ],
+  "threads": "调用线程。",
+  "pitfalls": [
+    "以为 Parcel 自带字段校验：没有，顺序错就读错。",
+    "跨版本加字段不注意兼容：老进程会读越界。"
+  ],
+  "debug": [
+    "Parcel 的 print 可 dump 内容。",
+    "事务日志里能看到经 hex dump 后的 Parcel。"
+  ],
+  "next": "怎么进 native？见第 3 步。"
+}

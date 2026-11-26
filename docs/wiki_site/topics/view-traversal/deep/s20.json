@@ -1,0 +1,35 @@
+{
+  "step": "s20",
+  "title": "unblockUiThread：UI 从这里自由",
+  "tldr": "先做本地拷贝、再 signal；注释明确写了此后访问 this 不安全。",
+  "why": "这一步是「UI 只等同步，不等绘制」的实现。它前后顺序很有讲究：先把 context、frameCallback、frameCompleteCallback 全部 move 到局部变量，然后才 signal；因为 signal 一发出，UI 线程就会从 mSignal.wait 返回并开始下一帧，DrawFrameTask 的成员随时可能被改写。注释里那句 UNSAFE TO ACCESS 就是这条契约的原文。理解它，才能在读 trace 时正确判断：DrawFrames 切片的后半段（回放与 swap）与 UI 线程的下一帧录制是并行的。",
+  "concepts": [
+    { "term": "本地拷贝", "text": "context、frameCallback、frameCompleteCallback 在 signal 之前被 move 出来。" },
+    { "term": "unblockUiThread", "text": "取 mLock 后 mSignal.signal；与 postAndWait 的 wait 配对。" },
+    { "term": "canUnblockUiThread", "text": "为假时不 signal，UI 会一直等到 run() 结束。" }
+  ],
+  "walk": [
+    { "call": "CanvasContext* context = mContext;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:117", "what": "把画布上下文拷到栈上。" },
+    { "call": "// From this point on anything in \"this\" is *UNSAFE TO ACCESS*", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:124", "what": "契约原文：此后 this 不可安全访问。" },
+    { "call": "if (canUnblockUiThread) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:125", "what": "只有同步成功且不欠纹理时才提前放行。" },
+    { "call": "unblockUiThread();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:126", "what": "唤醒 UI 线程。" },
+    { "call": "void DrawFrameTask::unblockUiThread() {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:219", "what": "轻量封装：取锁后 signal。" },
+    { "call": "mSignal.signal();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:221", "what": "唤醒点；UI 的 postAndWait 从这里返回。" }
+  ],
+  "state": [
+    { "field": "DrawFrameTask 的成员", "before": "本次帧的数据（可安全访问）", "after": "可能被 UI 改写（不可访问）", "note": "RT 之后只用局部拷贝。" },
+    { "field": "UI 线程状态", "before": "Blocked", "after": "Running", "note": "可以立刻开始下一帧的 measure/layout/录制。" }
+  ],
+  "threads": "RT 执行 signal，UI 线程恢复。从这一刻起两条线程真正并行：UI 录制下一帧，RT 回放本帧。",
+  "pitfalls": [
+    "在 signal 之后继续访问 this 的成员：这是明确的未定义行为，崩溃往往表现为随机内存错误。",
+    "在 signal 之后调用 Java 回调并同步等结果：会与下一帧的 traversal 抢 UI 线程。",
+    "以为 UI 在这里就能看到新画面：此刻 buffer 还没 swap，上屏更在后面。"
+  ],
+  "debug": [
+    "trace 里从 unblockUiThread 到 run 结束的那一段，与 UI 线程下一帧的切片是重叠的。",
+    "在 221 行下断点，可确认 UI 被放行的确切时刻。",
+    "若 UI 出现长时间阻塞、而 RT 已 signal，问题在别处（例如主线程上有别的长任务）。"
+  ],
+  "next": "放走 UI 之后，RT 还剩哪些工作？本页的边界在哪里？见第 21 步。"
+}

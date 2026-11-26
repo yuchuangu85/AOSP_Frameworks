@@ -1,0 +1,56 @@
+{
+  "step": "s08",
+  "title": "队列剪枝：点到别的应用就清空积压",
+  "tldr": "处于「等焦点窗口」状态时，若新触摸落在另一个应用窗口，shouldPruneInboundQueueLocked 会清空积压。",
+  "why": "这是「某应用卡住后，点别的应用立刻就响应」的机制来源。如果没有剪枝，一个卡住的焦点应用会让后续所有事件排队等它，导致整个系统看起来都无响应。剪枝的判定条件是「当前正在等焦点窗口」且「新事件落在另一个应用」，所以它只在前一个应用确实卡住时生效，不会误伤正常排队。",
+  "concepts": [
+    {
+      "term": "shouldPruneInboundQueueLocked",
+      "text": "判断是否要丢弃积压事件。"
+    },
+    {
+      "term": "mNoFocusedWindowAnrState",
+      "text": "「等待焦点窗口」的状态，是剪枝的前置条件。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "bool InputDispatcher::shouldPruneInboundQueueLocked(const MotionEntry& motionEntry) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1380",
+      "what": "剪枝判定。"
+    },
+    {
+      "call": "if (!mNoFocusedWindowAnrState.has_value()) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1385",
+      "what": "不在等焦点窗口时不剪枝。"
+    },
+    {
+      "call": "needWake = enqueueInboundEventLocked(std::move(newEntry));",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:4813",
+      "what": "剪枝发生在入队路径上。"
+    },
+    {
+      "call": "void InputDispatcher::dispatchOnce() {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:983",
+      "what": "剪枝后 dispatcher 仍按正常节奏消费剩余事件。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mInboundQueue",
+      "before": "积压多条",
+      "after": "被清空",
+      "note": "会打印 ALOGI(\"Pruning input queue ...\")。"
+    }
+  ],
+  "threads": "dispatcher 线程，持 mLock。",
+  "pitfalls": [
+    "把剪枝当成丢事件 bug：它是刻意的反卡死设计。",
+    "忽略 Pruning input queue 日志：它说明客户端之前卡住了。"
+  ],
+  "debug": [
+    "grep 日志 Pruning input queue。",
+    "dumpsys input 的 inboundQueue 段可看积压情况。"
+  ],
+  "next": "dispatcher 一轮分发的主循环长什么样？见第 9 步。"
+}

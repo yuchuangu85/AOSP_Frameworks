@@ -1,0 +1,1014 @@
+{
+  "id": "sf-setstate",
+  "title": "SurfaceFlinger::setTransactionState",
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "sig": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState,",
+  "span": [
+    5579,
+    5745
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState,",
+      "kind": "note",
+      "text": "服务端唯一入口，运行在 **binder 线程**上。它只做净化、解析与入队，不做应用。"
+    },
+    {
+      "at": 2,
+      "quote": "const sp<IBinder>& applyToken) {",
+      "kind": "note",
+      "text": "applyToken 也一起来了——它定义顺序域。"
+    },
+    {
+      "at": 3,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 4,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 5,
+      "quote": "IPCThreadState* ipc = IPCThreadState::self();",
+      "kind": "data",
+      "text": "取当前 binder 线程。"
+    },
+    {
+      "at": 6,
+      "quote": "const int originPid = ipc->getCallingPid();",
+      "kind": "data",
+      "text": "**调用方 pid**，用于权限与 stalled 记录。"
+    },
+    {
+      "at": 7,
+      "quote": "const int originUid = ipc->getCallingUid();",
+      "kind": "data",
+      "text": "**调用方 uid**。"
+    },
+    {
+      "at": 8,
+      "quote": "uint32_t permissions = LayerStatePermissions::getTransactionPermissions(originPid, originUid);",
+      "kind": "data",
+      "text": "按 pid/uid 查权限位。"
+    },
+    {
+      "at": 9,
+      "quote": "ftl::Flags<adpf::Workload> queuedWorkload;",
+      "kind": "data",
+      "text": "本事务带来的 ADPF 负载提示。"
+    },
+    {
+      "at": 10,
+      "quote": "bool hasFrameRateChanges = false;",
+      "kind": "data",
+      "text": "是否含帧率变更（决定是否立刻唤醒 SF）。"
+    },
+    {
+      "at": 11,
+      "quote": "auto& states = transactionState.mComposerStates;",
+      "kind": "data",
+      "text": "取出层状态列表。"
+    },
+    {
+      "at": 12,
+      "quote": "for (auto& composerState : states) {",
+      "kind": "note",
+      "text": "逐层处理。"
+    },
+    {
+      "at": 13,
+      "quote": "composerState.state.sanitize(permissions);",
+      "kind": "call",
+      "text": "**权限净化**：按权限位剔除越权字段，这是跨应用安全边界。"
+    },
+    {
+      "at": 14,
+      "quote": "if (composerState.state.what & layer_state_t::COMPOSITION_EFFECTS) {",
+      "kind": "branch",
+      "text": "含合成效果（模糊/阴影等）。"
+    },
+    {
+      "at": 15,
+      "quote": "queuedWorkload |= adpf::Workload::EFFECTS;",
+      "kind": "data",
+      "text": "记 EFFECTS 负载。"
+    },
+    {
+      "at": 16,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 17,
+      "quote": "if (composerState.state.what & layer_state_t::VISIBLE_REGION_CHANGES) {",
+      "kind": "branch",
+      "text": "含可见区域变化。"
+    },
+    {
+      "at": 18,
+      "quote": "queuedWorkload |= adpf::Workload::VISIBLE_REGION;",
+      "kind": "data",
+      "text": "记 VISIBLE_REGION 负载。"
+    },
+    {
+      "at": 19,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 20,
+      "quote": "if (composerState.state.what & layer_state_t::FRAME_RATE_CHANGES) {",
+      "kind": "branch",
+      "text": "含帧率变更。"
+    },
+    {
+      "at": 21,
+      "quote": "hasFrameRateChanges = true;",
+      "kind": "state",
+      "text": "标记，后续可能立刻唤醒 SF。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭层循环。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "for (DisplayState& display : transactionState.mDisplayStates) {",
+      "kind": "note",
+      "text": "display 状态同样净化。"
+    },
+    {
+      "at": 26,
+      "quote": "display.sanitize(permissions);",
+      "kind": "call",
+      "text": "净化 display 字段（改分辨率/旋转需权限）。"
+    },
+    {
+      "at": 27,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 28,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 29,
+      "quote": "auto inputWindowCommands = transactionState.mInputWindowCommands;",
+      "kind": "data",
+      "text": "取出 input window commands。"
+    },
+    {
+      "at": 30,
+      "quote": "if (!inputWindowCommands.empty() &&",
+      "kind": "decision",
+      "text": "非空且调用者没有 ACCESS_SURFACE_FLINGER。"
+    },
+    {
+      "at": 31,
+      "quote": "(permissions & layer_state_t::Permission::ACCESS_SURFACE_FLINGER) == 0) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 32,
+      "quote": "ALOGE(\"Only privileged callers are allowed to send input commands.\");",
+      "kind": "note",
+      "text": "E 级日志：只有特权调用者能发 input 命令。"
+    },
+    {
+      "at": 33,
+      "quote": "inputWindowCommands.clear();",
+      "kind": "call",
+      "text": "**清空**——普通应用这一项被丢弃。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 36,
+      "quote": "uint32_t flags = transactionState.mFlags;",
+      "kind": "data",
+      "text": "取事务标志。"
+    },
+    {
+      "at": 37,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 38,
+      "quote": "if (flags & (eEarlyWakeupStart | eEarlyWakeupEnd)) {",
+      "kind": "branch",
+      "text": "带了 early wakeup 标志。"
+    },
+    {
+      "at": 39,
+      "quote": "const bool hasPermission =",
+      "kind": "data",
+      "text": "检查 ACCESS_SURFACE_FLINGER 或 WAKEUP_SURFACE_FLINGER。"
+    },
+    {
+      "at": 40,
+      "quote": "(permissions & layer_state_t::Permission::ACCESS_SURFACE_FLINGER) ||",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 41,
+      "quote": "callingThreadHasPermission(sWakeupSurfaceFlinger);",
+      "kind": "call",
+      "text": "查线程权限。"
+    },
+    {
+      "at": 42,
+      "quote": "if (!hasPermission) {",
+      "kind": "branch",
+      "text": "没权限。"
+    },
+    {
+      "at": 43,
+      "quote": "ALOGE(\"Caller needs permission android.permission.WAKEUP_SURFACE_FLINGER to use \"",
+      "kind": "note",
+      "text": "E 级日志说明需要哪个权限。"
+    },
+    {
+      "at": 44,
+      "quote": "\"eEarlyWakeup[Start|End] flags\");",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 45,
+      "quote": "flags &= ~(eEarlyWakeupStart | eEarlyWakeupEnd);",
+      "kind": "state",
+      "text": "**清掉标志**：退化为普通事务。"
+    },
+    {
+      "at": 46,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 47,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 48,
+      "quote": "if (flags & eEarlyWakeupStart) {",
+      "kind": "branch",
+      "text": "确认要提前唤醒。"
+    },
+    {
+      "at": 49,
+      "quote": "queuedWorkload |= adpf::Workload::WAKEUP;",
+      "kind": "data",
+      "text": "记 WAKEUP 负载。"
+    },
+    {
+      "at": 50,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 51,
+      "quote": "mPowerAdvisor->setQueuedWorkload(queuedWorkload);",
+      "kind": "call",
+      "text": "把负载提示交给 PowerAdvisor。"
+    },
+    {
+      "at": 52,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 53,
+      "quote": "const int64_t postTime = systemTime();",
+      "kind": "data",
+      "text": "**postTime**：服务端收到事务的时刻，stalled 判定以它为基准。"
+    },
+    {
+      "at": 54,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 55,
+      "quote": "std::vector<uint64_t> uncacheBufferIds;",
+      "kind": "data",
+      "text": "待回收的 buffer id 列表。"
+    },
+    {
+      "at": 56,
+      "quote": "const auto& uncacheBuffers = transactionState.mUncacheBuffers;",
+      "kind": "data",
+      "text": "取事务里的 uncache 请求。"
+    },
+    {
+      "at": 57,
+      "quote": "uncacheBufferIds.reserve(uncacheBuffers.size());",
+      "kind": "call",
+      "text": "预留容量。"
+    },
+    {
+      "at": 58,
+      "quote": "for (const auto& uncacheBuffer : uncacheBuffers) {",
+      "kind": "note",
+      "text": "逐个处理。"
+    },
+    {
+      "at": 59,
+      "quote": "sp<GraphicBuffer> buffer = ClientCache::getInstance().erase(uncacheBuffer);",
+      "kind": "call",
+      "text": "**从客户端缓存里摘掉**并把 GraphicBuffer 取回。"
+    },
+    {
+      "at": 60,
+      "quote": "if (buffer != nullptr) {",
+      "kind": "branch",
+      "text": "确实存在。"
+    },
+    {
+      "at": 61,
+      "quote": "uncacheBufferIds.push_back(buffer->getId());",
+      "kind": "call",
+      "text": "记录 id，稍后让图层去 uncache。"
+    },
+    {
+      "at": 62,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 63,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 64,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 65,
+      "quote": "std::vector<ResolvedComposerState> resolvedStates;",
+      "kind": "data",
+      "text": "解析后的层状态（句柄换成可直接用的 id 与纹理）。"
+    },
+    {
+      "at": 66,
+      "quote": "resolvedStates.reserve(states.size());",
+      "kind": "call",
+      "text": "预留容量。"
+    },
+    {
+      "at": 67,
+      "quote": "for (auto& state : states) {",
+      "kind": "note",
+      "text": "遍历原始层状态。"
+    },
+    {
+      "at": 68,
+      "quote": "resolvedStates.emplace_back(std::move(state));",
+      "kind": "call",
+      "text": "move 进解析列表。"
+    },
+    {
+      "at": 69,
+      "quote": "auto& resolvedState = resolvedStates.back();",
+      "kind": "data",
+      "text": "取刚 move 进来的那条。"
+    },
+    {
+      "at": 70,
+      "quote": "resolvedState.layerId = LayerHandle::getLayerId(resolvedState.state.surface);",
+      "kind": "call",
+      "text": "**句柄 → layerId**：主线程后续只认 id，不再碰跨进程句柄。"
+    },
+    {
+      "at": 71,
+      "quote": "if (resolvedState.state.hasBufferChanges() && resolvedState.state.hasValidBuffer() &&",
+      "kind": "decision",
+      "text": "有 buffer 变更且有有效 buffer 且有 surface。"
+    },
+    {
+      "at": 72,
+      "quote": "resolvedState.state.surface) {",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 73,
+      "quote": "sp<Layer> layer = LayerHandle::getLayer(resolvedState.state.surface);",
+      "kind": "data",
+      "text": "取 Layer 对象（可能为空）。"
+    },
+    {
+      "at": 74,
+      "quote": "std::string layerName =",
+      "kind": "data",
+      "text": "取调试名用于日志。"
+    },
+    {
+      "at": 75,
+      "quote": "(layer) ? layer->getDebugName() : std::to_string(resolvedState.state.layerId);",
+      "kind": "note",
+      "text": "续行：拿不到就用 id 代替。"
+    },
+    {
+      "at": 76,
+      "quote": "resolvedState.externalTexture =",
+      "kind": "call",
+      "text": "**buffer → ExternalTexture**：把缓存里的 buffer 解析成可渲染纹理。"
+    },
+    {
+      "at": 77,
+      "quote": "getExternalTextureFromBufferData(*resolvedState.state.bufferData,",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 78,
+      "quote": "layerName.c_str(), transactionState.getId());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 79,
+      "quote": "if (resolvedState.externalTexture) {",
+      "kind": "branch",
+      "text": "解析成功。"
+    },
+    {
+      "at": 80,
+      "quote": "resolvedState.state.bufferData->buffer = resolvedState.externalTexture->getBuffer();",
+      "kind": "state",
+      "text": "把 GraphicBuffer 写回 bufferData，供后续 latch 使用。"
+    },
+    {
+      "at": 81,
+      "quote": "if (FlagManager::getInstance().monitor_buffer_fences()) {",
+      "kind": "branch",
+      "text": "打开了 buffer fence 监控。"
+    },
+    {
+      "at": 82,
+      "quote": "resolvedState.state.bufferData->buffer->getDependencyMonitor()",
+      "kind": "call",
+      "text": "取依赖监控器。"
+    },
+    {
+      "at": 83,
+      "quote": ".addIngress(FenceTime::makeValid(",
+      "kind": "call",
+      "text": "登记入边 fence。"
+    },
+    {
+      "at": 84,
+      "quote": "resolvedState.state.bufferData->acquireFence),",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 85,
+      "quote": "\"Incoming txn\");",
+      "kind": "data",
+      "text": "用 acquire fence 构建 FenceTime。"
+    },
+    {
+      "at": 86,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 87,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭监控分支。"
+    },
+    {
+      "at": 88,
+      "quote": "mBufferCountTracker.increment(resolvedState.layerId);",
+      "kind": "call",
+      "text": "**buffer 计数 +1**：enqueue 计数，present 后减。"
+    },
+    {
+      "at": 89,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭解析成功分支。"
+    },
+    {
+      "at": 90,
+      "quote": "if (resolvedState.state.what & layer_state_t::eReparent) {",
+      "kind": "branch",
+      "text": "含 reparent。"
+    },
+    {
+      "at": 91,
+      "quote": "resolvedState.parentId = getLayerIdFromSurfaceControl(",
+      "kind": "call",
+      "text": "**父句柄 → parentId**。"
+    },
+    {
+      "at": 92,
+      "quote": "resolvedState.state.getParentSurfaceControlForChild());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 93,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 94,
+      "quote": "if (resolvedState.state.what & layer_state_t::eRelativeLayerChanged) {",
+      "kind": "branch",
+      "text": "含相对层变更。"
+    },
+    {
+      "at": 95,
+      "quote": "resolvedState.relativeParentId = getLayerIdFromSurfaceControl(",
+      "kind": "call",
+      "text": "相对父 → id。"
+    },
+    {
+      "at": 96,
+      "quote": "resolvedState.state.getRelativeLayerSurfaceControl());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 97,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 98,
+      "quote": "if (resolvedState.state.what & layer_state_t::eInputInfoChanged) {",
+      "kind": "branch",
+      "text": "含 input info 变更。"
+    },
+    {
+      "at": 99,
+      "quote": "wp<IBinder>& touchableRegionCropHandle =",
+      "kind": "data",
+      "text": "取触摸区域裁剪句柄。"
+    },
+    {
+      "at": 100,
+      "quote": "resolvedState.state.editWindowInfo()->touchableRegionCropHandle;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 101,
+      "quote": "resolvedState.touchCropId =",
+      "kind": "call",
+      "text": "**裁剪句柄 → id**。"
+    },
+    {
+      "at": 102,
+      "quote": "LayerHandle::getLayerId(touchableRegionCropHandle.promote());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 103,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 104,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭解析循环。"
+    },
+    {
+      "at": 105,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 106,
+      "quote": "QueuedTransactionState state{transactionState.mFrameTimelineInfo,",
+      "kind": "data",
+      "text": "组装服务端队列元素。"
+    },
+    {
+      "at": 107,
+      "quote": "std::move(resolvedStates),",
+      "kind": "note",
+      "text": "续行：frame timeline 与 resolved states。"
+    },
+    {
+      "at": 108,
+      "quote": "std::move(transactionState.mDisplayStates),",
+      "kind": "note",
+      "text": "续行：display 状态。"
+    },
+    {
+      "at": 109,
+      "quote": "flags,",
+      "kind": "note",
+      "text": "续行：净化后的 flags。"
+    },
+    {
+      "at": 110,
+      "quote": "applyToken,",
+      "kind": "note",
+      "text": "续行：**applyToken（顺序域）**。"
+    },
+    {
+      "at": 111,
+      "quote": "std::move(inputWindowCommands),",
+      "kind": "note",
+      "text": "续行：input commands。"
+    },
+    {
+      "at": 112,
+      "quote": "transactionState.mDesiredPresentTime,",
+      "kind": "note",
+      "text": "续行：期望上屏时间。"
+    },
+    {
+      "at": 113,
+      "quote": "transactionState.mIsAutoTimestamp,",
+      "kind": "note",
+      "text": "续行：时间戳语义。"
+    },
+    {
+      "at": 114,
+      "quote": "std::move(uncacheBufferIds),",
+      "kind": "note",
+      "text": "续行：待回收 buffer。"
+    },
+    {
+      "at": 115,
+      "quote": "postTime,",
+      "kind": "note",
+      "text": "续行：**postTime**。"
+    },
+    {
+      "at": 116,
+      "quote": "transactionState.mCallbacks.mHasListenerCallbacks,",
+      "kind": "note",
+      "text": "续行：回调标志。"
+    },
+    {
+      "at": 117,
+      "quote": "transactionState.mCallbacks.mFlattenedListenerCallbacks,",
+      "kind": "note",
+      "text": "续行：扁平化回调。"
+    },
+    {
+      "at": 118,
+      "quote": "originPid,",
+      "kind": "note",
+      "text": "续行：来源 pid。"
+    },
+    {
+      "at": 119,
+      "quote": "originUid,",
+      "kind": "note",
+      "text": "续行：来源 uid。"
+    },
+    {
+      "at": 120,
+      "quote": "transactionState.getId(),",
+      "kind": "note",
+      "text": "续行：事务 id。"
+    },
+    {
+      "at": 121,
+      "quote": "transactionState.mMergedTransactionIds,",
+      "kind": "note",
+      "text": "续行：合并进来的事务 id 列表。"
+    },
+    {
+      "at": 122,
+      "quote": "transactionState.mEarlyWakeupInfos,",
+      "kind": "note",
+      "text": "续行：early wakeup 信息。"
+    },
+    {
+      "at": 123,
+      "quote": "std::move(transactionState.mBarriers)};",
+      "kind": "note",
+      "text": "续行：barrier 列表。"
+    },
+    {
+      "at": 124,
+      "quote": "state.workloadHint = queuedWorkload;",
+      "kind": "state",
+      "text": "带上负载提示。"
+    },
+    {
+      "at": 125,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 126,
+      "quote": "if (mTransactionTracing) {",
+      "kind": "branch",
+      "text": "开了事务 tracing。"
+    },
+    {
+      "at": 127,
+      "quote": "mTransactionTracing->addQueuedTransaction(state);",
+      "kind": "call",
+      "text": "记录「已入队」，支持事后回放。"
+    },
+    {
+      "at": 128,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 tracing。"
+    },
+    {
+      "at": 129,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 130,
+      "quote": "const auto schedule = [](uint32_t flags) {",
+      "kind": "data",
+      "text": "把 flags 折算成调度时机。"
+    },
+    {
+      "at": 131,
+      "quote": "if (flags & eEarlyWakeupEnd) return TransactionSchedule::EarlyEnd;",
+      "kind": "call",
+      "text": "EarlyEnd。"
+    },
+    {
+      "at": 132,
+      "quote": "if (flags & eEarlyWakeupStart) return TransactionSchedule::EarlyStart;",
+      "kind": "call",
+      "text": "EarlyStart。"
+    },
+    {
+      "at": 133,
+      "quote": "return TransactionSchedule::Late;",
+      "kind": "note",
+      "text": "否则 Late。"
+    },
+    {
+      "at": 134,
+      "quote": "}(state.flags);",
+      "kind": "note",
+      "text": "闭合 lambda 并立即求值。"
+    },
+    {
+      "at": 135,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 136,
+      "quote": "const auto frameHint = state.isFrameActive() ? FrameHint::kActive : FrameHint::kNone;",
+      "kind": "data",
+      "text": "是否含活跃帧，决定是否立刻排帧。"
+    },
+    {
+      "at": 137,
+      "quote": "// Copy fields of |state| needed after it is moved into queueTransaction",
+      "kind": "note",
+      "text": "注释：state 被 move 后不可再用，所以需要的字段先取。"
+    },
+    {
+      "at": 138,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始。"
+    },
+    {
+      "at": 139,
+      "quote": "// Transactions are added via a lockless queue and does not need to be added from the main",
+      "kind": "note",
+      "text": "注释：**无锁队列**，所以不需要在主线程调用。"
+    },
+    {
+      "at": 140,
+      "quote": "// thread.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 141,
+      "quote": "ftl::FakeGuard guard(kMainThreadContext);",
+      "kind": "note",
+      "text": "断言在主线程上下文（仅静态检查）。"
+    },
+    {
+      "at": 142,
+      "quote": "mTransactionHandler.queueTransaction(std::move(state));",
+      "kind": "call",
+      "text": "**入队**：binder 线程与主线程之间唯一的交接点。"
+    },
+    {
+      "at": 143,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭作用域。"
+    },
+    {
+      "at": 144,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 145,
+      "quote": "for (const auto& [displayId, data] : mNotifyExpectedPresentMap) {",
+      "kind": "note",
+      "text": "遍历显示。"
+    },
+    {
+      "at": 146,
+      "quote": "if (data.hintStatus.load() == NotifyExpectedPresentHintStatus::ScheduleOnTx) {",
+      "kind": "branch",
+      "text": "该显示在等「调度时通知」。"
+    },
+    {
+      "at": 147,
+      "quote": "scheduleNotifyExpectedPresentHint(displayId,",
+      "kind": "call",
+      "text": "按事务 vsyncId 安排通知。"
+    },
+    {
+      "at": 148,
+      "quote": "VsyncId{transactionState.mFrameTimelineInfo.vsyncId});",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 149,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 150,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 151,
+      "quote": "setTransactionFlags(eTransactionFlushNeeded, schedule, frameHint,",
+      "kind": "call",
+      "text": "**置事务标志并排帧**：让 SF 下一拍 commit 里 flush。"
+    },
+    {
+      "at": 152,
+      "quote": "std::move(transactionState.mEarlyWakeupInfos));",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 153,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 154,
+      "quote": "// If there are frame rate changes, and SF is scheduled to wake up far away in the future due",
+      "kind": "note",
+      "text": "帧率变更可能要求立刻提频。"
+    },
+    {
+      "at": 155,
+      "quote": "// to low rendering rate, we wake up SF immediately to process the frame rate change as this",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 156,
+      "quote": "// might be a request to boost.",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 157,
+      "quote": "if (hasFrameRateChanges) {",
+      "kind": "branch",
+      "text": "本事务确实改了帧率。"
+    },
+    {
+      "at": 158,
+      "quote": "const auto scheduledFrameResultOpt = mScheduler->getScheduledFrameResult();",
+      "kind": "data",
+      "text": "看 SF 下一次被调度的时间。"
+    },
+    {
+      "at": 159,
+      "quote": "if (scheduledFrameResultOpt.has_value()) {",
+      "kind": "branch",
+      "text": "有计划。"
+    },
+    {
+      "at": 160,
+      "quote": "const auto timeToWake = scheduledFrameResultOpt->callbackTime - TimePoint::now();",
+      "kind": "data",
+      "text": "算出离下次唤醒还有多久。"
+    },
+    {
+      "at": 161,
+      "quote": "if (timeToWake > 30ms) {",
+      "kind": "branch",
+      "text": "超过 30ms。"
+    },
+    {
+      "at": 162,
+      "quote": "mScheduler->scheduleImmediateFrame();",
+      "kind": "call",
+      "text": "**立刻唤醒 SF**，让帧率变更尽早生效。"
+    },
+    {
+      "at": 163,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 164,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 165,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭分支。"
+    },
+    {
+      "at": 166,
+      "quote": "return NO_ERROR;",
+      "kind": "note",
+      "text": "返回成功。**注意**：成功只代表已入队，不代表已应用。"
+    },
+    {
+      "at": 167,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "step": "s06",
+  "title": "VSyncPredictor：给出下一个 vsync",
+  "tldr": "nextAnticipatedVSyncTimeFrom 把请求点 snap 到网格后取下一拍，并把结果钉在已承诺的拍上。",
+  "why": "这是「顺延」全部机制的所在地：调用方传入 max(lastVsync, now+work+ready)，如果这个点已经越过目标拍，函数自然返回再下一拍。所以调度代码里不需要写「错过了要加一个周期」的逻辑。另一个细节是 committedVsyncOpt：它保证已经告诉过 app 的拍不会被后来的调用推翻，避免同一拍被分发出两个不同时间。",
+  "concepts": [
+    {
+      "term": "预测模型",
+      "text": "周期（slope）+ 截距，线性回归得到。"
+    },
+    {
+      "term": "snapToVsync",
+      "text": "把任意时间点吸附到网格。"
+    },
+    {
+      "term": "mLastCommittedVsync",
+      "text": "已承诺给客户端的拍。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "nsecs_t VSyncPredictor::nextAnticipatedVSyncTimeFrom(nsecs_t timePoint,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp:380",
+      "what": "入口。"
+    },
+    {
+      "call": "if (lastVsyncOpt && *lastVsyncOpt > timePoint) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp:388",
+      "what": "以更晚者为准。"
+    },
+    {
+      "call": "if (*vsyncOpt > mLastCommittedVsync) {",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp:413",
+      "what": "记录已提交的拍。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mLastCommittedVsync",
+      "before": "上一拍",
+      "after": "本拍",
+      "note": "下次调用会以它为下界。"
+    }
+  ],
+  "threads": "调用方线程，持 mMutex。",
+  "pitfalls": [
+    "以为它会返回「当前拍」：它返回「请求点之后」的拍。",
+    "忽略 committed 语义：会导致同一拍被重新计算成不同时间。"
+  ],
+  "debug": [
+    "trace 里 mLastCommittedVsync in X.XXms 打点。",
+    "对比预测与 HW_VSYNC 打点。"
+  ],
+  "next": "相位怎么变成唤醒时间？见第 7 步。"
+}

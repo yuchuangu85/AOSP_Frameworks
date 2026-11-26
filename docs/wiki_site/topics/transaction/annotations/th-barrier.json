@@ -1,0 +1,162 @@
+{
+  "id": "th-barrier",
+  "title": "TransactionHandler::isBarrierSignalledOrExpired",
+  "file": "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+  "sig": "TransactionHandler::TransactionReadiness TransactionHandler::isBarrierSignalledOrExpired(",
+  "span": [
+    92,
+    116
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "TransactionHandler::TransactionReadiness TransactionHandler::isBarrierSignalledOrExpired(",
+      "kind": "note",
+      "text": "barrier 就绪判定：三种结局——放行、等待、超时放行。"
+    },
+    {
+      "at": 2,
+      "quote": "const TransactionFlushState& flushState) {",
+      "kind": "note",
+      "text": "参数是刷写状态，含当前事务与处理时间。"
+    },
+    {
+      "at": 3,
+      "quote": "const bool isExpired =",
+      "kind": "data",
+      "text": "是否已过期。"
+    },
+    {
+      "at": 4,
+      "quote": "std::chrono::nanoseconds(flushState.queueProcessTime -",
+      "kind": "call",
+      "text": "用「处理时间 − 入队时间」与 TTL 比较。"
+    },
+    {
+      "at": 5,
+      "quote": "flushState.transaction->postTime) > mTransactionBarrierTtl;",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 6,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 7,
+      "quote": "for (const auto& barrier : flushState.transaction->transactionBarriers) {",
+      "kind": "note",
+      "text": "遍历本事务携带的 barrier。"
+    },
+    {
+      "at": 8,
+      "quote": "if (barrier.kind == android::gui::TransactionBarrier::BarrierKind::KIND_WAIT) {",
+      "kind": "branch",
+      "text": "只关心等待型（KIND_WAIT）。"
+    },
+    {
+      "at": 9,
+      "quote": "// At least one WAIT barrier has expired, apply the transaction.",
+      "kind": "note",
+      "text": "注释：有 WAIT barrier 已过期，直接应用。"
+    },
+    {
+      "at": 10,
+      "quote": "if (isExpired) {",
+      "kind": "branch",
+      "text": "确实过期了。"
+    },
+    {
+      "at": 11,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"Transaction id=%\" PRIu64",
+      "kind": "note",
+      "text": "打瞬时 trace 记录超时。"
+    },
+    {
+      "at": 12,
+      "quote": "\" was waiting on barrier %s and timed out\",",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 13,
+      "quote": "flushState.transaction->id, barrier.barrierToken.c_str());",
+      "kind": "note",
+      "text": "带事务 id 与 barrier token。"
+    },
+    {
+      "at": 14,
+      "quote": "return TransactionReadiness::Ready;",
+      "kind": "note",
+      "text": "**放行**：过期即不再阻塞。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭过期判断。"
+    },
+    {
+      "at": 16,
+      "quote": "// At least one WAIT barrier has not been signalled, keep waiting.",
+      "kind": "note",
+      "text": "注释：barrier 尚未 signal，继续等。"
+    },
+    {
+      "at": 17,
+      "quote": "if (!mSignalledTransactionBarriers.contains(barrier.barrierToken)) {",
+      "kind": "branch",
+      "text": "已 signal 的集合里没有它。"
+    },
+    {
+      "at": 18,
+      "quote": "SFTRACE_FORMAT_INSTANT(\"Transaction id=%\" PRIu64 \" is waiting on barrier %s\",",
+      "kind": "note",
+      "text": "打瞬时 trace 记录在等谁。"
+    },
+    {
+      "at": 19,
+      "quote": "flushState.transaction->id, barrier.barrierToken.c_str());",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 20,
+      "quote": "return TransactionReadiness::NotReadyBarrier;",
+      "kind": "note",
+      "text": "**NotReadyBarrier**：独立状态，与普通 NotReady 处理不同。"
+    },
+    {
+      "at": 21,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 signal 判断。"
+    },
+    {
+      "at": 22,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 kind 判断。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭 for。"
+    },
+    {
+      "at": 24,
+      "quote": "return TransactionReadiness::Ready;",
+      "kind": "note",
+      "text": "没有阻塞项 → 可以应用。"
+    },
+    {
+      "at": 25,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

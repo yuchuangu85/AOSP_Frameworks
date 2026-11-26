@@ -1,0 +1,35 @@
+{
+  "step": "s24",
+  "title": "诊断：trace、dumpsys 与开关",
+  "tldr": "用 vsyncId 把 UI 与 RT 串起来，用三个开关区分「没脏区」「没画」「跳过」，其余靠切片宽度。",
+  "why": "本页覆盖的链路时间跨度很短（通常几毫秒），但被切成了很多小段，靠猜几乎不可能定位。有效的做法是固定一条主线：先用 Choreographer 的 vsyncId 找到这一帧，再看 Record View#draw() 是否存在（区分录制是否发生），再看 DrawFrames 的同步段宽度（区分是 UI 慢还是 RT 慢），最后看有没有 flush commands（区分是否被跳过）。四个观察点串起来，就能把「这帧为什么慢/为什么没变」落到具体某一层。",
+  "concepts": [
+    { "term": "vsyncId", "text": "Choreographer 与 RT 共用的帧标识，是串起两条线程的唯一锚点。" },
+    { "term": "Record View#draw()", "text": "录制切片；没有它说明走了软件路径或提前返回。" },
+    { "term": "DrawFrames <vsyncId>", "text": "RT 侧切片；内部前段是同步、后段是回放与 swap。" },
+    { "term": "三个 hwui 开关", "text": "show_dirty_regions、skip_empty_damage、overdraw，分别用于脏区、跳过与过绘制排查。" }
+  ],
+  "walk": [
+    { "call": "public long getVsyncId()", "ref": "base/core/java/android/view/Choreographer.java:958", "what": "取当前帧的 vsyncId，与 trace 里的 DrawFrames 对齐。" },
+    { "call": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"Record View#draw()\");", "ref": "base/core/java/android/view/ThreadedRenderer.java:731", "what": "录制切片的起点。" },
+    { "call": "ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:91", "what": "RT 侧同名锚点。" },
+    { "call": "#define PROPERTY_DEBUG_SHOW_DIRTY_REGIONS \"debug.hwui.show_dirty_regions\"", "ref": "base/libs/hwui/Properties.h:103", "what": "脏区可视化开关。" },
+    { "call": "#define PROPERTY_SKIP_EMPTY_DAMAGE \"debug.hwui.skip_empty_damage\"", "ref": "base/libs/hwui/Properties.h:109", "what": "跳过空帧开关，默认 true。" }
+  ],
+  "state": [
+    { "field": "debug.hwui.show_dirty_regions", "before": "false", "after": "true（临时）", "note": "会让屏幕出现高亮块，仅调试用。" },
+    { "field": "debug.hwui.skip_empty_damage", "before": "true", "after": "false（临时）", "note": "关掉后「没内容也画」，用于区分是否只是没脏区。" }
+  ],
+  "threads": "这些开关都通过 setprop 生效，部分需要重启进程；抓取时注意别把性能数据与打开开关的状态混为一谈。",
+  "pitfalls": [
+    "只看 UI 侧 trace 就下结论：RT 的同步段可能才是瓶颈。",
+    "开着 show_dirty_regions 抓性能数据：高亮本身会显著影响耗时。",
+    "忘记 skip_empty_damage 默认是 true，误判「没画就是 bug」。"
+  ],
+  "debug": [
+    "adb shell atrace -t 5 gfx view hwui 抓一段，按 vsyncId 对齐两侧切片。",
+    "adb shell dumpsys gfxinfo <package> 看 draw/prepare/process 各阶段分布。",
+    "adb shell setprop debug.hwui.show_dirty_regions 1 观察脏区范围是否与预期一致。"
+  ],
+  "next": "回到第 1 步重新走一遍，或直接进入 render-thread-to-sf 主题，看交棒之后 RT 如何把 buffer 交到 SF。"
+}

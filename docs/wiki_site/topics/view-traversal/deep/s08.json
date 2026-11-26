@@ -1,0 +1,36 @@
+{
+  "step": "s08",
+  "title": "performLayout：布局 + 二次布局防护",
+  "tldr": "一次 layout 之后若还有悬空请求，同帧补做第二轮；第二轮期间的新请求推到下一帧。",
+  "why": "requestLayout 在 layout 期间被调用，是 Android 中最常见也最难查的性能问题之一：它既可能是良性（容器已知如何补偿，标志很快被清掉），也可能是恶性（每帧都触发二次布局，直接把一帧时间翻倍）。这段代码用一个三级策略把问题关进笼子：先检查有没有悬空请求；有则在同帧补做一次完整的 measure/layout，保证画面正确；若第二轮期间又出现请求，则通过 HandlerActionQueue 推到下一帧，彻底杜绝无限循环。理解这套策略，才能解释日志里那两条 W 级告警的真实含义。",
+  "concepts": [
+    { "term": "mInLayout", "text": "layout 窗口期标志；为真时子 View 的 requestLayout 会被记录而不是递归。" },
+    { "term": "mLayoutRequesters", "text": "layout 期间发过 requestLayout 的 View 集合。" },
+    { "term": "mHandlingLayoutInLayoutRequest", "text": "表示正在做第二轮布局；此时新请求一律外推。" },
+    { "term": "getRunQueue", "text": "HandlerActionQueue，任务在下一次 traversal 之前统一执行。" }
+  ],
+  "walk": [
+    { "call": "private void performLayout(WindowManager.LayoutParams lp, int desiredWindowWidth,", "ref": "base/core/java/android/view/ViewRootImpl.java:5538", "what": "布局入口，先把 mInLayout 置真。" },
+    { "call": "host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());", "ref": "base/core/java/android/view/ViewRootImpl.java:5554", "what": "第一次布局；结束后立刻把 mInLayout 复位。" },
+    { "call": "int numViewsRequestingLayout = mLayoutRequesters.size();", "ref": "base/core/java/android/view/ViewRootImpl.java:5557", "what": "统计 layout 期间被记下的请求者。" },
+    { "call": "mHandlingLayoutInLayoutRequest = true;", "ref": "base/core/java/android/view/ViewRootImpl.java:5569", "what": "进入第二轮，标记后续请求要外推。" },
+    { "call": "measureHierarchy(host, lp, mView.getContext().getResources(),", "ref": "base/core/java/android/view/ViewRootImpl.java:5579", "what": "第二轮测量走完整的 measureHierarchy。" },
+    { "call": "getRunQueue().post(new Runnable() {", "ref": "base/core/java/android/view/ViewRootImpl.java:5592", "what": "第二轮期间仍有请求时，推到下一帧——防死循环的最后一道闸。" }
+  ],
+  "state": [
+    { "field": "mInLayout", "before": "false", "after": "true（布局期间）→ false", "note": "第二轮开始时又会置回 true。" },
+    { "field": "mHandlingLayoutInLayoutRequest", "before": "false", "after": "第二轮期间 true → false", "note": "这个字段就是「新请求要不要外推」的开关。" }
+  ],
+  "threads": "UI 线程。二次布局意味着本帧 UI 时间接近翻倍，是掉帧的高频原因。",
+  "pitfalls": [
+    "在 onLayout 里改子 View 尺寸并 requestLayout：直接触发二次布局，日志会出现 improperly called by。",
+    "以为二次布局能无限次做：第二轮期间的新请求只会被推到下一帧。",
+    "忽略 W 级日志：它是定位「谁在 layout 里 requestLayout」的最快线索，日志里带 View 的 toString。"
+  ],
+  "debug": [
+    "grep 日志 \"requestLayout() improperly called by\"，直接拿到肇事 View。",
+    "trace 里 layout 切片异常宽、或同一帧出现两次 layout，基本就是二次布局。",
+    "在 ViewRootImpl.java:5557 下断点观察 mLayoutRequesters 的内容。"
+  ],
+  "next": "布局完成后进入绘制：performDraw 如何判断这一帧要不要画？见第 9 步。"
+}

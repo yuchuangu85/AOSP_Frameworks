@@ -1,0 +1,60 @@
+{
+  "step": "s10",
+  "title": "schedule：把时长折算成唤醒点",
+  "tldr": "目标 vsync 取「请求点之后第一拍」，唤醒 = vsync − work − ready，ready = vsync − ready。",
+  "why": "这个函数把「相位」彻底变成时间：所有提前量都在这里加到具体时刻上。两个保护值得记住：一是 wouldSkipAVsyncTarget / wouldSkipAWakeup，如果新目标比已武装目标晚太多就沿用旧的，避免为同一拍重复唤醒；二是 nextWakeupTime 取 max(now, ...)，保证不会算出过去的唤醒时间导致 timerfd 立刻触发形成忙等。",
+  "concepts": [
+    {
+      "term": "ScheduleTiming",
+      "text": "work/ready/lastVsync/committedVsync。"
+    },
+    {
+      "term": "mMinVsyncDistance",
+      "text": "判定「是否算作同一拍」的距离阈值。"
+    },
+    {
+      "term": "ArmingInfo",
+      "text": "武装结果：wakeup / vsync / ready 三元组。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "ScheduleResult VSyncDispatchTimerQueueEntry::schedule(VSyncDispatch::ScheduleTiming timing,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:90",
+      "what": "入口。"
+    },
+    {
+      "call": "tracker.nextAnticipatedVSyncTimeFrom(std::max(timing.lastVsync,",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:93",
+      "what": "**顺延机制**：请求点已过就自动下一拍。"
+    },
+    {
+      "call": "bool const wouldSkipAVsyncTarget =",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:100",
+      "what": "防重复唤醒判据一。"
+    },
+    {
+      "call": "mArmedInfo = {nextWakeupTime, nextVsyncTime, nextReadyTime};",
+      "ref": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp:114",
+      "what": "武装结果。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mArmedInfo",
+      "before": "上一拍",
+      "after": "本拍三元组",
+      "note": "已武装/未武装二态。"
+    }
+  ],
+  "threads": "调用方线程（EventThread 或 SF 主线程），持队列锁。",
+  "pitfalls": [
+    "以为唤醒时间可以是过去：会被 max(now,...) 夹住。",
+    "忽略 mMinVsyncDistance：会导致同一拍反复武装。"
+  ],
+  "debug": [
+    "trace 里 wouldSkipAVsyncTarget / wouldSkipAWakeup 瞬时打点。",
+    "dumpsys 显示 armed 信息。"
+  ],
+  "next": "定时器如何一次服务多条？见第 11 步。"
+}

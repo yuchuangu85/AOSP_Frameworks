@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>ContentProvider ANR「放炸弹 / 拆炸弹」机制源码深度解析 · ANR</title>
+<script>
+(function(){try{
+  var s=localStorage.getItem('st-theme');
+  var sys=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';
+  var f=null;try{f=new URLSearchParams(location.search).get('theme');}catch(e){}
+  document.documentElement.dataset.theme=(f==='light'||f==='dark')?f:(s||sys);
+}catch(e){document.documentElement.dataset.theme='dark';}})();
+</script>
+<style>:root {
+  --bg: #23262b;
+  --bg-2: #2a2e34;
+  --panel: #2d3138;
+  --panel-2: #363b43;
+  --line: rgba(255, 255, 255, 0.16);
+  --line-2: rgba(255, 255, 255, 0.30);
+  --tx: #f5f8fc;
+  --tx-2: #c8d1dd;
+  --tx-3: #98a5b5;
+  --wms: #ffb454;
+  --shell: #33d6c0;
+  --app: #4c8dff;
+  --sf: #c792ea;
+  --code: #dbe4ee;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --panel-solid: #2d3138;
+  --accent: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--tx);
+  font: 14px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.bg-grid {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* ---------------- header ---------------- */
+.hdr {
+  position: relative; z-index: 2;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 28px;
+  padding: 30px 40px 22px;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+.kicker { font: 11px/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--wms); }
+.hdr h1 { margin: 10px 0 6px; font-size: 30px; line-height: 1.25; letter-spacing: -0.01em; }
+.sub { margin: 0; color: var(--tx-2); font-size: 13.5px; max-width: 760px; }
+.hdr-stats { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.stat {
+  min-width: 86px; padding: 10px 14px; border: 1px solid var(--line);
+  border-radius: 10px; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+}
+.stat b { display: block; font: 600 20px/1.2 var(--mono); color: var(--tx); }
+.stat span { font-size: 11px; color: var(--tx-3); }
+
+/* ---------------- layout ---------------- */
+.app { position: relative; z-index: 1; display: grid; grid-template-columns: 296px minmax(0, 1fr); min-height: calc(100vh - 210px); }
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 18px 10px 40px 14px;
+  position: sticky; top: 0; align-self: start;
+  max-height: 100vh; overflow-y: auto;
+}
+.rail::-webkit-scrollbar, .code-wrap::-webkit-scrollbar { width: 8px; height: 8px; }
+.rail::-webkit-scrollbar-thumb, .code-wrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+.phase { margin: 16px 0 6px; font: 10.5px/1.5 var(--mono); letter-spacing: 0.04em; color: var(--tx-3); }
+.phase span { letter-spacing: 0; opacity: .7; }
+.phase:first-child { margin-top: 2px; }
+.step {
+  position: relative; display: grid; grid-template-columns: 26px 1fr; gap: 9px;
+  padding: 8px 10px 8px 8px; margin: 2px 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; transition: background 0.15s, border-color 0.15s;
+}
+.step:hover { background: rgba(255,255,255,0.035); }
+.step.is-on { background: rgba(255,255,255,0.055); border-color: var(--line-2); }
+.step .n { font: 600 11px/1.5 var(--mono); color: var(--tx-3); text-align: right; padding-top: 2px; }
+.step .t { font-size: 12.5px; line-height: 1.45; color: var(--tx-2); }
+.step.is-on .t { color: var(--tx); }
+.step .lane-dot { position: absolute; left: 0; top: 12px; width: 3px; height: 16px; border-radius: 2px; opacity: 0.85; }
+.step .p0tag { display: inline-block; margin-left: 6px; padding: 0 5px; font: 10px/16px var(--mono); border-radius: 4px;
+  color: var(--wms); border: 1px solid rgba(255,180,84,0.35); background: rgba(255,180,84,0.08); }
+
+/* ---------------- stage ---------------- */
+.stage { padding: 18px 34px 60px 26px; min-width: 0; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; flex-wrap: wrap; }
+.tab {
+  appearance: none; border: 0; background: transparent; color: var(--tx-3);
+  font: 500 13px/1 inherit; padding: 12px 14px; cursor: pointer; position: relative;
+}
+.tab:hover { color: var(--tx-2); }
+.tab.is-on { color: var(--tx); }
+.tab.is-on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--wms); border-radius: 2px; }
+.view { display: none; }
+.view.is-on { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+.panel { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); margin-bottom: 16px; overflow: hidden; }
+.panel-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.panel-hd h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
+.hint { font-size: 11.5px; color: var(--tx-3); }
+.grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+.diagram-wrap { padding: 12px 16px 18px; overflow: auto; }
+
+/* 图缩放/拖拽容器：盖住原有 padding，控件浮在右上角 */
+.zoom-wrap { position: relative; overflow: hidden; padding: 0; touch-action: none; height: 62vh; min-height: 360px; }
+.zoom-wrap > svg {
+  display: block; position: absolute; left: 0; top: 0;
+  max-width: none; user-select: none;
+  /* 放大是改布局尺寸，文字与描边会重新栅格化，因此放大后依然锐利 */
+}
+.zoom-wrap.is-dragging { cursor: grabbing; }
+.zoom-wrap.grab { cursor: grab; }
+.zoom-ui {
+  position: absolute; top: 8px; right: 10px; display: flex; align-items: center; gap: 4px;
+  padding: 4px; border-radius: 9px; z-index: 3;
+  border: 1px solid var(--line); background: var(--panel-solid, rgba(12,16,22,0.82));
+  backdrop-filter: blur(6px);
+}
+.zoom-ui button {
+  min-width: 26px; height: 24px; padding: 0 7px; cursor: pointer;
+  font: 12px/1 var(--mono); color: var(--tx-2);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.zoom-ui button:hover { color: var(--tx); border-color: var(--accent, #4c8dff); }
+.zoom-ui .zoom-val { min-width: 46px; text-align: center; font: 11.5px/1 var(--mono); color: var(--tx-3); }
+.zoom-hint { position: absolute; left: 12px; bottom: 8px; z-index: 3; font: 10.5px/1.4 var(--mono); color: var(--tx-3); opacity: 0.75; pointer-events: none; }
+.zoom-wrap.is-zoomed .zoom-hint { opacity: 0; }
+
+.diagram { width: 100%; height: auto; display: block; }
+
+/* svg text */
+.grp { fill: rgba(255,255,255,0.012); stroke-dasharray: 4 5; stroke-opacity: 0.45; }
+.grp-label { font: 11px/1 var(--mono); letter-spacing: 0.1em; opacity: 0.85; }
+.box rect { fill: rgba(255,255,255,0.04); stroke: rgba(255,255,255,0.14); }
+.bx { fill: var(--tx); font-size: 12.5px; font-weight: 600; }
+.bs { fill: var(--tx-3); font-size: 10.5px; }
+.edge { fill: none; stroke-width: 1.4; opacity: 0.95; }
+.el { fill: var(--tx-2); font-size: 10px; }
+.halo { paint-order: stroke; stroke: #26292e; stroke-width: 4px; stroke-linejoin: round; }
+.band { fill: rgba(255,255,255,0.014); }
+.lane-hd { fill: rgba(255,255,255,0.035); }
+.lane-t { font: 600 12px/1 -apple-system, sans-serif; }
+.lane-vl { stroke-width: 1.1; stroke-dasharray: 3 6; opacity: 0.5; }
+.msg { cursor: pointer; }
+.msg line, .msg path { stroke-width: 1.4; }
+.msg:hover line, .msg:hover path { stroke-width: 2.2; }
+.ml { fill: var(--tx-2); font-size: 11px; }
+.msg.is-on .ml { fill: var(--tx); font-weight: 600; }
+.mn { fill: var(--tx-3); font: 10px/1 var(--mono); }
+.tier { fill: var(--tx-3); font: 11px/1 var(--mono); letter-spacing: 0.1em; }
+.cls rect { fill: rgba(255,255,255,0.035); }
+.cn { font-size: 13px; font-weight: 600; }
+.cs { fill: var(--tx-3); font-size: 10.5px; }
+.cm { fill: var(--tx-2); font: 11px/1.4 var(--mono); }
+.rel { fill: none; stroke: rgba(255,255,255,0.28); stroke-width: 1.2; }
+.rl { fill: var(--tx-3); font-size: 9.5px; }
+.fproc { fill: rgba(255,255,255,0.045); stroke: rgba(255,255,255,0.14); }
+.fterm { fill: rgba(255,180,84,0.10); stroke: rgba(255,180,84,0.45); }
+.fd { fill: rgba(51,214,192,0.07); stroke: rgba(51,214,192,0.45); }
+.fn { fill: var(--tx); font-size: 12px; }
+.fedge { fill: none; stroke: rgba(255,255,255,0.34); stroke-width: 1.4; }
+.fl { fill: var(--tx-3); font-size: 10.5px; }
+
+/* ---------------- step card ---------------- */
+.step-card { display: none; border: 1px solid var(--line-2); border-left: 3px solid var(--wms); border-radius: 12px; padding: 14px 18px; margin-bottom: 16px; background: linear-gradient(90deg, rgba(255,180,84,0.06), transparent 60%); }
+.step-card.is-on { display: block; }
+.step-card .sc-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.step-card .sc-n { font: 600 11px/1 var(--mono); color: var(--wms); }
+.step-card h3 { margin: 0; font-size: 15px; }
+.step-card p { margin: 6px 0 10px; color: var(--tx-2); font-size: 13px; }
+.refs { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref { font: 11px/1.6 var(--mono); color: var(--tx-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; background: rgba(255,255,255,0.03); }
+.ref b { color: var(--shell); font-weight: 600; }
+
+/* ---------------- p0 list ---------------- */
+.p0-list { padding: 6px 0 10px; }
+.p0-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 9px 18px; border-bottom: 1px dashed rgba(255,255,255,0.06); cursor: pointer; }
+.p0-item:last-child { border-bottom: 0; }
+.p0-item:hover { background: rgba(255,255,255,0.03); }
+.p0-item .nm { font: 12.5px/1.4 var(--mono); color: var(--tx); }
+.p0-item .wh { font-size: 11.5px; color: var(--tx-3); margin-top: 3px; }
+.cov { font: 11px/1 var(--mono); color: var(--shell); white-space: nowrap; padding-top: 4px; }
+.cov.low { color: #ff9f43; }
+
+/* ---------------- code ---------------- */
+.code-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font: 11.5px/1 var(--mono); padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); color: var(--tx-2); background: rgba(255,255,255,0.02); cursor: pointer; }
+.chip:hover { border-color: var(--line-2); color: var(--tx); }
+.chip.is-on { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.code-tools { display: flex; align-items: center; gap: 10px; }
+.code-tools input[type="search"] { width: 210px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line); background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+.code-tools input[type="search"]:focus { border-color: var(--shell); }
+.sw { font-size: 11.5px; color: var(--tx-3); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.step-hint { display: none; margin-bottom: 10px; font-size: 12px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 10px; }
+.step-hint.is-on { display: block; }
+.code-wrap { border: 1px solid var(--line); border-radius: 12px; overflow: auto; max-height: calc(100vh - 260px); background: #191c21; }
+.code { min-width: 900px; font: 12px/1.85 var(--mono); }
+.crow { display: grid; grid-template-columns: 58px minmax(0, 1fr) 360px; align-items: start; border-bottom: 1px solid rgba(255,255,255,0.024); }
+.crow:hover { background: rgba(255,255,255,0.035); }
+.crow.has-note { background: rgba(255,255,255,0.017); }
+.crow.is-focus { background: rgba(255,180,84,0.09); }
+.crow .ln { color: #4b5869; text-align: right; padding: 0 10px 0 0; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); }
+.crow .lc { padding: 0 14px; white-space: pre; overflow-x: auto; color: var(--code); }
+.crow .la { padding: 1px 12px 3px 12px; font: 11.5px/1.6 -apple-system, "PingFang SC", sans-serif; color: var(--tx-2); border-left: 1px solid rgba(255,255,255,0.05); }
+.crow .la .k { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.crow.hidden { display: none; }
+.code-empty { padding: 40px; text-align: center; color: var(--tx-3); }
+
+/* ---------------- risk ---------------- */
+.risk-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.risk-table th, .risk-table td { text-align: left; padding: 11px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.risk-table th { font: 11px/1 var(--mono); letter-spacing: 0.08em; color: var(--tx-3); text-transform: uppercase; }
+.risk-table td:first-child { color: var(--tx); width: 30%; }
+.risk-table td:nth-child(2) { color: var(--tx-2); }
+.risk-table code { color: var(--sf); font-size: 11.5px; }
+
+.facts { margin: 0; padding: 14px 18px 14px 36px; color: var(--tx-2); font-size: 12.5px; }
+.facts li { margin: 8px 0; }
+.facts b { color: var(--tx); }
+
+/* ---------------- footer ---------------- */
+.ftr { position: relative; z-index: 1; border-top: 1px solid var(--line); padding: 14px 40px 26px; color: var(--tx-3); font-size: 11.5px; display: flex; gap: 8px; flex-wrap: wrap; }
+.ftr code { color: var(--tx-2); }
+.dot { opacity: 0.5; }
+
+@media (max-width: 1180px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { position: relative; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+  .grid-2 { grid-template-columns: 1fr; }
+  .crow { grid-template-columns: 46px minmax(0, 1fr) 240px; }
+  .hdr { flex-direction: column; align-items: flex-start; }
+}
+
+/* code tokens */
+.crow .lc .k { color: #ff9e64; }
+.crow .lc .s { color: #9ece6a; }
+.crow .lc .c1 { color: #5f6b7a; font-style: italic; }
+.crow .lc .n { color: #7dcfff; }
+.crow .lc .a { color: #bb9af7; }
+
+
+.msg.is-on .band { fill: rgba(255,180,84,0.06); }
+.line-hd { fill: none; }
+
+/* ---------------- inventory ---------------- */
+.inv-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.inv-bar select, .inv-bar input[type="search"] {
+  padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none;
+}
+.inv-bar input[type="search"] { width: 220px; }
+.inv-bar select:focus, .inv-bar input:focus { border-color: var(--shell); }
+.inv-wrap { max-height: calc(100vh - 300px); overflow: auto; }
+.inv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.inv-table th { position: sticky; top: 0; background: #0a0e15; text-align: left; padding: 9px 14px;
+  font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; color: var(--tx-3); border-bottom: 1px solid var(--line); }
+.inv-table td { padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+.inv-table tr.row:hover { background: rgba(255,255,255,0.035); cursor: pointer; }
+.inv-table .fn { font: 12px/1.5 var(--mono); color: var(--tx); }
+.inv-table .fl { color: var(--tx-3); font: 10.5px/1.5 var(--mono); }
+.inv-table .rg { font: 11px/1.5 var(--mono); color: var(--tx-2); white-space: nowrap; }
+.inv-table .act-hd { width: 82px; }
+.inv-table td.act { text-align: right; }
+.inv-table button.go-code, .inv-table button.go-card {
+  appearance: none; cursor: pointer; white-space: nowrap;
+  font: 11px/1 var(--mono); padding: 5px 9px; border-radius: 6px;
+  border: 1px solid rgba(255,180,84,0.45); background: rgba(255,180,84,0.10); color: var(--wms);
+}
+.inv-table button.go-code:hover { background: rgba(255,180,84,0.20); }
+.inv-table button.go-card {
+  border-color: var(--line-2); background: rgba(255,255,255,0.03); color: var(--tx-2);
+}
+.inv-table button.go-card:hover { color: var(--tx); border-color: var(--wms); }
+.badge { display: inline-block; padding: 1px 7px; border-radius: 5px; font: 10.5px/1.6 var(--mono); border: 1px solid; }
+.badge.covered { color: #26292e; background: var(--wms); border-color: var(--wms); font-weight: 600; }
+.badge.partial { color: var(--wms); border-color: rgba(255,180,84,0.4); background: rgba(255,180,84,0.08); }
+.badge.uncovered { color: var(--tx-3); border-color: var(--line); }
+.card-row td { background: rgba(255,255,255,0.02); }
+.card-box { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px 18px; font-size: 12px; color: var(--tx-2); }
+.card-box .k { color: var(--tx-3); font: 10px/1.4 var(--mono); letter-spacing: 0.08em; display: block; }
+.card-box .wide { grid-column: 1 / -1; }
+.card-box b { color: var(--tx); font-weight: 600; }
+@media (max-width: 1180px) { .card-box { grid-template-columns: 1fr 1fr; } }
+
+#diagram-seq { max-height: 78vh; overflow: auto; }
+
+/* ---------------- deep read ---------------- */
+.scenario { display: flex; gap: 0; align-items: stretch; overflow-x: auto; border: 1px solid var(--line);
+  border-radius: 12px; margin-bottom: 14px; background: linear-gradient(90deg, rgba(255,180,84,0.05), transparent 55%); }
+.scenario .ev { min-width: 150px; padding: 10px 14px; border-right: 1px dashed rgba(255,255,255,0.06); }
+.scenario .ev:last-child { border-right: 0; }
+.scenario .t { font: 11px/1.4 var(--mono); color: var(--wms); }
+.scenario .l { font-size: 12px; color: var(--tx); margin-top: 3px; }
+.scenario .d { font-size: 10.5px; color: var(--tx-3); margin-top: 2px; line-height: 1.45; }
+
+.deep-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.navbtn { appearance: none; border: 1px solid var(--line); background: rgba(255,255,255,0.03); color: var(--tx-2);
+  border-radius: 7px; padding: 7px 12px; font: 12px/1 var(--mono); cursor: pointer; }
+.navbtn:hover { border-color: var(--line-2); color: var(--tx); }
+.deep-progress { font: 11.5px/1 var(--mono); color: var(--tx-3); flex: 1; text-align: center; }
+
+.deep-wrap { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 18px; align-items: start; }
+.deep-body { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 26px 30px 34px; }
+.deep-body .kicker { font: 11px/1.4 var(--mono); letter-spacing: 0.1em; color: var(--wms); }
+.deep-body h1 { margin: 8px 0 6px; font-size: 25px; letter-spacing: -0.01em; }
+.deep-body .tldr { margin: 0 0 22px; font-size: 15px; line-height: 1.75; color: var(--tx); border-left: 2px solid var(--wms); padding-left: 14px; }
+.deep-body h2 { margin: 26px 0 10px; font-size: 13px; letter-spacing: 0.06em; color: var(--tx-3); font-weight: 600;
+  text-transform: uppercase; font-family: var(--mono); }
+.deep-body p { margin: 8px 0; color: var(--tx-2); line-height: 1.85; }
+.deep-body .why { font-size: 14px; color: var(--tx); line-height: 1.85; }
+.deep-body ol.walk { margin: 6px 0 0; padding-left: 0; list-style: none; counter-reset: w; }
+.deep-body ol.walk li { position: relative; padding: 10px 0 12px 38px; border-bottom: 1px dashed rgba(255,255,255,0.06); counter-increment: w; }
+.deep-body ol.walk li::before { content: counter(w); position: absolute; left: 0; top: 10px; width: 22px; height: 22px;
+  border-radius: 50%; border: 1px solid var(--line-2); color: var(--wms); font: 11px/22px var(--mono); text-align: center; }
+.deep-body ol.walk .call { font: 12.5px/1.6 var(--mono); color: var(--tx); }
+.deep-body ol.walk .ref { display: inline-block; margin-left: 8px; font: 10.5px/1.6 var(--mono); color: var(--shell);
+  border: 1px solid rgba(51,214,192,0.25); background: rgba(51,214,192,0.06); border-radius: 5px; padding: 0 6px; }
+.deep-body ol.walk .what { margin-top: 4px; font-size: 13px; color: var(--tx-2); }
+.deep-body table.state { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+.deep-body table.state th, .deep-body table.state td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+.deep-body table.state th { font: 10.5px/1.4 var(--mono); color: var(--tx-3); letter-spacing: 0.06em; }
+.deep-body table.state code { color: var(--tx); font: 11.5px/1.5 var(--mono); }
+.deep-body .threads { font-size: 13px; color: var(--tx-2); border-left: 2px solid var(--shell); padding-left: 12px; }
+.deep-body ul.plain { margin: 6px 0; padding-left: 18px; color: var(--tx-2); font-size: 13px; }
+.deep-body ul.plain li { margin: 6px 0; line-height: 1.7; }
+.deep-body .next { margin-top: 26px; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(255,180,84,0.25);
+  background: rgba(255,180,84,0.06); color: var(--tx); font-size: 13px; }
+.deep-body .concept { display: inline-block; margin: 4px 8px 0 0; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.03); font-size: 12px; color: var(--tx-2); }
+.deep-body .concept b { color: var(--tx); font-weight: 600; }
+.deep-body .missing { color: var(--tx-3); font-size: 13px; }
+.deep-body abbr.term { text-decoration: none; border-bottom: 1px dotted var(--shell); cursor: help; }
+.deep-side { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 14px; position: sticky; top: 10px; }
+.deep-side .side-hd { font-size: 12px; color: var(--tx); margin-bottom: 8px; }
+.deep-side dl { margin: 0; }
+.deep-side dt { font: 11.5px/1.6 var(--mono); color: var(--shell); margin-top: 8px; }
+.deep-side dd { margin: 2px 0 0; font-size: 11.5px; color: var(--tx-3); line-height: 1.6; }
+.branch-tbl { margin-top: 8px; font-size: 12.5px; }
+.branch-tbl .row { display: grid; grid-template-columns: 1.1fr 1.2fr 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); }
+.branch-tbl .row.head { color: var(--tx-3); font: 10.5px/1.4 var(--mono); letter-spacing: 0.06em; }
+.branch-tbl .cond { color: var(--tx); font: 11.5px/1.6 var(--mono); }
+.branch-tbl .then { color: var(--tx-2); }
+.branch-tbl .eff { color: var(--tx-3); }
+@media (max-width: 1180px) { .deep-wrap { grid-template-columns: 1fr; } .deep-side { position: relative; } }
+
+/* learning path */
+.lp { padding: 8px 18px 14px; }
+.lp-row { display: grid; grid-template-columns: 80px 1fr 1.4fr; gap: 12px; padding: 9px 0; border-bottom: 1px dashed rgba(255,255,255,0.06); font-size: 12.5px; }
+.lp-row:last-child { border-bottom: 0; }
+.lp-t { font: 11px/1.6 var(--mono); color: var(--wms); }
+.lp-g { color: var(--tx); }
+.lp-r { color: var(--tx-3); }
+
+
+/* ============================ light theme ============================ */
+[data-theme="light"] {
+  --bg: #f3efe5;
+  --bg-2: #e9e2d4;
+  --panel: #fcf9f1;
+  --panel-2: #f4ede0;
+  --line: rgba(62, 50, 34, 0.15);
+  --line-2: rgba(62, 50, 34, 0.28);
+  --tx: #2b2620;
+  --tx-2: #564f42;
+  --tx-3: #7d7362;
+  --wms: #9a5900;
+  --shell: #0a7365;
+  --app: #24589f;
+  --sf: #61419c;
+  --code: #2f2a22;
+  --panel-solid: rgba(251, 247, 238, 0.92);
+  --accent: #24589f;
+}
+[data-theme="light"] body {
+  background: radial-gradient(1100px 520px at 16% -12%, rgba(176, 116, 30, 0.075), transparent 62%),
+              radial-gradient(900px 460px at 92% 0%, rgba(10, 115, 101, 0.05), transparent 58%),
+              var(--bg);
+}
+[data-theme="light"] .bg-grid {
+  background-image: linear-gradient(rgba(62, 50, 34, 0.055) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(62, 50, 34, 0.055) 1px, transparent 1px);
+}
+[data-theme="light"] .hdr { background: rgba(243, 239, 229, 0.78); }
+[data-theme="light"] .stat {
+  background: linear-gradient(180deg, #fdfaf3, #f1eada);
+  box-shadow: 0 1px 0 rgba(62, 50, 34, 0.06);
+}
+[data-theme="light"] .step:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .step.is-on { background: #fdfaf3; border-color: var(--line-2); box-shadow: 0 1px 3px rgba(62, 50, 34, 0.10); }
+[data-theme="light"] .step .n { color: var(--tx-3); }
+[data-theme="light"] .step .t { color: var(--tx-2); }
+[data-theme="light"] .chip { background: #fdfaf3; }
+[data-theme="light"] .chip.is-on { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .navbtn { background: #fdfaf3; }
+[data-theme="light"] .code-tools input[type="search"],
+[data-theme="light"] .inv-bar select,
+[data-theme="light"] .inv-bar input[type="search"] { background: #fdfaf3; }
+[data-theme="light"] .code-wrap { background: #faf6eb; }
+[data-theme="light"] .crow:hover { background: rgba(62, 50, 34, 0.05); }
+[data-theme="light"] .crow.has-note { background: rgba(62, 50, 34, 0.026); }
+[data-theme="light"] .crow.is-focus { background: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .crow .ln { color: #a9a08c; border-right-color: var(--line); }
+[data-theme="light"] .crow .la { border-left-color: var(--line); color: var(--tx-2); }
+[data-theme="light"] .crow .lc .k { color: #9a3f00; }
+[data-theme="light"] .crow .lc .s { color: #2c6f2c; }
+[data-theme="light"] .crow .lc .c1 { color: #948b78; }
+[data-theme="light"] .crow .lc .n { color: #0a6c9e; }
+[data-theme="light"] .crow .lc .a { color: #7133a8; }
+[data-theme="light"] .inv-table th { background: #efe8d8; }
+[data-theme="light"] .inv-table tr.row:hover { background: rgba(62, 50, 34, 0.045); }
+[data-theme="light"] .card-row td { background: #f9f4e8; }
+[data-theme="light"] .badge.covered { color: #ffffff; background: var(--wms); border-color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code { background: rgba(154,89,0,0.10); border-color: rgba(154,89,0,0.42); color: var(--wms); }
+[data-theme="light"] .inv-table button.go-code:hover { background: rgba(154,89,0,0.18); }
+[data-theme="light"] .inv-table button.go-card { background: rgba(14,24,38,0.04); border-color: var(--line-2); }
+[data-theme="light"] .badge.partial { color: #8a5200; background: rgba(154, 89, 0, 0.10); }
+[data-theme="light"] .scenario { background: linear-gradient(90deg, rgba(176, 116, 30, 0.06), transparent 55%); }
+[data-theme="light"] .scenario .ev { border-right-color: var(--line); }
+[data-theme="light"] .deep-body .concept { background: #f7f1e4; }
+[data-theme="light"] .ref { background: #f7f1e4; }
+[data-theme="light"] .deep-body .next { background: rgba(196, 124, 22, 0.08); }
+[data-theme="light"] .theme-toggle { background: #fdfaf3; }
+[data-theme="light"] .theme-toggle .ico-moon { display: none; }
+[data-theme="light"] .theme-toggle .ico-sun { display: block; }
+
+/* SVG 在亮色下的适配 */
+[data-theme="light"] .halo { stroke: #f3efe5; }
+[data-theme="light"] .band { fill: rgba(14, 24, 38, 0.022); }
+[data-theme="light"] .msg.is-on .band { fill: rgba(196, 124, 22, 0.09); }
+[data-theme="light"] .grp { fill: rgba(253, 249, 241, 0.65); stroke-opacity: 0.7; }
+[data-theme="light"] .box rect { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .bx { fill: var(--tx); }
+[data-theme="light"] .bs { fill: var(--tx-3); }
+[data-theme="light"] .lane-hd { fill: #fdfaf3; }
+[data-theme="light"] .lane-vl { opacity: 0.28; }
+[data-theme="light"] .cls rect { fill: #fdfaf3; }
+[data-theme="light"] .cm { fill: var(--tx-2); }
+[data-theme="light"] .rel { stroke: rgba(14, 24, 38, 0.22); }
+[data-theme="light"] .fproc { fill: #fdfaf3; stroke: rgba(62, 50, 34, 0.18); }
+[data-theme="light"] .fterm { fill: rgba(196, 124, 22, 0.10); }
+[data-theme="light"] .fd { fill: rgba(10, 115, 101, 0.07); }
+[data-theme="light"] .fedge { stroke: rgba(14, 24, 38, 0.30); }
+[data-theme="light"] .edge.edge-binder, [data-theme="light"] .msg.msg-binder line,
+[data-theme="light"] .msg.msg-binder path { stroke: #a86400; }
+[data-theme="light"] .edge.edge-oneway, [data-theme="light"] .msg.msg-oneway line,
+[data-theme="light"] .msg.msg-oneway path { stroke: #6f44a8; }
+[data-theme="light"] .edge.edge-callback, [data-theme="light"] .msg.msg-callback line,
+[data-theme="light"] .msg.msg-callback path { stroke: #0a7365; }
+[data-theme="light"] .edge.edge-call, [data-theme="light"] .msg.msg-call line,
+[data-theme="light"] .msg.msg-call path { stroke: #5f6b7a; }
+[data-theme="light"] .msg.msg-state line, [data-theme="light"] .msg.msg-state path { stroke: #8a5200; }
+[data-theme="light"] .ml { fill: var(--tx-2); }
+[data-theme="light"] .el { fill: var(--tx-2); }
+[data-theme="light"] .fn { fill: var(--tx); }
+
+/* 语义色在亮色下加深（只作用于文字，避免染到容器矩形） */
+[data-theme="light"] .grp-label.grp-wms, [data-theme="light"] .lane-t.lane-WMS,
+[data-theme="light"] .cn.side-WMS { fill: #8a5200; }
+[data-theme="light"] .grp-label.grp-app, [data-theme="light"] .lane-t.lane-APP,
+[data-theme="light"] .cn.side-APP { fill: #24589f; }
+[data-theme="light"] .grp-label.grp-shell, [data-theme="light"] .lane-t.lane-SHELL,
+[data-theme="light"] .cn.side-SHELL { fill: #0a7365; }
+[data-theme="light"] .grp-label.grp-sf, [data-theme="light"] .lane-t.lane-SF,
+[data-theme="light"] .cn.side-SF { fill: #61419c; }
+[data-theme="light"] .cn.side-AIDL { fill: #4c5766; }
+[data-theme="light"] .grp.grp-wms, [data-theme="light"] .lane-hd.lane-WMS { stroke: #9a5900; }
+[data-theme="light"] .grp.grp-app, [data-theme="light"] .lane-hd.lane-APP { stroke: #24589f; }
+[data-theme="light"] .grp.grp-shell, [data-theme="light"] .lane-hd.lane-SHELL { stroke: #0a7365; }
+[data-theme="light"] .grp.grp-sf, [data-theme="light"] .lane-hd.lane-SF { stroke: #61419c; }
+[data-theme="light"] .cls.side-WMS rect { stroke: #9a5900; }
+[data-theme="light"] .cls.side-SHELL rect { stroke: #0a7365; }
+[data-theme="light"] .cls.side-AIDL rect { stroke: #7b8798; }
+[data-theme="light"] .cls.side-APP rect { stroke: #24589f; }
+[data-theme="light"] .cls.side-SF rect { stroke: #61419c; }
+
+/* header 上的主题按钮 */
+.hdr-right { display: flex; align-items: flex-end; gap: 14px; }
+.theme-toggle {
+  white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--tx-2);
+  background: rgba(255, 255, 255, 0.04); cursor: pointer; font: 12px/1 inherit;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.theme-toggle:hover { border-color: var(--line-2); color: var(--tx); }
+.theme-toggle svg { width: 15px; height: 15px; }
+.theme-toggle .ico-moon { display: block; }
+.theme-toggle .ico-sun { display: none; }
+.theme-toggle svg path, .theme-toggle svg circle { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.theme-toggle .ico-moon path { fill: currentColor; stroke: none; }
+@media (max-width: 1180px) { .hdr-right { width: 100%; justify-content: space-between; } }
+
+/* ---------------- file tree ---------------- */
+.files-bar { display: flex; gap: 10px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.files-bar input[type="search"] { width: 260px; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--line);
+  background: rgba(0,0,0,0.35); color: var(--tx); font: 12px/1 var(--mono); outline: none; }
+[data-theme="light"] .files-bar input[type="search"] { background: #fdfaf3; }
+.files-wrap { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: 0; }
+.tree { padding: 10px 8px 18px 14px; font: 12px/1.9 var(--mono); max-height: calc(100vh - 300px); overflow: auto; }
+.tnode { white-space: nowrap; }
+.tnode .row { display: flex; align-items: center; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; }
+.tnode .row:hover { background: rgba(255,255,255,0.05); }
+[data-theme="light"] .tnode .row:hover { background: rgba(14,24,38,0.05); }
+.tnode .caret { width: 12px; color: var(--tx-3); flex: none; }
+.tnode .ico { width: 14px; height: 14px; flex: none; opacity: .85; }
+.tnode .nm { color: var(--tx); }
+.tnode.dir > .row .nm { color: var(--tx-2); }
+.tnode .meta { color: var(--tx-3); font-size: 10.5px; }
+.tnode .badge-mini { font: 10px/1.6 var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--tx-3); }
+.tnode .badge-mini.hit { color: var(--wms); border-color: rgba(255,180,84,0.35); }
+.tnode .badge-mini.p0 { color: var(--shell); border-color: rgba(51,214,192,0.35); }
+.tnode .children { margin-left: 16px; border-left: 1px dashed rgba(255,255,255,0.10); padding-left: 8px; }
+[data-theme="light"] .tnode .children { border-left-color: rgba(14,24,38,0.12); }
+.tnode.collapsed > .children { display: none; }
+.tnode.sel > .row { background: rgba(255,180,84,0.12); }
+[data-theme="light"] .tnode.sel > .row { background: rgba(196,124,22,0.12); }
+.tnode.hidden { display: none; }
+.file-detail { border-left: 1px solid var(--line); padding: 14px 18px; max-height: calc(100vh - 300px); overflow: auto; font-size: 12.5px; }
+.file-detail h3 { margin: 0 0 4px; font-size: 13.5px; font-family: var(--mono); word-break: break-all; }
+.file-detail .fp { color: var(--tx-3); font: 10.5px/1.6 var(--mono); word-break: break-all; margin-bottom: 10px; }
+.file-detail dt { color: var(--tx-3); font: 10px/1.6 var(--mono); letter-spacing: .08em; margin-top: 12px; }
+.file-detail dd { margin: 2px 0 0; color: var(--tx-2); }
+.file-detail .chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.file-detail .stepchip { font: 11px/1.6 var(--mono); padding: 1px 8px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: rgba(255,255,255,0.035); color: var(--tx-2); cursor: pointer; }
+[data-theme="light"] .file-detail .stepchip { background: #fdfaf3; }
+.file-detail .stepchip:hover { border-color: var(--wms); color: var(--wms); }
+.file-detail .meth { font: 11.5px/1.7 var(--mono); color: var(--tx-2); }
+.file-detail .meth b { color: var(--tx); font-weight: 500; }
+@media (max-width: 1180px) { .files-wrap { grid-template-columns: 1fr; } .file-detail { border-left: 0; border-top: 1px solid var(--line); } }
+
+/* ---------------- detailed diagrams ---------------- */
+.rowband { fill: rgba(255,255,255,0.035); }
+[data-theme="light"] .rowband { fill: rgba(14,24,38,0.028); }
+.rn { font: 600 12px/1 var(--mono); fill: var(--tx); letter-spacing: .04em; }
+.rnote { font-size: 10.5px; fill: var(--tx-3); }
+.colhd { fill: rgba(255,255,255,0.055); }
+[data-theme="light"] .colhd { fill: #fdfaf3; }
+.colt { font: 600 11.5px/1.2 -apple-system, sans-serif; }
+.colseam { stroke: rgba(255,255,255,0.12); stroke-dasharray: 3 7; }
+[data-theme="light"] .colseam { stroke: rgba(14,24,38,0.10); }
+.anode rect { fill: rgba(255,255,255,0.07); }
+[data-theme="light"] .anode rect { fill: #fdfaf3; }
+.anl { font-size: 11.5px; fill: var(--tx); font-family: var(--mono); }
+.ans { font-size: 10px; fill: var(--tx-3); }
+.ant { font: 9.5px/1 var(--mono); fill: var(--tx-3); text-anchor: end; }
+.anb { font: 9.5px/1 var(--mono); fill: var(--wms); }
+.aedge { fill: none; stroke-width: 1.4; opacity: 1; }
+.ael { font-size: 10px; fill: var(--tx-2); }
+.aed { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.lg { font: 9.5px/1 var(--mono); fill: var(--tx-3); }
+.phasebar { fill: rgba(255,255,255,0.05); }
+[data-theme="light"] .phasebar { fill: rgba(62, 50, 34, 0.06); }
+.phasebar-t { font: 600 10.5px/1 var(--mono); fill: var(--tx-2); letter-spacing: .04em; }
+.md { font-size: 9.5px; fill: var(--tx-3); font-family: var(--mono); }
+.blockmark { fill: rgba(255,107,107,0.10); stroke: rgba(255,107,107,0.45); }
+.blockmark-t { font-size: 9.5px; fill: #ff8b8b; text-anchor: middle; }
+[data-theme="light"] .blockmark { fill: rgba(200,40,40,0.07); }
+[data-theme="light"] .blockmark-t { fill: #b03030; }
+.region { fill: rgba(255,255,255,0.012); stroke: rgba(255,255,255,0.10); stroke-dasharray: 5 6; }
+[data-theme="light"] .region { fill: rgba(253, 249, 241, 0.65); stroke: rgba(62, 50, 34, 0.18); }
+.region-t { font: 600 11.5px/1 var(--mono); fill: var(--tx-3); letter-spacing: .04em; }
+.fnote { font-size: 9.5px; fill: var(--tx-3); }
+
+
+/* ---------- ANR 文档：沿用 wiki 的 hdr/rail/stage/panel，只补正文排版 ---------- */
+.anr-toc { padding: 4px 0 40px; }
+.anr-toc a { display: block; padding: 5px 10px 5px 12px; border-left: 2px solid transparent;
+  color: var(--tx-2); font-size: 12.5px; line-height: 1.55; text-decoration: none;
+  overflow-wrap: anywhere; word-break: break-word; }
+.anr-toc a:hover { color: var(--tx); background: rgba(255,255,255,.04); }
+[data-theme="light"] .anr-toc a:hover { background: rgba(62,50,34,.05); }
+.anr-toc a.lv3 { padding-left: 24px; font-size: 12px; color: var(--tx-3); }
+.anr-toc a.active { border-left-color: var(--wms); color: var(--tx); background: rgba(255,180,84,.08); }
+.anr-doc { padding: 24px 30px 30px; }
+.anr-doc > h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.anr-doc h2 { margin: 30px 0 10px; padding-top: 20px; border-top: 1px solid var(--line);
+  font-size: 20px; letter-spacing: 0; color: var(--tx); text-transform: none; }
+.anr-doc h3 { margin: 22px 0 8px; font-size: 15.5px; color: var(--tx); letter-spacing: 0; text-transform: none; }
+.anr-doc h4 { margin: 16px 0 6px; font-size: 13.5px; color: var(--tx-2); }
+.anr-doc p { margin: 9px 0; color: var(--tx-2); line-height: 1.85; }
+.anr-doc strong { color: var(--tx); }
+.anr-doc ul, .anr-doc ol { margin: 8px 0; padding-left: 22px; color: var(--tx-2); }
+.anr-doc li { margin: 4px 0; line-height: 1.75; }
+.anr-doc blockquote { margin: 14px 0; padding: 10px 16px; border-left: 3px solid var(--wms);
+  background: rgba(255,180,84,.07); border-radius: 0 8px 8px 0; color: var(--tx-2); }
+[data-theme="light"] .anr-doc blockquote { background: rgba(138,82,0,.07); }
+.anr-doc code { font: 12.5px/1.6 var(--mono); background: #191c21; padding: 1px 5px; border-radius: 4px; color: var(--tx); }
+[data-theme="light"] .anr-doc code { background: #f3ecdf; }
+.anr-doc pre { position: relative; background: #191c21; border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; overflow: auto; margin: 14px 0; }
+[data-theme="light"] .anr-doc pre { background: #faf6eb; }
+.anr-doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.75; }
+.anr-doc hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+.anr-doc a { color: var(--wms); }
+.anr-doc img { max-width: 100%; }
+.anr-doc .table-wrap { overflow: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: 12px; }
+.anr-doc table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.anr-doc th, .anr-doc td { border-bottom: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+.anr-doc th { background: var(--panel-2); color: var(--tx); font-weight: 600; white-space: nowrap; }
+.anr-doc tr:last-child td { border-bottom: 0; }
+.mermaid-box { margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); overflow: hidden; }
+.mermaid-hd { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line);
+  font: 10.5px/1.6 var(--mono); color: var(--tx-3); letter-spacing: .06em; }
+.mermaid { padding: 16px; margin: 0; background: none; border: 0; overflow: auto; text-align: center; }
+pre.mermaid { white-space: pre-wrap; text-align: left; font: 12px/1.7 var(--mono); color: var(--tx-3); }
+.mermaid svg { max-width: 100%; height: auto; }
+.anr-pager { display: flex; justify-content: space-between; gap: 14px; margin: 4px 0 40px; font-size: 12.5px; }
+.anr-pager a { color: var(--tx-2); text-decoration: none; border: 1px solid var(--line); border-radius: 999px;
+  padding: 7px 14px; background: var(--panel); }
+.anr-pager a:hover { border-color: var(--line-2); color: var(--tx); }
+.anr-cards { display: grid; gap: 12px; margin-top: 18px; }
+.anr-card { display: block; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); color: inherit; text-decoration: none; transition: border-color .16s, transform .16s; }
+.anr-card:hover { border-color: var(--wms); transform: translateY(-1px); }
+.anr-card .hd { display: flex; align-items: baseline; gap: 12px; }
+.anr-card .no { font: 600 11px/1 var(--mono); color: var(--tx-3); }
+.anr-card h2 { margin: 0; font-size: 16px; letter-spacing: 0; text-transform: none; border: 0; padding: 0; }
+.anr-card .meta { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+.anr-card .pill { font: 10.5px/1.8 var(--mono); padding: 0 8px; border-radius: 5px; border: 1px solid var(--line); color: var(--tx-3); }
+</style>
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+
+<header class="hdr">
+  <div class="hdr-main">
+    <div class="kicker">AOSP · android17-release · ANR</div>
+    <h1>ContentProvider ANR「放炸弹 / 拆炸弹」机制源码深度解析</h1>
+    <p class="sub">Provider-ANR放炸弹与拆炸弹机制源码深度解析.md · 12 个小节 · 5 张 mermaid 图 · 40 行表格 · 23K 字</p>
+  </div>
+  <div class="hdr-right">
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false" title="切换亮/暗色">
+      <svg class="ico-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="ico-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+      <span class="tt-label">亮色</span>
+    </button>
+    <div class="hdr-stats"><div class="stat"><b>12</b><span>小节</span></div><div class="stat"><b>5</b><span>mermaid 图</span></div><div class="stat"><b>40</b><span>表格行</span></div><div class="stat"><b>23K</b><span>字数</span></div></div>
+  </div>
+</header>
+
+<main class="app">
+  <aside class="rail">
+    <div class="phase">返回 <a href="../dist/index.html">站点索引</a> · <a href="index.html">ANR 索引</a></div>
+    <nav class="anr-toc" id="toc"><a class="lv2" href="#一provider-的特殊性三颗不同的炸弹">一、Provider 的特殊性：三颗不同的「炸弹」</a>
+<a class="lv2" href="#二设计意图">二、设计意图</a>
+<a class="lv3" href="#21-为什么-provider-需要这些超时">2.1 为什么 Provider 需要这些超时</a>
+<a class="lv3" href="#22-几个关键设计权衡">2.2 几个关键设计权衡</a>
+<a class="lv2" href="#三关键超时常量">三、关键超时常量</a>
+<a class="lv2" href="#四架构图">四、架构图</a>
+<a class="lv2" href="#五核心流程图">五、核心流程图</a>
+<a class="lv3" href="#51-炸弹①发布超时放弹--拆弹正常路径">5.1 炸弹①（发布超时）：放弹 → 拆弹（正常路径）</a>
+<a class="lv3" href="#52-炸弹①爆炸杀进程非-anr">5.2 炸弹①爆炸（杀进程，非 ANR）</a>
+<a class="lv3" href="#53-炸弹③运行时无响应真正的-provider-anr">5.3 炸弹③（运行时无响应）：真正的 Provider ANR</a>
+<a class="lv2" href="#六炸弹①发布超时逐行精度解析">六、炸弹①（发布超时）逐行精度解析</a>
+<a class="lv3" href="#61-放弹现场attachapplicationlocked">6.1 放弹现场：attachApplicationLocked</a>
+<a class="lv3" href="#62-provider-进入启动中的时机getcontentproviderimpl">6.2 provider 进入&quot;启动中&quot;的时机：getContentProviderImpl</a>
+<a class="lv3" href="#63-拆弹现场publishcontentproviders">6.3 拆弹现场：publishContentProviders</a>
+<a class="lv3" href="#64-炸弹①爆炸processcontentproviderpublishtimedoutlocked">6.4 炸弹①爆炸：processContentProviderPublishTimedOutLocked</a>
+<a class="lv3" href="#65-爆炸时的清理cleanupappinlaunchingproviderslocked">6.5 爆炸时的清理：cleanupAppInLaunchingProvidersLocked</a>
+<a class="lv2" href="#七炸弹②客户端等待超时逐行精度解析">七、炸弹②（客户端等待超时）逐行精度解析</a>
+<a class="lv3" href="#71-放弹现场getcontentproviderimpl">7.1 放弹现场：getContentProviderImpl</a>
+<a class="lv3" href="#72-拆弹">7.2 拆弹</a>
+<a class="lv3" href="#73-炸弹②爆炸通知客户端别等了">7.3 炸弹②爆炸：通知客户端&quot;别等了&quot;</a>
+<a class="lv2" href="#八炸弹③运行时无响应真正的-provider-anr">八、炸弹③（运行时无响应）：真正的 Provider ANR</a>
+<a class="lv2" href="#九完整状态总览三颗炸弹">九、完整状态总览（三颗炸弹）</a>
+<a class="lv2" href="#十与-service--broadcast-anr-的关键对比">十、与 Service / Broadcast ANR 的关键对比</a>
+<a class="lv2" href="#十一总结一图记住核心设计">十一、总结：一图记住核心设计</a>
+<a class="lv2" href="#附录关键代码位置索引">附录：关键代码位置索引</a></nav>
+  </aside>
+  <section class="stage">
+    <div class="panel">
+      <div class="panel-hd"><h2>正文</h2><span class="hint">Provider-ANR放炸弹与拆炸弹机制源码深度解析.md · 12 个小节 · 5 张 mermaid 图 · 40 行表格 · 23K 字</span></div>
+      <article class="deep-body anr-doc"><blockquote>
+<p>基于本仓库 <code>base/services/core/java/com/android/server/am/ContentProviderHelper.java</code>、 <code>ContentProviderRecord.java</code>、<code>ActivityManagerService.java</code> 以及 <code>base/core/java/android/content/ContentResolver.java</code> 的实现。</p>
+<p>本文所有行号均对应当前仓库代码。可与 <code>Service-ANR放炸弹与拆炸弹机制源码深度解析.md</code>、<code>Broadcast-ANR放炸弹与拆炸弹机制源码深度解析.md</code> 对照阅读。</p>
+</blockquote>
+<hr />
+<h2 id="一provider-的特殊性三颗不同的炸弹">一、Provider 的特殊性：三颗不同的「炸弹」</h2>
+<p>ContentProvider 的超时机制和 Service / Broadcast <strong>有本质差异</strong>，必须先讲清楚——Provider 场景下其实有<strong>三颗炸弹</strong>， 它们的「爆炸后果」完全不同：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>炸弹</th>
+<th>消息</th>
+<th>key</th>
+<th>放弹位置</th>
+<th>爆炸后果</th>
+<th style="text-align: center;">是否弹 ANR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>① 发布超时弹</strong></td>
+<td><code>CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG</code></td>
+<td><code>ProcessRecord</code>（进程）</td>
+<td><code>attachApplicationLocked</code></td>
+<td><strong>杀掉进程</strong>（初始化失败）</td>
+<td style="text-align: center;">❌ 否（直接 kill）</td>
+</tr>
+<tr>
+<td><strong>② 客户端等待弹</strong></td>
+<td><code>WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG</code></td>
+<td><code>ContentProviderRecord</code>（provider）</td>
+<td><code>getContentProviderImpl</code></td>
+<td><strong>解除客户端阻塞</strong>（返回 null）</td>
+<td style="text-align: center;">❌ 否（优雅放行）</td>
+</tr>
+<tr>
+<td><strong>③ 运行时无响应</strong></td>
+<td>无 AMS 定时器，炸弹在<strong>客户端进程</strong></td>
+<td>—</td>
+<td>客户端发起 provider 调用时</td>
+<td><strong>host 进程 ANR</strong></td>
+<td style="text-align: center;">✅ 是（真 ANR 弹窗）</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>关键认知</strong>：</p>
+<ul>
+<li>大家最熟悉的「放炸弹/拆炸弹」模式（system_server 投递延时消息 → 应用回调拆弹）对应 <strong>炸弹①（发布超时弹）</strong>， 它是本文的<strong>主线</strong>。但它爆炸时是<strong>杀进程</strong>，不是弹 ANR 对话框。</li>
+<li><strong>炸弹②</strong> 是为"等这个 provider 的客户端"准备的兜底，超时后优雅地让客户端别再等。</li>
+<li><strong>真正用户看到的「ContentProvider not responding」ANR 弹窗</strong>来自 <strong>炸弹③</strong> （<code>appNotRespondingViaProvider</code>），但它的计时器<strong>不在 system_server，而在调用方进程</strong>， system_server 只是被动接收上报。</li>
+</ul>
+<p>与 Service / Broadcast 的另一个重大区别：<strong>Provider 仍用经典的 <code>mHandler.sendMessageDelayed</code> + <code>removeMessages</code> 实现炸弹，没有迁移到 <code>AnrTimer</code> 抽象。</strong></p>
+</blockquote>
+<hr />
+<h2 id="二设计意图">二、设计意图</h2>
+<h3 id="21-为什么-provider-需要这些超时">2.1 为什么 Provider 需要这些超时</h3>
+<p>ContentProvider 是 Android 四大组件里<strong>唯一在进程启动时就必须同步就绪</strong>的组件：</p>
+<ul>
+<li>一个进程启动后，必须在 <code>ActivityThread</code> 里<strong>安装并发布</strong>它声明的所有 provider，然后回调 <code>publishContentProviders</code> 通知 AMS。在此之前，任何想访问该 provider 的客户端都得<strong>阻塞等待</strong>。</li>
+<li>如果应用的 <code>ContentProvider.onCreate()</code> 卡死（典型反模式：在 onCreate 里做 IO/网络）， 进程永远发布不了 provider → <strong>所有等它的客户端都被挂起</strong> → 雪崩。</li>
+</ul>
+<p>因此设计者埋了三层保护：</p>
+<ol type="1">
+<li><strong>进程侧兜底（炸弹①）</strong>：盯住"进程已 attach 但迟迟不发布 provider"，10s 后判定进程初始化失败并杀掉， 避免一个 onCreate 卡死的进程长期占着 provider 名分。</li>
+<li><strong>客户端侧兜底（炸弹②）</strong>：盯住"客户端在等某个尚未发布的 provider"，20s 后让客户端的 <code>getContentProvider</code> 返回失败而不是无限等待。</li>
+<li><strong>运行时兜底（炸弹③）</strong>：provider 发布后正常使用期间，如果某次 query/insert 调用把 host 进程卡死， 由<strong>调用方</strong>检测并上报，让 host 进程吃 ANR。</li>
+</ol>
+<h3 id="22-几个关键设计权衡">2.2 几个关键设计权衡</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>设计点</th>
+<th>意图</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>发布超时炸弹 key 用 <code>ProcessRecord</code></strong></td>
+<td>一个进程可能托管多个 provider，但"发布"是进程级动作，一颗弹守护整个进程的发布过程</td>
+</tr>
+<tr>
+<td><strong><code>mLaunchingProviders</code> 列表作为"是否需要放弹"的依据</strong></td>
+<td>只有进程确实有 provider 处于"启动中"才放弹（<code>checkAppInLaunchingProvidersLocked</code>）</td>
+</tr>
+<tr>
+<td><strong>发布超时 = 杀进程，而非 ANR 弹窗</strong></td>
+<td>onCreate 卡死属于"进程没起来"，没有用户可交互的前台，弹 ANR 无意义，直接回收更干净</td>
+</tr>
+<tr>
+<td><strong>客户端等待超时 &gt; 发布超时（20s &gt; 10s）</strong></td>
+<td>客户端的等待窗必须比进程发布窗更长，给"杀掉坏进程→重启→重新发布"留缓冲</td>
+</tr>
+<tr>
+<td><strong>运行时 ANR 计时放在客户端</strong></td>
+<td>只有发起调用的客户端知道"这次 Binder 调用卡了多久"，由它检测最准</td>
+</tr>
+<tr>
+<td><strong>重启重试计数 <code>mRestartCount</code></strong></td>
+<td>provider 进程发布失败可重启有限次（<code>MAX_RETRY_COUNT</code>），超限才彻底放弃</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="三关键超时常量">三、关键超时常量</h2>
+<p>定义在 <code>ContentResolver.java</code>：</p>
+<pre><code>// ContentResolver.java:788-789  —— 炸弹①：进程发布 provider 的超时
+public static final int CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS =
+        10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;                          // 10s
+
+// ContentResolver.java:796-797  —— 炸弹②：客户端等待 provider 就绪的超时
+public static final int CONTENT_PROVIDER_READY_TIMEOUT_MILLIS =
+        CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS + 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;  // 20s</code></pre>
+<blockquote>
+<ul>
+<li><strong>发布超时 10s</strong>：进程 attach 后必须在 10s 内 <code>publishContentProviders</code>。</li>
+<li><strong>客户端就绪超时 20s</strong> = 10s + 10s：刻意比发布超时长 10s，保证"先杀坏进程"再"放客户端走"的时序。</li>
+<li><code>Build.HW_TIMEOUT_MULTIPLIER</code>：低性能/模拟器设备整体放大超时。</li>
+</ul>
+</blockquote>
+<hr />
+<h2 id="四架构图">四、架构图</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>graph TB
+    subgraph Client[&quot;客户端进程&quot;]
+        CT[&quot;调用方线程&lt;br/&gt;getContentResolver().query()&quot;]
+        CPP[&quot;ContentProviderProxy&lt;br/&gt;(运行时无响应检测=炸弹③)&quot;]
+        CT --&gt; CPP
+    end
+
+    subgraph Host[&quot;Provider 宿主进程&quot;]
+        AT[&quot;ActivityThread&lt;br/&gt;installContentProviders()&quot;]
+        CP[&quot;ContentProvider.onCreate()&quot;]
+        AT --&gt; CP
+    end
+
+    subgraph SS[&quot;system_server&quot;]
+        AMS[&quot;ActivityManagerService&lt;br/&gt;mHandler (主 Handler)&quot;]
+        CPH[&quot;ContentProviderHelper&quot;]
+        LP[&quot;mLaunchingProviders[]&lt;br/&gt;(启动中的 provider 列表)&quot;]
+        PM[&quot;mProviderMap&lt;br/&gt;(已发布 provider 索引)&quot;]
+        AH[&quot;AnrHelper.appNotResponding()&quot;]
+        CPH --&gt; LP &amp; PM
+        AMS --&gt; CPH
+        CPH --&gt; AH
+    end
+
+    CPH --&gt;|&quot;1.放炸弹① attachApplicationLocked&lt;br/&gt;sendMessageDelayed(PUBLISH_TIMEOUT, app, 10s)&quot;| AMS
+    CPH --&gt;|&quot;1&#39;.放炸弹② getContentProviderImpl&lt;br/&gt;sendMessageDelayed(WAIT_FOR_PROVIDER, cpr, 20s)&quot;| AMS
+    AMS -.-&gt;|&quot;2.bindApplication / 启动进程&quot;| AT
+    AT -.-&gt;|&quot;3.拆炸弹 publishContentProviders&lt;br/&gt;(Binder 回调)&quot;| CPH
+    CPH --&gt;|&quot;4.拆弹① removeMessages(PUBLISH_TIMEOUT, r)&lt;br/&gt;拆弹② removeMessages(WAIT_FOR_PROVIDER, dst)&quot;| AMS
+    AMS --&gt;|&quot;💥① 超时未发布 → processContentProviderPublishTimedOutLocked&quot;| Kill[&quot;杀进程&lt;br/&gt;REASON_INITIALIZATION_FAILURE&quot;]
+    AMS --&gt;|&quot;💥② 超时未就绪 → onProviderPublishStatusLocked(false)&quot;| CT
+    CPP -.-&gt;|&quot;💥③ 运行时卡死 → appNotRespondingViaProvider(conn)&quot;| CPH
+    CPH --&gt;|&quot;炸弹③ → appNotResponding(host)&quot;| AH
+
+    style Client fill:#e8f4ff
+    style Host fill:#e8ffe8
+    style SS fill:#fff4e6
+    style Kill fill:#ffe6e6</code></pre></div>
+<hr />
+<h2 id="五核心流程图">五、核心流程图</h2>
+<h3 id="51-炸弹①发布超时放弹--拆弹正常路径">5.1 炸弹①（发布超时）：放弹 → 拆弹（正常路径）</h3>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant CPH as ContentProviderHelper
+    participant AMS as AMS.mHandler
+    participant Host as Provider 宿主进程
+
+    Note over CPH: 新进程 attach, 且有 provider 待发布
+    CPH-&gt;&gt;CPH: attachApplicationLocked()
+    CPH-&gt;&gt;CPH: generateApplicationProvidersLocked(app)
+    CPH-&gt;&gt;CPH: checkAppInLaunchingProvidersLocked(app) == true?
+    Note over CPH,AMS: 💣 放炸弹①
+    CPH-&gt;&gt;AMS: sendMessageDelayed(CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG, app, 10s)
+    CPH-&gt;&gt;Host: thread.bindApplication() (Binder)
+    activate Host
+    Host-&gt;&gt;Host: installContentProviders()&lt;br/&gt;逐个 ContentProvider.onCreate()
+    Host--&gt;&gt;CPH: publishContentProviders(holders) (Binder 回调)
+    deactivate Host
+    Note over CPH: ✂️ 拆炸弹①
+    CPH-&gt;&gt;CPH: 从 mLaunchingProviders 移除该 cpr
+    CPH-&gt;&gt;AMS: removeMessages(CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG, r) ✅
+    CPH-&gt;&gt;AMS: removeMessages(WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG, dst) ✅
+    CPH-&gt;&gt;CPH: dst.notifyAll() 唤醒所有等待的客户端</code></pre></div>
+<h3 id="52-炸弹①爆炸杀进程非-anr">5.2 炸弹①爆炸（杀进程，非 ANR）</h3>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Host as Provider 宿主进程
+    participant AMS as AMS.mHandler
+    participant CPH as ContentProviderHelper
+
+    CPH-&gt;&gt;AMS: 放炸弹① 10s
+    CPH-&gt;&gt;Host: bindApplication()
+    activate Host
+    Host--xHost: onCreate() 卡死&lt;br/&gt;(永不 publishContentProviders)
+    Note over AMS: 10s 到点, 无人拆弹
+    AMS-&gt;&gt;CPH: 💥 CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG → processContentProviderPublishTimedOutLocked(app)
+    deactivate Host
+    CPH-&gt;&gt;CPH: cleanupAppInLaunchingProvidersLocked(app, true)
+    CPH-&gt;&gt;CPH: mProcessList.removeProcessLocked(app, REASON_INITIALIZATION_FAILURE)
+    Note over CPH: 杀掉宿主进程, 不弹 ANR 对话框</code></pre></div>
+<h3 id="53-炸弹③运行时无响应真正的-provider-anr">5.3 炸弹③（运行时无响应）：真正的 Provider ANR</h3>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>sequenceDiagram
+    autonumber
+    participant Client as 客户端进程
+    participant Host as Provider 宿主进程
+    participant CPH as ContentProviderHelper
+    participant AH as AnrHelper
+
+    Note over Client: provider 已发布, 正常调用
+    Client-&gt;&gt;Host: query()/insert() via Binder
+    activate Host
+    Host--xHost: 调用内卡死
+    Note over Client: 客户端侧检测到调用超时(炸弹③在此)
+    Client-&gt;&gt;CPH: appNotRespondingViaProvider(connection)
+    deactivate Host
+    CPH-&gt;&gt;CPH: host = conn.provider.proc
+    CPH-&gt;&gt;CPH: TimeoutRecord.forContentProvider(&quot;ContentProvider not responding&quot;)
+    CPH-&gt;&gt;AH: appNotResponding(host, timeoutRecord)
+    AH--&gt;&gt;Host: 抓 trace / 弹 ANR 对话框</code></pre></div>
+<hr />
+<h2 id="六炸弹①发布超时逐行精度解析">六、炸弹①（发布超时）逐行精度解析</h2>
+<h3 id="61-放弹现场attachapplicationlocked">6.1 放弹现场：<code>attachApplicationLocked</code></h3>
+<blockquote>
+<p>位置：<code>ActivityManagerService.java:4690-4700</code></p>
+<p>当一个进程完成 attach（<code>bindApplication</code> 之前），AMS 检查它是否有 provider 要发布，有则放弹。</p>
+</blockquote>
+<pre><code>boolean normalMode = mProcessesReady || isAllowedWhileBooting(app.info);
+List&lt;ProviderInfo&gt; providers = normalMode
+                                    ? mCpHelper.generateApplicationProvidersLocked(app)   // ① 收集该进程的 provider
+                                    : null;
+
+if (providers != null &amp;&amp; mCpHelper.checkAppInLaunchingProvidersLocked(app)) {            // ② 确有 provider 在启动中
+    Message msg = mHandler.obtainMessage(CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG);
+    msg.obj = app;                                                                        // ③ key = 进程
+    mHandler.sendMessageDelayed(msg,
+            ContentResolver.CONTENT_PROVIDER_PUBLISH_TIMEOUT_MILLIS);                     // 💣 ④ 放炸弹 10s
+}</code></pre>
+<blockquote>
+<p><strong>放弹的两个准入条件（第 4695 行）</strong>：</p>
+<ol type="1">
+<li><code>providers != null</code>：进程声明了 ContentProvider（<code>generateApplicationProvidersLocked</code> 从 PMS 查到）。</li>
+<li><code>checkAppInLaunchingProvidersLocked(app)</code>：该进程的某个 provider 确实在 <code>mLaunchingProviders</code> 里 （即"正在为发布它而启动这个进程"）。</li>
+</ol>
+<p>两个都满足才埋雷，<code>msg.obj = app</code>（key 是 <code>ProcessRecord</code>，进程级一颗弹）。</p>
+</blockquote>
+<h3 id="62-provider-进入启动中的时机getcontentproviderimpl">6.2 provider 进入"启动中"的时机：<code>getContentProviderImpl</code></h3>
+<blockquote>
+<p>位置：<code>ContentProviderHelper.java:560-590</code></p>
+<p>炸弹①的前提是 provider 已被放进 <code>mLaunchingProviders</code>。这发生在<strong>有客户端首次请求一个尚未运行的 provider</strong> 时： AMS 为它启动宿主进程，并把 provider 标记为"启动中"。</p>
+</blockquote>
+<pre><code>proc = mService.startProcessLocked(cpi.processName, cpr.appInfo, ...);   // 为 provider 启动宿主进程
+...
+cpr.launchingApp = proc;            // 记录&quot;这个 provider 正在哪个进程里启动&quot;
+mLaunchingProviders.add(cpr);       // ★ 加入&quot;启动中&quot;列表 → 后续 attach 时据此放炸弹①</code></pre>
+<blockquote>
+<p>这一步与炸弹①是"因果对"：先把 provider 放进 <code>mLaunchingProviders</code>（6.2）， 等宿主进程 attach 时才据此放炸弹①（6.1）。</p>
+</blockquote>
+<h3 id="63-拆弹现场publishcontentproviders">6.3 拆弹现场：<code>publishContentProviders</code></h3>
+<blockquote>
+<p>位置：<code>ContentProviderHelper.java:728-816</code>（聚焦拆弹部分）</p>
+<p>宿主进程在 <code>ActivityThread</code> 里跑完所有 <code>ContentProvider.onCreate()</code> 后， 通过 Binder 调回 <code>publishContentProviders</code>，把发布好的 provider 交还 AMS——这就是"拆弹"动作。</p>
+</blockquote>
+<pre><code>void publishContentProviders(IApplicationThread caller, List&lt;ContentProviderHolder&gt; providers) {
+    if (providers == null) return;
+    ...
+    synchronized (mService) {
+        final ProcessRecord r = mService.getRecordForAppLOSP(caller);   // 发布者进程
+        ...
+        for (int i = 0, size = providers.size(); i &lt; size; i++) {
+            ContentProviderHolder src = providers.get(i);
+            if (src == null || src.info == null || src.provider == null) continue;
+            ContentProviderRecord dst = r.mProviders.getProvider(src.info.name);
+            if (dst == null) continue;
+            ...
+            // 把已发布的 provider 登记进全局索引 mProviderMap
+            ComponentName comp = new ComponentName(dst.info.packageName, dst.info.name);
+            mProviderMap.putProviderByClass(comp, dst);
+            String[] names = dst.info.authority.split(&quot;;&quot;);
+            for (int j = 0; j &lt; names.length; j++) {
+                mProviderMap.putProviderByName(names[j], dst);
+            }
+
+            // ★ 从&quot;启动中&quot;列表移除
+            boolean wasInLaunchingProviders = false;
+            for (int j = 0, numLaunching = mLaunchingProviders.size(); j &lt; numLaunching; j++) {
+                if (mLaunchingProviders.get(j) == dst) {
+                    mLaunchingProviders.remove(j);
+                    wasInLaunchingProviders = true;
+                    j--; numLaunching--;
+                }
+            }
+            if (wasInLaunchingProviders) {
+                mService.mHandler.removeMessages(
+                        ActivityManagerService.WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG, dst);   // ✂️ 拆炸弹②
+                mService.mHandler.removeMessages(
+                        ActivityManagerService.CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG, r);       // ✂️ 拆炸弹①
+            }
+            ...
+            synchronized (dst) {
+                dst.provider = src.provider;     // 绑定真正的 provider Binder
+                dst.setProcess(r);
+                dst.notifyAll();                 // ★ 唤醒所有 cpr.wait() 的等待者
+                dst.onProviderPublishStatusLocked(true);   // 通知等待的客户端&quot;成功了&quot;
+            }
+            dst.mRestartCount = 0;               // 发布成功, 重启计数清零
+            ...
+        }
+        ...
+    }
+}</code></pre>
+<blockquote>
+<p><strong>拆弹精髓在第 768-782 行</strong>：</p>
+<ul>
+<li>只要这个 provider 之前在 <code>mLaunchingProviders</code> 里（<code>wasInLaunchingProviders</code>）， 就<strong>一次性拆掉两颗弹</strong>：
+<ul>
+<li><code>removeMessages(CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG, r)</code> —— 拆炸弹①（进程发布超时）。</li>
+<li><code>removeMessages(WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG, dst)</code> —— 拆炸弹②（客户端等待超时）。</li>
+</ul></li>
+<li><code>dst.notifyAll()</code>（第 793 行）唤醒所有在 <code>cpr.wait()</code> 上阻塞的客户端，让它们拿到刚发布的 provider。</li>
+</ul>
+<p>注意拆炸弹①用 key=<code>r</code>（进程），拆炸弹②用 key=<code>dst</code>（provider 记录），与各自放弹时的 key 严格对应。</p>
+</blockquote>
+<h3 id="64-炸弹①爆炸processcontentproviderpublishtimedoutlocked">6.4 炸弹①爆炸：<code>processContentProviderPublishTimedOutLocked</code></h3>
+<blockquote>
+<p>位置：<code>ActivityManagerService.java:1826-1831</code>（分发）、<code>ContentProviderHelper.java:1239-1245</code>（处理）</p>
+</blockquote>
+<pre><code>// AMS 主 Handler 分发
+case CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG: {
+    ProcessRecord app = (ProcessRecord) msg.obj;
+    synchronized (ActivityManagerService.this) {
+        mCpHelper.processContentProviderPublishTimedOutLocked(app);
+    }
+} break;</code></pre>
+<pre><code>void processContentProviderPublishTimedOutLocked(ProcessRecord app) {
+    cleanupAppInLaunchingProvidersLocked(app, true);                  // ① 清理该进程所有&quot;启动中&quot;provider
+    mService.mProcessList.removeProcessLocked(app, false, true,
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,       // ② 杀进程, 标记&quot;初始化失败&quot;
+            ApplicationExitInfo.SUBREASON_UNKNOWN,
+            &quot;timeout publishing content providers&quot;);
+}</code></pre>
+<blockquote>
+<p><strong>炸弹①爆炸 ≠ ANR 弹窗</strong>：它直接 <code>removeProcessLocked</code> <strong>杀掉宿主进程</strong>，理由是 <code>REASON_INITIALIZATION_FAILURE</code>（初始化失败）。 设计逻辑：进程连 provider 都发布不出来，说明它根本没正常起来，没有可交互前台，弹 ANR 无意义，回收更干净。</p>
+</blockquote>
+<h3 id="65-爆炸时的清理cleanupappinlaunchingproviderslocked">6.5 爆炸时的清理：<code>cleanupAppInLaunchingProvidersLocked</code></h3>
+<blockquote>
+<p>位置：<code>ContentProviderHelper.java:1892-1915</code></p>
+</blockquote>
+<pre><code>boolean cleanupAppInLaunchingProvidersLocked(ProcessRecord app, boolean alwaysBad) {
+    boolean restart = false;
+    for (int i = mLaunchingProviders.size() - 1; i &gt;= 0; i--) {
+        ContentProviderRecord cpr = mLaunchingProviders.get(i);
+        if (cpr.launchingApp != app) continue;                       // 只清理本进程的
+        if (++cpr.mRestartCount &gt; ContentProviderRecord.MAX_RETRY_COUNT) {
+            alwaysBad = true;                                        // 重试超限 → 标记为坏
+        }
+        if (!alwaysBad &amp;&amp; !app.mErrorState.isBad() &amp;&amp; cpr.hasConnectionOrHandle()) {
+            restart = true;                                         // 还有客户端在用 → 安排重启
+        } else {
+            removeDyingProviderLocked(app, cpr, true);              // 否则彻底移除
+        }
+    }
+    return restart;
+}</code></pre>
+<blockquote>
+<p>爆炸清理时有<strong>有限重启</strong>逻辑：如果还有客户端连着这个 provider 且没超重试上限， 会安排重启宿主进程再试一次（<code>restart=true</code>）；否则 <code>removeDyingProviderLocked</code> 彻底放弃。</p>
+</blockquote>
+<hr />
+<h2 id="七炸弹②客户端等待超时逐行精度解析">七、炸弹②（客户端等待超时）逐行精度解析</h2>
+<h3 id="71-放弹现场getcontentproviderimpl">7.1 放弹现场：<code>getContentProviderImpl</code></h3>
+<blockquote>
+<p>位置：<code>ContentProviderHelper.java:616-646</code></p>
+<p>客户端请求一个尚未发布的 provider 时，AMS 一边启动宿主进程，一边给<strong>客户端的等待</strong>放一颗弹。</p>
+</blockquote>
+<pre><code>if (caller != null) {
+    // The client will be waiting, and we&#39;ll notify it when the provider is ready.
+    synchronized (cpr) {
+        if (cpr.provider == null) {                          // provider 还没发布
+            if (cpr.launchingApp == null) { ... return null; }
+            if (conn != null) conn.waiting = true;           // 标记此连接&quot;正在等待&quot;
+            Message msg = mService.mHandler.obtainMessage(
+                    ActivityManagerService.WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG);
+            msg.obj = cpr;                                   // key = ContentProviderRecord
+            mService.mHandler.sendMessageDelayed(msg,
+                    ContentResolver.CONTENT_PROVIDER_READY_TIMEOUT_MILLIS);   // 💣 放炸弹② 20s
+        }
+    }
+    // 返回一个 holder, 客户端据 holder.provider 是否为 null 决定是否等待
+    return cpr.newHolder(conn, false);
+}</code></pre>
+<blockquote>
+<p>与炸弹①的分工：</p>
+<ul>
+<li>炸弹①（key=进程）盯"进程发布动作"，爆炸=杀进程。</li>
+<li>炸弹②（key=cpr）盯"客户端等待"，爆炸=通知客户端别等了。</li>
+<li>两者同时存在：进程发布失败时，炸弹①先杀进程（10s），随后炸弹②（20s）兜底通知仍在等的客户端。</li>
+</ul>
+</blockquote>
+<h3 id="72-拆弹">7.2 拆弹</h3>
+<p>炸弹②的拆除有两条路径，都在 <code>publishContentProviders</code>（成功）或 <code>removeDyingProviderLocked</code>（失败）里：</p>
+<pre><code>// 成功发布 —— ContentProviderHelper.java:778-779
+mService.mHandler.removeMessages(
+        ActivityManagerService.WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG, dst);   // ✂️ 拆炸弹②
+
+// 进程死亡/放弃 —— ContentProviderHelper.java:1806-1807
+mService.mHandler.removeMessages(
+        ActivityManagerService.WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG, cpr);   // ✂️ 拆炸弹②</code></pre>
+<h3 id="73-炸弹②爆炸通知客户端别等了">7.3 炸弹②爆炸：通知客户端"别等了"</h3>
+<blockquote>
+<p>位置：<code>ActivityManagerService.java:1923-1927</code>（分发）、<code>ContentProviderRecord.java:208</code>（处理）</p>
+</blockquote>
+<pre><code>// AMS 主 Handler 分发
+case WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG: {
+    synchronized (ActivityManagerService.this) {
+        ((ContentProviderRecord) msg.obj).onProviderPublishStatusLocked(false);   // status=false 表示失败
+    }
+} break;</code></pre>
+<pre><code>// ContentProviderRecord.onProviderPublishStatusLocked —— 逐个通知等待的客户端
+void onProviderPublishStatusLocked(boolean status) {
+    final int numOfConns = connections.size();
+    for (int i = 0; i &lt; numOfConns; i++) {
+        final ContentProviderConnection conn = connections.get(i);
+        if (conn.waiting &amp;&amp; conn.client != null) {
+            final ProcessRecord client = conn.client;
+            if (!status) {
+                Slog.wtf(TAG_AM, &quot;Timeout waiting for provider ...&quot;);   // 记一笔 wtf
+            }
+            final IApplicationThread thread = client.getThread();
+            if (thread != null) {
+                try {
+                    thread.notifyContentProviderPublishStatus(           // ★ 回调客户端
+                            newHolder(status ? conn : null, false),
+                            info.authority, conn.mExpectedUserId, status);
+                } catch (RemoteException e) { }
+            }
+        }
+        conn.waiting = false;
+    }
+}</code></pre>
+<blockquote>
+<p><strong>炸弹②爆炸 ≠ ANR</strong>：它通过 <code>notifyContentProviderPublishStatus(holder=null, status=false)</code> 优雅地告诉客户端"provider 没起来"，客户端的 <code>getContentProvider</code> 拿到 null holder 后返回失败/重试， <strong>而不是无限阻塞</strong>。这是一种"防止客户端被坏 provider 拖死"的兜底。</p>
+</blockquote>
+<hr />
+<h2 id="八炸弹③运行时无响应真正的-provider-anr">八、炸弹③（运行时无响应）：真正的 Provider ANR</h2>
+<blockquote>
+<p>位置：<code>ContentProviderHelper.java:993-1018</code></p>
+<p>provider <strong>发布成功并正常使用后</strong>，如果某次 query/insert/call 把 host 进程卡死， 这才是用户看到「ContentProvider not responding」ANR 的来源。 注意：<strong>这颗炸弹的计时器不在 system_server，而在发起调用的客户端进程</strong>（<code>ContentProviderProxy</code>/ <code>ContentProviderClient</code> 的无响应检测）。system_server 只负责"接报并执行 ANR"。</p>
+</blockquote>
+<pre><code>void appNotRespondingViaProvider(IBinder connection) {
+    mService.enforceCallingPermission(android.Manifest.permission.REMOVE_TASKS,
+            &quot;appNotRespondingViaProvider()&quot;);                            // 需 REMOVE_TASKS 权限
+
+    final ContentProviderConnection conn = (ContentProviderConnection) connection;
+    if (conn == null) { Slog.w(TAG, &quot;ContentProviderConnection is null&quot;); return; }
+
+    ActivityManagerService.traceBegin(...);
+    try {
+        final ProcessRecord host = conn.provider.proc;                   // ① 找到 provider 的宿主进程
+        if (host == null) { Slog.w(TAG, &quot;Failed to find hosting ProcessRecord&quot;); return; }
+
+        TimeoutRecord timeoutRecord = TimeoutRecord.forContentProvider(
+                &quot;ContentProvider not responding&quot;);                       // ② 构造超时记录
+        mService.mAnrHelper.appNotResponding(host, timeoutRecord);       // ③ 对 host 进程触发真 ANR
+    } finally {
+        ActivityManagerService.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+    }
+}</code></pre>
+<blockquote>
+<p>流程：客户端检测到 provider 调用超时 → 经 Binder 调 AMS 的 <code>appNotRespondingViaProvider(conn)</code> → 通过连接找到 host 进程 → <code>mAnrHelper.appNotResponding(host, ...)</code> → 抓 trace、弹 ANR 对话框。 这是唯一会产生「ContentProvider not responding」用户可见 ANR 的路径。</p>
+</blockquote>
+<hr />
+<h2 id="九完整状态总览三颗炸弹">九、完整状态总览（三颗炸弹）</h2>
+<div class="mermaid-box"><div class="mermaid-hd"><span>mermaid 图</span><span>本地渲染</span></div><pre class="mermaid"><code>stateDiagram-v2
+    [*] --&gt; 客户端请求provider
+    客户端请求provider --&gt; 启动中: getContentProviderImpl&lt;br/&gt;mLaunchingProviders.add(cpr)&lt;br/&gt;💣放炸弹②(WAIT 20s)
+    启动中 --&gt; 进程已attach: 宿主进程启动并 attach
+    进程已attach --&gt; 发布中: attachApplicationLocked&lt;br/&gt;💣放炸弹①(PUBLISH 10s)
+    发布中 --&gt; 已发布: publishContentProviders&lt;br/&gt;✂️拆炸弹①② + notifyAll
+    发布中 --&gt; 进程被杀: 炸弹①爆炸(10s)&lt;br/&gt;processContentProviderPublishTimedOut&lt;br/&gt;removeProcessLocked(INIT_FAILURE)
+    启动中 --&gt; 客户端放行: 炸弹②爆炸(20s)&lt;br/&gt;onProviderPublishStatusLocked(false)&lt;br/&gt;notifyContentProviderPublishStatus(null)
+    已发布 --&gt; 正常使用
+    正常使用 --&gt; 运行时卡死: query/insert 卡住 host
+    运行时卡死 --&gt; ProviderANR: 炸弹③&lt;br/&gt;客户端上报 appNotRespondingViaProvider&lt;br/&gt;appNotResponding(host) 💥真ANR
+    进程被杀 --&gt; [*]
+    客户端放行 --&gt; [*]
+    ProviderANR --&gt; [*]</code></pre></div>
+<hr />
+<h2 id="十与-service--broadcast-anr-的关键对比">十、与 Service / Broadcast ANR 的关键对比</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>维度</th>
+<th><strong>Service ANR</strong></th>
+<th><strong>Broadcast ANR</strong></th>
+<th><strong>Provider ANR</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>计时实现</td>
+<td><code>AnrTimer</code>（native）</td>
+<td><code>AnrTimer</code>（native）</td>
+<td><strong>经典 <code>mHandler</code> 延时消息</strong>（未迁移 AnrTimer）</td>
+</tr>
+<tr>
+<td>主炸弹 key</td>
+<td><code>ProcessRecord</code></td>
+<td><code>BroadcastProcessQueue</code></td>
+<td>炸弹①<code>ProcessRecord</code> / 炸弹②<code>ContentProviderRecord</code></td>
+</tr>
+<tr>
+<td>放弹时机</td>
+<td>生命周期回调前</td>
+<td>阻塞型接收者派发前</td>
+<td>炸弹①进程 attach 时 / 炸弹②客户端请求时</td>
+</tr>
+<tr>
+<td>拆弹动作</td>
+<td><code>AnrTimer.cancel</code></td>
+<td><code>AnrTimer.cancel</code></td>
+<td><code>mHandler.removeMessages</code></td>
+</tr>
+<tr>
+<td>拆弹回调</td>
+<td><code>serviceDoneExecuting</code></td>
+<td><code>finishReceiver</code></td>
+<td><code>publishContentProviders</code></td>
+</tr>
+<tr>
+<td>超时</td>
+<td>前台 20s / 后台 200s</td>
+<td>前台/后台各 10s</td>
+<td>发布 10s / 客户端就绪 20s</td>
+</tr>
+<tr>
+<td><strong>爆炸后果</strong></td>
+<td><strong>弹 ANR</strong></td>
+<td><strong>弹 ANR + 撤队列</strong></td>
+<td>炸弹①<strong>杀进程</strong> / 炸弹②<strong>放行客户端</strong> / 炸弹③<strong>弹 ANR</strong></td>
+</tr>
+<tr>
+<td>真 ANR 计时器位置</td>
+<td>system_server</td>
+<td>system_server</td>
+<td><strong>客户端进程</strong>（炸弹③）</td>
+</tr>
+<tr>
+<td>debug 豁免</td>
+<td>✅</td>
+<td>✅</td>
+<td>炸弹③走通用 AnrHelper 豁免</td>
+</tr>
+</tbody>
+</table></div>
+<blockquote>
+<p><strong>最大差异</strong>：Service / Broadcast 的炸弹爆炸"一定"是弹 ANR；而 Provider 的炸弹①爆炸是<strong>杀进程</strong>、 炸弹②爆炸是<strong>优雅放行客户端</strong>，唯有炸弹③（运行时无响应，计时在客户端）才是用户可见的 ANR 弹窗。</p>
+</blockquote>
+<hr />
+<h2 id="十一总结一图记住核心设计">十一、总结：一图记住核心设计</h2>
+<pre><code>                       客户端请求一个未运行的 Provider
+                                   │
+              getContentProviderImpl: startProcess + mLaunchingProviders.add
+                                   │  💣放炸弹②(WAIT_FOR_PROVIDER, cpr, 20s)
+                                   ▼
+                       宿主进程启动 → attachApplicationLocked
+                                   │  💣放炸弹①(PUBLISH_TIMEOUT, app, 10s)
+                                   ▼
+                  宿主进程 installContentProviders → onCreate()
+                   ┌───────────────┴────────────────┐
+              onCreate 正常返回                  onCreate 卡死
+                   │                                  │
+       publishContentProviders                  10s 到点
+       ✂️ removeMessages(PUBLISH, r)            💥 炸弹①爆炸
+       ✂️ removeMessages(WAIT, dst)             processContentProviderPublishTimedOut
+       notifyAll() 唤醒客户端                    → removeProcessLocked(INIT_FAILURE) 杀进程
+                   │                                  │ (20s 后)
+                   ▼                            💥 炸弹②爆炸 → 通知客户端别等(返回 null)
+            Provider 可正常使用
+                   │
+            某次 query/insert 卡死 host
+                   │  (计时在客户端进程)
+                   ▼
+       客户端上报 appNotRespondingViaProvider(conn)
+       💥 炸弹③ → appNotResponding(host) → 真正的「ContentProvider not responding」ANR</code></pre>
+<p><strong>三句话记住本质：</strong></p>
+<ol type="1">
+<li><strong>放炸弹</strong> ＝ 进程 attach 且有 provider 待发布时 <code>sendMessageDelayed(CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG, app, 10s)</code> （炸弹①）；客户端请求未发布 provider 时再放一颗 <code>WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG</code>（炸弹②，20s）。</li>
+<li><strong>拆炸弹</strong> ＝ 宿主进程 <code>publishContentProviders</code> 回调里，对该 provider <code>removeMessages</code> 同时拆掉炸弹①②，并 <code>notifyAll</code> 唤醒等待客户端。</li>
+<li><strong>爆炸</strong> ＝ 炸弹①超时 → <strong>杀进程</strong>（初始化失败，非 ANR）；炸弹②超时 → <strong>优雅放行客户端</strong>； 而用户真正看到的 Provider ANR 来自<strong>运行时</strong>的炸弹③ <code>appNotRespondingViaProvider</code> → <code>appNotResponding(host)</code>。</li>
+</ol>
+<hr />
+<h2 id="附录关键代码位置索引">附录：关键代码位置索引</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>功能</th>
+<th>文件:行号</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>provider 进入"启动中"</td>
+<td><code>ContentProviderHelper.java:589-590</code> (<code>getContentProviderImpl</code>)</td>
+</tr>
+<tr>
+<td>放炸弹①(发布超时)</td>
+<td><code>ActivityManagerService.java:4695-4700</code> (<code>attachApplicationLocked</code>)</td>
+</tr>
+<tr>
+<td>放炸弹②(客户端等待)</td>
+<td><code>ContentProviderHelper.java:635-639</code> (<code>getContentProviderImpl</code>)</td>
+</tr>
+<tr>
+<td>拆炸弹①②</td>
+<td><code>ContentProviderHelper.java:768-782</code> (<code>publishContentProviders</code>)</td>
+</tr>
+<tr>
+<td>唤醒等待客户端</td>
+<td><code>ContentProviderHelper.java:790-795</code> (<code>dst.notifyAll</code>)</td>
+</tr>
+<tr>
+<td>炸弹①分发</td>
+<td><code>ActivityManagerService.java:1826-1831</code></td>
+</tr>
+<tr>
+<td>炸弹①爆炸处理</td>
+<td><code>ContentProviderHelper.java:1239-1245</code> (<code>processContentProviderPublishTimedOutLocked</code>)</td>
+</tr>
+<tr>
+<td>爆炸清理+重启</td>
+<td><code>ContentProviderHelper.java:1892-1915</code> (<code>cleanupAppInLaunchingProvidersLocked</code>)</td>
+</tr>
+<tr>
+<td>炸弹②分发</td>
+<td><code>ActivityManagerService.java:1923-1927</code></td>
+</tr>
+<tr>
+<td>炸弹②爆炸处理</td>
+<td><code>ContentProviderRecord.java:208</code> (<code>onProviderPublishStatusLocked</code>)</td>
+</tr>
+<tr>
+<td>进程死亡拆炸弹②</td>
+<td><code>ContentProviderHelper.java:1801-1808</code> (<code>removeDyingProviderLocked</code>)</td>
+</tr>
+<tr>
+<td>炸弹③(真 ANR)</td>
+<td><code>ContentProviderHelper.java:993-1018</code> (<code>appNotRespondingViaProvider</code>)</td>
+</tr>
+<tr>
+<td>超时常量</td>
+<td><code>ContentResolver.java:788-797</code></td>
+</tr>
+<tr>
+<td>进程清理移除超时消息</td>
+<td><code>ActivityManagerService.java:13654, 13665</code></td>
+</tr>
+</tbody>
+</table></div>
+</article>
+    </div>
+    <div class="anr-pager"><a class="prv" href="Input-ANR放炸弹与拆炸弹机制源码深度解析.html">← Input ANR「放炸弹 / 拆炸弹」机制源码深度解析</a>
+<a class="nxt" href="Service-ANR放炸弹与拆炸弹机制源码深度解析.html">Service ANR「放炸弹 / 拆炸弹」机制源码深度解析 →</a></div>
+  </section>
+</main>
+
+<footer class="ftr">
+  <span>docs/ANR/Provider-ANR放炸弹与拆炸弹机制源码深度解析.md</span><span class="dot">·</span>
+  <span>由 docs/ANR/tools/md2html.py 生成，样式复用 wiki（docs/wiki_site/src/app.css）</span>
+</footer>
+
+<script src="../assets/mermaid.min.js"></script>
+<script>
+(function(){
+  var srcs=[];
+  document.querySelectorAll('pre.mermaid').forEach(function(el,i){ srcs[i]=el.textContent; });
+  function themeName(){ return document.documentElement.dataset.theme==='light'?'default':'dark'; }
+  function render(){
+    if(!window.mermaid) return;
+    document.querySelectorAll('pre.mermaid').forEach(function(el,i){
+      el.removeAttribute('data-processed'); el.textContent = srcs[i];
+    });
+    var dark = themeName()==='dark';
+    try{
+      mermaid.initialize({startOnLoad:false,theme:themeName(),securityLevel:'loose',
+        themeVariables: dark ? {
+          background:'transparent', primaryColor:'#30343a', primaryTextColor:'#f5f8fc',
+          primaryBorderColor:'#5a6068', lineColor:'#9aa4b2', secondaryColor:'#2a2e34',
+          tertiaryColor:'#2a2e34', textColor:'#e8eef6', mainBkg:'#30343a',
+          nodeBorder:'#5a6068', clusterBkg:'#2a2e34', clusterBorder:'#4a5058',
+          edgeLabelBackground:'#23262b', actorBkg:'#30343a', actorBorder:'#5a6068',
+          signalColor:'#9aa4b2'
+        } : {},
+        flowchart:{htmlLabels:true,useMaxWidth:true},sequence:{useMaxWidth:true}});
+      mermaid.run({nodes:document.querySelectorAll('pre.mermaid')});
+    }catch(e){ console.warn('mermaid render failed', e); }
+  }
+  render();
+
+  var btn=document.getElementById('theme-toggle');
+  function apply(){
+    var light=document.documentElement.dataset.theme==='light';
+    btn.setAttribute('aria-pressed',String(light));
+    var lab=btn.querySelector('.tt-label'); if(lab) lab.textContent = light?'暗色':'亮色';
+  }
+  btn.addEventListener('click',function(){
+    var root=document.documentElement;
+    root.dataset.theme = root.dataset.theme==='light'?'dark':'light';
+    try{ localStorage.setItem('st-theme',root.dataset.theme); }catch(e){}
+    apply(); render();
+  });
+  apply();
+
+  var links=[].slice.call(document.querySelectorAll('#toc a'));
+  var heads=links.map(function(a){return document.getElementById(a.getAttribute('href').slice(1));}).filter(Boolean);
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){
+      es.forEach(function(e){ if(e.isIntersecting){
+        links.forEach(function(a){a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id);});
+      }});
+    },{rootMargin:'-8% 0px -82% 0px'});
+    heads.forEach(function(h){io.observe(h);});
+  }
+})();
+</script>
+</body>
+</html>

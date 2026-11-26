@@ -1,0 +1,66 @@
+{
+  "step": "s16",
+  "title": "死亡通知：observer 机制",
+  "tldr": "注册 DeathRecipient 后 native 发 BC_REQUEST_DEATH_NOTIFICATION，对端死亡时驱动投 BR_DEAD_BINDER 触发回调。",
+  "why": "binder 没有「对端还活着吗」的可靠心跳，只有死亡通知：它由驱动在节点引用归零后投递，因此是事件驱动的、可靠的（一次性）。注意它是**一次性**的——一个 BpBinder 死后不会复活，所以 BpBinder 会用 mAlive 记住死亡状态，之后所有调用直接返回 DEAD_OBJECT 而不再进内核。",
+  "concepts": [
+    {
+      "term": "DeathRecipient",
+      "text": "死亡回调接口。"
+    },
+    {
+      "term": "BR_DEAD_BINDER",
+      "text": "驱动通知对端死亡。"
+    },
+    {
+      "term": "sendObituary",
+      "text": "BpBinder 里触发回调。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "proxy->sendObituary();",
+      "ref": "native/libs/binder/IPCThreadState.cpp:1628",
+      "what": "触发死亡回调。"
+    },
+    {
+      "call": "void BpBinder::sendObituary()",
+      "ref": "native/libs/binder/BpBinder.cpp:297",
+      "what": "遍历 recipient 并回调。"
+    },
+    {
+      "call": "recipient.binderDied(binderProxy);",
+      "ref": "base/core/java/android/os/BinderProxy.java:850",
+      "what": "Java 侧回调。"
+    },
+    {
+      "call": "if (status == DEAD_OBJECT) mAlive = 0;",
+      "ref": "native/libs/binder/BpBinder.cpp:440",
+      "what": "记住死亡，之后不再进内核。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mAlive",
+      "before": "1",
+      "after": "0",
+      "note": "之后不再进内核。"
+    },
+    {
+      "field": "DeathRecipient 列表",
+      "before": "已注册",
+      "after": "全部回调一次",
+      "note": "一次性。"
+    }
+  ],
+  "threads": "接收线程（投递时）。",
+  "pitfalls": [
+    "以为死亡通知会重复触发：只触发一次。",
+    "在 binderDied 里做重活：占住 binder 线程。"
+  ],
+  "debug": [
+    "日志里 binderDied 的打印。",
+    "DeadObjectException 的上游就是这里。"
+  ],
+  "next": "句柄怎么变成代理？见第 17 步。"
+}

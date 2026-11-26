@@ -1,0 +1,60 @@
+{
+  "step": "s09",
+  "title": "dispatchOnce：一轮分发 + ANR 检查 + poll",
+  "tldr": "持锁分发一条事件、执行命令、取 pre-ANR/ANR 与下个唤醒时间的最小值，出锁 poll。",
+  "why": "dispatcher 没有 while 循环——它由 Looper 驱动，每次醒来跑一轮。这个结构决定了「dispatcher 何时检查 ANR」：不是定时器线程，而是把 ANR 到期时间混进 poll 超时里。所以 ANR 的发现精度取决于 poll 的超时计算是否正确，也取决于是否有别的事件把线程提前唤醒。理解这一点，才能解释为什么有些 ANR 报得晚。",
+  "concepts": [
+    {
+      "term": "nextWakeupTime",
+      "text": "下次必须醒来的时间；可能是事件到期、ANR 到期或 command。"
+    },
+    {
+      "term": "processPreAnrsLocked",
+      "text": "ANR 前的预警回调，受 flag 控制。"
+    },
+    {
+      "term": "mLooper->pollOnce",
+      "text": "真正的阻塞点，处理 fd 回调（应用 finish）。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void InputDispatcher::dispatchOnce() {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:983",
+      "what": "一轮心跳。"
+    },
+    {
+      "call": "if (!haveCommandsLocked()) {",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:991",
+      "what": "有命令先执行命令，命令往往是为了改变分发决策。"
+    },
+    {
+      "call": "nextWakeupTime = std::min({nextWakeupTime,",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1004",
+      "what": "把 ANR 检查时间混进 poll 超时。"
+    },
+    {
+      "call": "mLooper->pollOnce(timeoutMillis);",
+      "ref": "native/services/inputflinger/dispatcher/InputDispatcher.cpp:1025",
+      "what": "锁外阻塞。"
+    }
+  ],
+  "state": [
+    {
+      "field": "nextWakeupTime",
+      "before": "LLONG_MAX",
+      "after": "取分发/命令/ANR 的最小值",
+      "note": "LLONG_MIN 表示立刻再看一轮。"
+    }
+  ],
+  "threads": "InputDispatcher 线程。",
+  "pitfalls": [
+    "以为 ANR 由独立定时器触发：实际混在 poll 超时里。",
+    "在有 pending command 时疑惑为何不分发：command 优先。"
+  ],
+  "debug": [
+    "atrace 里 dispatchOnce 与 pollOnce 交替出现。",
+    "dumpsys input 的 dispatcher 段有队列与 ANR 状态。"
+  ],
+  "next": "从队列取事件时如何判定过期？见第 10 步。"
+}

@@ -1,0 +1,34 @@
+{
+  "step": "s23",
+  "title": "分支：跳帧、丢 surface 与二次布局",
+  "tldr": "跳帧是主动不画，丢 surface 要下一帧 relayout，二次布局是请求被推后——三者影响完全不同。",
+  "why": "这三类结果经常被混为一谈，但修复方向完全相反：跳帧要查「为什么没脏区」（通常不是 bug）；丢 surface 要查窗口生命周期与 surface 重建（通常是真正的异常路径）；二次布局要查是哪个 View 在 layout 里 requestLayout（能直接拿到日志里的类名）。此外还有一种很容易误判的情况：纹理缓存不足导致 canUnblockUiThread 为假，UI 会继续等，既不是跳帧也不是丢帧，而是「被反压」。",
+  "concepts": [
+    { "term": "NoOutputTarget", "text": "surface 丢失导致的跳过原因；同时置 LostSurfaceRewardIfFound。" },
+    { "term": "FrameDropped", "text": "任何 skippedFrameReason 非空时都会置的位，表示本帧不产出 buffer。" },
+    { "term": "二次布局", "text": "layout 期间的新请求导致同帧再跑一轮 measure/layout。" }
+  ],
+  "walk": [
+    { "call": "if (CC_UNLIKELY(!hasTarget || !canDraw)) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:196", "what": "丢 surface 与 context 停止的统一判定。" },
+    { "call": "mSyncResult |= SyncResult::LostSurfaceRewardIfFound;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:198", "what": "告诉 Java 侧下一帧要强制 relayout。" },
+    { "call": "if (info.out.skippedFrameReason) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:212", "what": "任何跳过原因都会置 FrameDropped。" },
+    { "call": "return SkippedFrameReason::NothingToDraw;", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:700", "what": "RT 侧的第二道跳过闸门。" },
+    { "call": "getRunQueue().post(new Runnable() {", "ref": "base/core/java/android/view/ViewRootImpl.java:5592", "what": "二次布局期间的新请求被推到下一帧。" }
+  ],
+  "state": [
+    { "field": "mSyncResult", "before": "OK", "after": "可能含 FrameDropped / LostSurfaceRewardIfFound / ContextIsStopped", "note": "位掩码可叠加。" },
+    { "field": "mForceNextWindowRelayout", "before": "false", "after": "丢 surface 后 true", "note": "保证下一帧走窗口重排。" }
+  ],
+  "threads": "跳帧与丢 surface 的判定在 RT；二次布局在 UI 线程；三者在同一条时间线上互斥发生。",
+  "pitfalls": [
+    "把跳帧当 bug 去修：没有脏区时不画是正确行为。",
+    "忽略 ContextIsStopped：窗口 stop 后继续排查会浪费时间，先看窗口状态。",
+    "看到两遍 layout 以为是框架问题：日志里的 View 名字就是肇事者。"
+  ],
+  "debug": [
+    "grep 日志 requestLayout() improperly called by 定位二次布局。",
+    "看 Log W HWUI Surface lost 判断是否走了丢 surface 分支。",
+    "关掉 debug.hwui.skip_empty_damage 复现，确认是否只是「没脏区」。"
+  ],
+  "next": "这三类问题在现场怎么一次性采集清楚？见第 24 步的诊断清单。"
+}

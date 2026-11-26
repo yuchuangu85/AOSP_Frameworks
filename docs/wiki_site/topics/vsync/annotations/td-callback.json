@@ -1,0 +1,288 @@
+{
+  "id": "td-callback",
+  "title": "VSyncDispatchTimerQueue::timerCallback",
+  "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+  "sig": "void VSyncDispatchTimerQueue::timerCallback() {",
+  "span": [
+    334,
+    379
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void VSyncDispatchTimerQueue::timerCallback() {",
+      "kind": "note",
+      "text": "timer 线程的真正入口：一次唤醒服务所有落在同一窗口的注册。**这里出锁后才回调**，但回调本身仍跑在 timer 线程上。"
+    },
+    {
+      "at": 2,
+      "quote": "SFTRACE_CALL();",
+      "kind": "trace",
+      "text": "atrace 切片。"
+    },
+    {
+      "at": 3,
+      "quote": "struct Invocation {",
+      "kind": "data",
+      "text": "本轮要调用的记录：回调指针 + 三个时间。"
+    },
+    {
+      "at": 4,
+      "quote": "std::shared_ptr<VSyncDispatchTimerQueueEntry> callback;",
+      "kind": "data",
+      "text": "注册对象。"
+    },
+    {
+      "at": 5,
+      "quote": "nsecs_t vsyncTimestamp;",
+      "kind": "data",
+      "text": "目标 vsync 时间。"
+    },
+    {
+      "at": 6,
+      "quote": "nsecs_t wakeupTimestamp;",
+      "kind": "data",
+      "text": "唤醒时间。"
+    },
+    {
+      "at": 7,
+      "quote": "nsecs_t deadlineTimestamp;",
+      "kind": "data",
+      "text": "ready（deadline）时间。"
+    },
+    {
+      "at": 8,
+      "quote": "};",
+      "kind": "note",
+      "text": "结构体结束。"
+    },
+    {
+      "at": 9,
+      "quote": "std::vector<Invocation> invocations;",
+      "kind": "data",
+      "text": "收集本轮所有该执行的回调。"
+    },
+    {
+      "at": 10,
+      "quote": "{",
+      "kind": "note",
+      "text": "作用域开始：**持锁收集**。"
+    },
+    {
+      "at": 11,
+      "quote": "std::lock_guard lock(mMutex);",
+      "kind": "lock",
+      "text": "取队列锁。"
+    },
+    {
+      "at": 12,
+      "quote": "if (!mRunning) {",
+      "kind": "branch",
+      "text": "队列已停止（析构中）。"
+    },
+    {
+      "at": 13,
+      "quote": "ALOGD(\"TimerQueue is not running. Skipping callback.\");",
+      "kind": "note",
+      "text": "DEBUG 日志后直接返回。"
+    },
+    {
+      "at": 14,
+      "quote": "return;",
+      "kind": "note",
+      "text": "返回，不回调。"
+    },
+    {
+      "at": 15,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 16,
+      "quote": "auto const now = mTimeKeeper->now();",
+      "kind": "data",
+      "text": "当前时间。"
+    },
+    {
+      "at": 17,
+      "quote": "mLastTimerCallback = now;",
+      "kind": "state",
+      "text": "记录本次回调时间，供 trace 与诊断。"
+    },
+    {
+      "at": 18,
+      "quote": "for (auto it = mCallbacks.begin(); it != mCallbacks.end(); it++) {",
+      "kind": "note",
+      "text": "遍历所有注册。"
+    },
+    {
+      "at": 19,
+      "quote": "auto& callback = it->second;",
+      "kind": "data",
+      "text": "取出注册。"
+    },
+    {
+      "at": 20,
+      "quote": "auto const wakeupTime = callback->wakeupTime();",
+      "kind": "data",
+      "text": "它的唤醒时刻。"
+    },
+    {
+      "at": 21,
+      "quote": "if (!wakeupTime) {",
+      "kind": "branch",
+      "text": "没有武装时间（未注册或已取消）。"
+    },
+    {
+      "at": 22,
+      "quote": "continue;",
+      "kind": "note",
+      "text": "跳过。"
+    },
+    {
+      "at": 23,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 24,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 25,
+      "quote": "traceEntry(*callback, now);",
+      "kind": "call",
+      "text": "打 trace 记录该 entry 的状态。"
+    },
+    {
+      "at": 26,
+      "quote": "",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 27,
+      "quote": "auto const readyTime = callback->readyTime();",
+      "kind": "data",
+      "text": "ready 时刻。"
+    },
+    {
+      "at": 28,
+      "quote": "auto const lagAllowance = std::max(now - mIntendedWakeupTime, static_cast<nsecs_t>(0));",
+      "kind": "data",
+      "text": "**允许的滞后**：本次唤醒比计划晚了多少（正数才计入）。"
+    },
+    {
+      "at": 29,
+      "quote": "if (*wakeupTime < mIntendedWakeupTime + mTimerSlack + lagAllowance) {",
+      "kind": "decision",
+      "text": "唤醒时刻落在 [计划 − slack, 计划 + slack + 滞后] 内。"
+    },
+    {
+      "at": 30,
+      "quote": "callback->executing();",
+      "kind": "call",
+      "text": "**标记为执行中**：取走目标并 disarm，防止同一拍二次分发。"
+    },
+    {
+      "at": 31,
+      "quote": "invocations.emplace_back(Invocation{callback, *callback->lastExecutedVsyncTarget(),",
+      "kind": "call",
+      "text": "把 (vsync, wakeup, ready) 收进本轮列表。"
+    },
+    {
+      "at": 32,
+      "quote": "*wakeupTime, *readyTime});",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 33,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 34,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭判断。"
+    },
+    {
+      "at": 35,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭遍历。"
+    },
+    {
+      "at": 36,
+      "quote": "mIntendedWakeupTime = kInvalidTime;",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 37,
+      "quote": "rearmTimer(mTimeKeeper->now());",
+      "kind": "state",
+      "text": "清空计划唤醒时间（下次重新算）。"
+    },
+    {
+      "at": 38,
+      "quote": "}",
+      "kind": "call",
+      "text": "**在锁内重新武装 timerfd**：为下一个到期点做准备。"
+    },
+    {
+      "at": 39,
+      "quote": "",
+      "kind": "note",
+      "text": "关闭作用域（释放锁）。"
+    },
+    {
+      "at": 40,
+      "quote": "for (auto const& invocation : invocations) {",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 41,
+      "quote": "ftl::Concat trace(ftl::truncated<5>(invocation.callback->name()));",
+      "kind": "note",
+      "text": "**现在才逐个回调**——出锁执行，避免回调里再取锁死锁。"
+    },
+    {
+      "at": 42,
+      "quote": "SFTRACE_FORMAT(\"%s: %s\", __func__, trace.c_str());",
+      "kind": "data",
+      "text": "trace 名截断到 5 段。"
+    },
+    {
+      "at": 43,
+      "quote": "invocation.callback->callback(invocation.vsyncTimestamp, invocation.wakeupTimestamp,",
+      "kind": "note",
+      "text": "打 trace，带上 entry 名。"
+    },
+    {
+      "at": 44,
+      "quote": "invocation.deadlineTimestamp);",
+      "kind": "call",
+      "text": "**调用回调**：app 侧是 EventThread::onVsync，sf 侧是 MessageQueue::vsyncCallback。"
+    },
+    {
+      "at": 45,
+      "quote": "}",
+      "kind": "note",
+      "text": "续行。"
+    },
+    {
+      "at": 46,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。注意：一个 callback 抛异常/阻塞会拖住本轮所有其它注册。"
+    }
+  ]
+}

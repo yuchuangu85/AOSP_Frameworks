@@ -1,0 +1,96 @@
+{
+  "id": "vri-measure",
+  "title": "ViewRootImpl::performMeasure",
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "sig": "private void performMeasure(",
+  "span": [
+    5472,
+    5485
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void performMeasure(int childWidthMeasureSpec, int childHeightMeasureSpec) {",
+      "kind": "note",
+      "text": "测量的唯一入口：spec 由 performTraversals 算好后下发，这里不再做任何约束推导。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mView == null) {",
+      "kind": "branch",
+      "text": "根 View 可能已被 detach，空指针保护优先。"
+    },
+    {
+      "at": 3,
+      "quote": "return;",
+      "kind": "note",
+      "text": "没有根就什么也不做，也不会误清 mViewMeasureDeferred。"
+    },
+    {
+      "at": 4,
+      "quote": "}",
+      "kind": "note",
+      "text": "关闭空判断。"
+    },
+    {
+      "at": 5,
+      "quote": "Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"measure\");",
+      "kind": "trace",
+      "text": "atrace 名为 measure；与 layout、draw 三段对齐看，就能判断一帧的 UI 时间花在哪一段。"
+    },
+    {
+      "at": 6,
+      "quote": "try {",
+      "kind": "note",
+      "text": "measure 期间无论是否抛异常都要收 trace，否则 Perfetto 里会出现未闭合的切片。"
+    },
+    {
+      "at": 7,
+      "quote": "mView.measure(childWidthMeasureSpec, childHeightMeasureSpec);",
+      "kind": "call",
+      "text": "从这里进入 View 树的递归 measure；View.measure 自身带缓存，同 spec 且未脏时不会真的重算 onMeasure。"
+    },
+    {
+      "at": 8,
+      "quote": "} finally {",
+      "kind": "note",
+      "text": "finally 只做收尾，不改业务状态。"
+    },
+    {
+      "at": 9,
+      "quote": "Trace.traceEnd(Trace.TRACE_TAG_VIEW);",
+      "kind": "trace",
+      "text": "闭合 measure 切片。"
+    },
+    {
+      "at": 10,
+      "quote": "}",
+      "kind": "note",
+      "text": "try/finally 结束。"
+    },
+    {
+      "at": 11,
+      "quote": "mMeasuredWidth = mView.getMeasuredWidth();",
+      "kind": "data",
+      "text": "把根节点的测量结果缓存到 ViewRootImpl，供后续 relayout、layout 与窗口尺寸同步使用。"
+    },
+    {
+      "at": 12,
+      "quote": "mMeasuredHeight = mView.getMeasuredHeight();",
+      "kind": "data",
+      "text": "同上；注意这里是「测量值」不是「最终值」，最终尺寸在 relayout 与 layout 后确定。"
+    },
+    {
+      "at": 13,
+      "quote": "mViewMeasureDeferred = false;",
+      "kind": "state",
+      "text": "清掉延迟测量标志：下一次 performTraversals 不会再因为「上次欠一次 measure」而重复进来。"
+    },
+    {
+      "at": 14,
+      "quote": "}",
+      "kind": "note",
+      "text": "方法结束。"
+    }
+  ]
+}

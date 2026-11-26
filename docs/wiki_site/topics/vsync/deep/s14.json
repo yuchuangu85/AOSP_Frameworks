@@ -1,0 +1,60 @@
+{
+  "step": "s14",
+  "title": "dispatchEvent：生成 frame timeline 并投递",
+  "tldr": "每个 consumer 一份拷贝，按自己 uid 填 frameInterval 与候选 timeline，分配 vsyncId 后写 BitTube。",
+  "why": "这里有一个容易被忽略的点：事件是**逐消费者拷贝**的，因为 frameInterval（以及由此决定的候选 timeline）是按 uid 计算的——不同应用可以有不同的帧率预算。vsyncId 由 TokenManager 统一分配，这是 app 与 SF 之间对账的唯一键：app 回报的 vsyncId 与 SF 的 FrameTimeline 能对上，归因才有意义。写 BitTube 失败（-EAGAIN）只告警，EPIPE 则直接摘除连接。",
+  "concepts": [
+    {
+      "term": "vsyncId",
+      "text": "TokenManager 分配的帧标识，跨进程对账用。"
+    },
+    {
+      "term": "候选 timeline",
+      "text": "第 i 个的 expectedPresentTime = preferred + i·P。"
+    },
+    {
+      "term": "BitTube",
+      "text": "SF 与 app 之间的单向通道。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void EventThread::dispatchEvent(const DisplayEventReceiver::Event& event,",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:769",
+      "what": "入口。"
+    },
+    {
+      "call": "generateFrameTimeline(copy.vsync.vsyncData, frameInterval.ns(), copy.header.timestamp,",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:776",
+      "what": "生成 timeline。"
+    },
+    {
+      "call": "removeDisplayEventConnectionLocked(consumer);",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:792",
+      "what": "EPIPE 摘除连接。"
+    },
+    {
+      "call": "mCallback.onExpectedPresentTimePosted(mLastCommittedVsyncTime);",
+      "ref": "native/services/surfaceflinger/Scheduler/EventThread.cpp:798",
+      "what": "记录已承诺的拍。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mLastCommittedVsyncTime",
+      "before": "上一拍",
+      "after": "本拍 preferred",
+      "note": "供下一次调度钉住目标。"
+    }
+  ],
+  "threads": "EventThread(app) 线程，持 mMutex（postEvent 内部另有细粒度锁）。",
+  "pitfalls": [
+    "以为广播同一个对象：每个 consumer 独立拷贝。",
+    "忽略 frameInterval 按 uid 不同。"
+  ],
+  "debug": [
+    "trace 里 BitTube 写入与 VSYNC-app 打点。",
+    "app 侧看 Choreographer 的 vsyncId 与 SF 对齐。"
+  ],
+  "next": "app 侧怎么收？见第 15 步。"
+}

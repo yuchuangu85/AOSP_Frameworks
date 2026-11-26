@@ -1,0 +1,60 @@
+{
+  "step": "s17",
+  "title": "句柄到代理：getStrongProxyForHandle",
+  "tldr": "ProcessState 维护 handle→BpBinder 表；同一 handle 复用代理，handle 0 先 ping 确认。",
+  "why": "这个函数解释了「为什么 ServiceManager 能神奇地可用」：handle 0 是唯一一个「不持引用就建代理」的对象，所以要先做一次 PING 确保它已注册，否则驱动不会提供引用且不返回错误。注释还承认这里不是无竞态的——如果 context manager 在这期间死掉，「ping 通过但建代理失败」的窗口是存在的。",
+  "concepts": [
+    {
+      "term": "handle 0",
+      "text": "ServiceManager 固定编号。"
+    },
+    {
+      "term": "attemptIncWeak",
+      "text": "尝试取弱引用，失败则新建。"
+    },
+    {
+      "term": "PING_TRANSACTION",
+      "text": "确认对端可用。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "handle_entry* e = lookupHandleLocked(handle);",
+      "ref": "native/libs/binder/ProcessState.cpp:348",
+      "what": "查表。"
+    },
+    {
+      "call": "status_t status = ipc->transact(",
+      "ref": "native/libs/binder/ProcessState.cpp:381",
+      "what": "handle 0 先 ping。"
+    },
+    {
+      "call": "sp<BpBinder> bp = BpBinder::PrivateAccessor::create(handle, &postTask);",
+      "ref": "native/libs/binder/ProcessState.cpp:390",
+      "what": "新建代理。"
+    },
+    {
+      "call": "result.force_set(b);",
+      "ref": "native/libs/binder/ProcessState.cpp:398",
+      "what": "复用已有代理。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mHandleToObject",
+      "before": "无条目",
+      "after": "含 handle 的 binder 与弱引用",
+      "note": "进程级共享。"
+    }
+  ],
+  "threads": "任意线程，持 mLock。",
+  "pitfalls": [
+    "以为每次收包都新建代理：会复用。",
+    "忽略 handle 0 特殊路径。"
+  ],
+  "debug": [
+    "dumpsys 显示进程的 binder 引用。",
+    "引用计数异常时可查此表。"
+  ],
+  "next": "服务怎么注册与查找？见第 18 步。"
+}

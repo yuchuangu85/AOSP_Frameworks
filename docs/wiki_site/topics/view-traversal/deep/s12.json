@@ -1,0 +1,36 @@
+{
+  "step": "s12",
+  "title": "updateDisplayListIfDirty：脏才重录",
+  "tldr": "三个重建条件任一成立才录；只是子节点要刷新时走 dispatchGetDisplayList 直接返回。",
+  "why": "这是整条链路里最值钱的一次短路。列表滚动时只有可见的几个 item 需要重录，其余容器的 display list 原样复用——这正是硬件加速能把滚动做到 60/120fps 的根本原因。反过来，如果这里的判定失误（例如容器自己不脏但被强制 recreate），整棵子树的录制成本就会每帧重算。更要小心的是状态位的维护顺序：PFLAG_DRAWING_CACHE_VALID 与 PFLAG_DIRTY 必须在调 draw 之前就置好，否则 onDraw 里的 invalidate 会立刻引发递归重录。",
+  "concepts": [
+    { "term": "PFLAG_DRAWING_CACHE_VALID", "text": "表示当前 display list 与 View 状态一致，可以复用。" },
+    { "term": "mRecreateDisplayList", "text": "父级要求的强制重录；由 PFLAG_INVALIDATED 或 invalidateRoot 传导下来。" },
+    { "term": "dispatchGetDisplayList", "text": "只让子节点更新，自己不重录的快路径。" },
+    { "term": "PFLAG_SKIP_DRAW", "text": "无背景容器的快路径，直接 dispatchDraw 跳过 onDraw。" }
+  ],
+  "walk": [
+    { "call": "public RenderNode updateDisplayListIfDirty()", "ref": "base/core/java/android/view/View.java:24306", "what": "每个 View 的录制入口。" },
+    { "call": "if ((mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == 0", "ref": "base/core/java/android/view/View.java:24313", "what": "重建条件一：绘制缓存无效。" },
+    { "call": "dispatchGetDisplayList();", "ref": "base/core/java/android/view/View.java:24322", "what": "快路径：自己不用录，只通知子节点。" },
+    { "call": "final RecordingCanvas canvas = renderNode.beginRecording(width, height);", "ref": "base/core/java/android/view/View.java:24339", "what": "真正重录：拿到录制画布。" },
+    { "call": "canvas.translate(-mScrollX, -mScrollY);", "ref": "base/core/java/android/view/View.java:24351", "what": "滚动偏移被烘进 display list。" },
+    { "call": "renderNode.endRecording();", "ref": "base/core/java/android/view/View.java:24377", "what": "结束录制，op 序列落进 staging 槽。" }
+  ],
+  "state": [
+    { "field": "mPrivateFlags", "before": "可能还带 PFLAG_DIRTY", "after": "清脏位、置 DRAWN 与 DRAWING_CACHE_VALID", "note": "置位必须在 draw 之前，避免递归。" },
+    { "field": "RenderNode 的 staging 槽", "before": "上一次的 display list", "after": "本次录制的 SkiaDisplayList", "note": "RT 还没看见，直到 syncDisplayList 才 move 过去。" }
+  ],
+  "threads": "UI 线程录制，RT 稍后 move。两侧互斥靠「UI 线程在同步阶段 park」保证，display list 本身没有锁。",
+  "pitfalls": [
+    "在 onDraw 里 invalidate 却不担心递归：因为状态位在 draw 前就已置好，这里不会递归，但会让每帧都脏。",
+    "以为缓存命中就不会调用任何代码：仍会更新状态位，并可能投票帧率。",
+    "在自定义 View 里手动改 mPrivateFlags：位语义复杂，改错会出现「不更新」或「每帧重录」。"
+  ],
+  "debug": [
+    "trace 的 Record View#draw() 里若看不到某个 View 的绘制，说明它命中了缓存。",
+    "Layout Inspector 的 display list 视图可确认哪些节点被重建。",
+    "在 24313 的 if 上下断点，统计本帧有多少 View 走了重建分支。"
+  ],
+  "next": "重建时 onDraw 的每一笔调用怎样变成 draw op？见第 13 步。"
+}

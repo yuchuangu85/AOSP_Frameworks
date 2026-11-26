@@ -1,0 +1,66 @@
+{
+  "id": "bp-reply",
+  "title": "IPCThreadState::sendReply",
+  "file": "native/libs/binder/IPCThreadState.cpp",
+  "sig": "status_t IPCThreadState::sendReply(",
+  "span": [
+    1143,
+    1151
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t IPCThreadState::sendReply(const Parcel& reply, uint32_t flags)",
+      "kind": "note",
+      "text": "回包只有 9 行，却决定同步调用何时返回。"
+    },
+    {
+      "at": 2,
+      "quote": "{",
+      "kind": "note",
+      "text": "函数开始。"
+    },
+    {
+      "at": 3,
+      "quote": "status_t err;",
+      "kind": "data",
+      "text": "写命令的结果。"
+    },
+    {
+      "at": 4,
+      "quote": "status_t statusBuffer;",
+      "kind": "data",
+      "text": "status 缓冲区：异常路径下用它承载错误码。"
+    },
+    {
+      "at": 5,
+      "quote": "err = writeTransactionData(BC_REPLY, flags, -1, 0, reply, &statusBuffer);",
+      "kind": "call",
+      "text": "**打包 BC_REPLY**：handle 传 -1 表示「回复给当前事务的发起方」，由驱动按线程上下文填目标。"
+    },
+    {
+      "at": 6,
+      "quote": "if (err < NO_ERROR) return err;",
+      "kind": "branch",
+      "text": "打包失败（Parcel 已经带错误）。"
+    },
+    {
+      "at": 7,
+      "quote": "",
+      "kind": "note",
+      "text": "直接返回错误，不发包。"
+    },
+    {
+      "at": 8,
+      "quote": "return waitForResponse(nullptr, nullptr);",
+      "kind": "note",
+      "text": "空行。"
+    },
+    {
+      "at": 9,
+      "quote": "}",
+      "kind": "call",
+      "text": "**等 BR_TRANSACTION_COMPLETE**：注意这里不是在等回复，而是等「驱动已收下这个回复」。"
+    }
+  ]
+}

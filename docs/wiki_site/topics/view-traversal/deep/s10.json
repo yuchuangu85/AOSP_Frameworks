@@ -1,0 +1,38 @@
+{
+  "step": "s10",
+  "title": "ViewRootImpl.draw：脏区、偏移与软硬件分流",
+  "tldr": "脏区空且不在动画、无焦点变化就整段跳过；否则按 isHardwareEnabled 分两套栈。",
+  "why": "这是「画不画」的唯一决策点，也是硬件与软件两条完全不同的绘制栈的分叉点。硬件路径把脏区交给 RT 的 damage 计算，Java 侧只负责准备（根失效、内容边界、HDR、同步组）；软件路径则直接 lockCanvas 在 UI 线程把像素画出来，没有 RT、没有 display list。很多「为什么我的 View 没有 GPU 加速」的问题，答案就在这里：isHardwareEnabled 为假，或者渲染器初始化失败后又退回软件路径。",
+  "concepts": [
+    { "term": "dirty 为空也照画的三种情况", "text": "正在动画、无障碍焦点变化、或者动画滚动未结束。" },
+    { "term": "fullRedrawNeeded", "text": "为真时把脏区扩成整窗，滚动与首帧都属于这一类。" },
+    { "term": "isHardwareEnabled", "text": "决定走 ThreadedRenderer 还是 drawSoftware。" },
+    { "term": "mSurfaceHolder", "text": "外部接管 surface 时本窗口不画，只通知 owner。" }
+  ],
+  "walk": [
+    { "call": "private boolean draw(boolean fullRedrawNeeded, @Nullable SurfaceSyncGroup activeSyncGroup,", "ref": "base/core/java/android/view/ViewRootImpl.java:6161", "what": "绘制分发入口；返回是否异步上报。" },
+    { "call": "final Rect dirty = mDirty;", "ref": "base/core/java/android/view/ViewRootImpl.java:6211", "what": "拿到的其实是 mDirty 的引用，后续会直接改这个共享对象。" },
+    { "call": "if (fullRedrawNeeded) {", "ref": "base/core/java/android/view/ViewRootImpl.java:6221", "what": "全量重画时把脏区扩成整窗。" },
+    { "call": "if (!dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty) {", "ref": "base/core/java/android/view/ViewRootImpl.java:6259", "what": "「画不画」的唯一判据。" },
+    { "call": "if (isHardwareEnabled()) {", "ref": "base/core/java/android/view/ViewRootImpl.java:6260", "what": "硬件分支：只做准备，脏区随即交给 RT。" },
+    { "call": "dirty.setEmpty();", "ref": "base/core/java/android/view/ViewRootImpl.java:6278", "what": "脏区在这里被取走，之后由 RT 的 damage 计算接管。" },
+    { "call": "mAttachInfo.mThreadedRenderer.draw(mView, mAttachInfo, this);", "ref": "base/core/java/android/view/ViewRootImpl.java:6320", "what": "本页主角：录制 + 交棒 + 阻塞在 mSignal。这里没有强制等待 RT。" }
+  ],
+  "state": [
+    { "field": "mDirty", "before": "并集后的窗口脏区", "after": "setEmpty（硬件路径）", "note": "硬件路径必须清，否则下一帧会误以为还要重画同一块。" },
+    { "field": "useAsyncReport", "before": "false", "after": "硬件路径置 true", "note": "决定 performDraw 里谁负责事务同步。" },
+    { "field": "mHardwareXOffset / mHardwareYOffset", "before": "上一帧偏移", "after": "本帧偏移（变化则整根重录）", "note": "滚动/inset 变化会让根 display list 失效。" }
+  ],
+  "threads": "UI 线程。硬件路径唯一的阻塞点在被调用的 ThreadedRenderer.draw 内部（mSignal）；软件路径在这里直接画像素，UI 线程耗时更高。",
+  "pitfalls": [
+    "以为 dirty 为空就一定不画：动画与无障碍焦点变化会让它在空脏区下照样画。",
+    "在硬件路径下继续依赖 mDirty：它已经 setEmpty，后续判定以 RT 的 damage 为准。",
+    "滚动时惊讶于整窗重画：滚动偏移变化会把 fullRedrawNeeded 置真。"
+  ],
+  "debug": [
+    "在 6259 的 if 上下断点，看三个条件哪个让你「意外地画了」或「意外地没画」。",
+    "debug.hwui.show_dirty_regions 可以直接看到硬件路径的脏区。",
+    "trace 里 draw 切片内若看不到 Record View#draw()，说明走了软件路径或提前返回。"
+  ],
+  "next": "进入 ThreadedRenderer 之后，录制与交棒是怎么衔接的？见第 11 步。"
+}

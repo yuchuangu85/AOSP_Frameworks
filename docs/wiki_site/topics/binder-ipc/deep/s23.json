@@ -1,0 +1,51 @@
+{
+  "step": "s23",
+  "title": "诊断：三种常用手段",
+  "tldr": "dumpsys 看服务与统计、binder debug 开关看命令明文、Perfetto 看事务时长与线程。",
+  "why": "排查 binder 问题的顺序应该是：先确认失败码（第 19 步）判断层次，再用 Perfetto 看事务在哪一段慢（发送方 ioctl / 对端 onTransact / 回包），最后用命令日志看具体数据。最容易犯的错是只看调用方的等待时间——它包含了对端执行时间、排队时间与线程切换，单看它无法定位到人。",
+  "concepts": [
+    {
+      "term": "IF_LOG_TRANSACTIONS",
+      "text": "打印每次 BC_TRANSACTION/BR_REPLY。"
+    },
+    {
+      "term": "flushCommands",
+      "text": "把 mOut 立刻刷出去。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "IF_LOG_TRANSACTIONS() {",
+      "ref": "native/libs/binder/IPCThreadState.cpp:931",
+      "what": "命令日志开关。"
+    },
+    {
+      "call": "status_t IPCThreadState::flushCommands()",
+      "ref": "native/libs/binder/IPCThreadState.cpp:358",
+      "what": "立刻刷出待发命令。"
+    },
+    {
+      "call": "ALOGW(\"Binder transaction to %s, function: %s, took %\" PRIu64",
+      "ref": "native/libs/binder/Binder.cpp:582",
+      "what": ">1s 的事务会自动告警。"
+    }
+  ],
+  "state": [
+    {
+      "field": "mOut",
+      "before": "有积压",
+      "after": "刷空",
+      "note": "flushCommands 用于强制提交。"
+    }
+  ],
+  "threads": "诊断命令在对应线程执行。",
+  "pitfalls": [
+    "只看调用方耗时定位责任人。",
+    "忽略 >1s 告警日志。"
+  ],
+  "debug": [
+    "Perfetto 的 binder 轨道含 queued/sent/allocated 时间。",
+    "dumpsys 的 binder stats 有每接口耗时。"
+  ],
+  "next": "并发度问题怎么判断？见第 24 步。"
+}

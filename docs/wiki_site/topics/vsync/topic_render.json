@@ -1,0 +1,802 @@
+{
+  "p0": [
+    {
+      "id": "vr-hwvsync",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+      "sig": "bool VSyncReactor::addHwVsyncTimestamp",
+      "symbol": "VSyncReactor::addHwVsyncTimestamp",
+      "start": 201,
+      "end": 245,
+      "hint": 201,
+      "why": "硬件 vsync 进入模型的第一站：周期确认、样本接受与「还要不要继续要 vsync」都在这里定。"
+    },
+    {
+      "id": "vr-presentfence",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+      "sig": "bool VSyncReactor::addPresentFence(std::shared_ptr<FenceTime> fence)",
+      "symbol": "VSyncReactor::addPresentFence",
+      "start": 71,
+      "end": 108,
+      "hint": 71,
+      "why": "present fence 这条第二校准通道：fence 未 signal 时挂起、超限丢最旧、样本被拒时的过渡态。"
+    },
+    {
+      "id": "vp-next",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+      "sig": "nsecs_t VSyncPredictor::nextAnticipatedVSyncTimeFrom",
+      "symbol": "VSyncPredictor::nextAnticipatedVSyncTimeFrom",
+      "start": 380,
+      "end": 420,
+      "hint": 380,
+      "why": "「给定时间之后的第一拍」——整个两相唤醒的计算基础，也是「赶不上就顺延」的实现点。"
+    },
+    {
+      "id": "td-schedule",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "sig": "ScheduleResult VSyncDispatchTimerQueueEntry::schedule(VSyncDispatch::ScheduleTiming timing,",
+      "symbol": "VSyncDispatchTimerQueueEntry::schedule",
+      "start": 90,
+      "end": 118,
+      "hint": 90,
+      "why": "把 (vsync, workDuration, readyDuration) 折算成 wakeup/ready 两个时刻，相位注入的唯一落点。"
+    },
+    {
+      "id": "td-callback",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "sig": "void VSyncDispatchTimerQueue::timerCallback() {",
+      "symbol": "VSyncDispatchTimerQueue::timerCallback",
+      "start": 334,
+      "end": 379,
+      "hint": 334,
+      "why": "timer 线程的入口：同一窗口内批量回调的合并点，回调跑在 timer 线程上不允许阻塞。"
+    },
+    {
+      "id": "td-schedulelocked",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "sig": "std::optional<ScheduleResult> VSyncDispatchTimerQueue::scheduleLocked(",
+      "symbol": "VSyncDispatchTimerQueue::scheduleLocked",
+      "start": 414,
+      "end": 437,
+      "hint": 414,
+      "why": "武装 timerfd 的地方，含「定时器即将触发时改为登记 pending workload」的关键分支。"
+    },
+    {
+      "id": "et-threadmain",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "sig": "void EventThread::threadMain",
+      "symbol": "EventThread::threadMain",
+      "start": 530,
+      "end": 635,
+      "hint": 530,
+      "why": "app 侧分发线程的主循环：Idle/VSync/SyntheticVSync 三态选路与重新武装。"
+    },
+    {
+      "id": "et-consume",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "sig": "bool EventThread::shouldConsumeEvent",
+      "symbol": "EventThread::shouldConsumeEvent",
+      "start": 637,
+      "end": 701,
+      "hint": 637,
+      "why": "按连接限流与相位对齐：app 帧率低于屏幕帧率时只在自己的相位上唤醒。"
+    },
+    {
+      "id": "et-dispatch",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "sig": "void EventThread::dispatchEvent",
+      "symbol": "EventThread::dispatchEvent",
+      "start": 769,
+      "end": 800,
+      "hint": 769,
+      "why": "生成候选 frame timeline 与 vsyncId，再写 BitTube——app 与 SF 之间的对接面。"
+    },
+    {
+      "id": "mq-vsynccallback",
+      "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+      "sig": "void MessageQueue::vsyncCallback",
+      "symbol": "MessageQueue::vsyncCallback",
+      "start": 59,
+      "end": 75,
+      "hint": 59,
+      "why": "sf 侧同一条 timer 路径的另一端：生成 vsyncId 并把帧交给 SF 主线程。"
+    },
+    {
+      "id": "sch-setconfig",
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "sig": "void Scheduler::setVsyncConfig",
+      "symbol": "Scheduler::setVsyncConfig",
+      "start": 802,
+      "end": 806,
+      "hint": 802,
+      "why": "两条分发线拿到各自时长的唯一入口，相位在这里被转成 duration 下发。"
+    },
+    {
+      "id": "cfg-offset",
+      "file": "native/services/surfaceflinger/Scheduler/VsyncConfiguration.cpp",
+      "sig": "std::chrono::nanoseconds sfOffsetToDuration",
+      "symbol": "sfOffsetToDuration / appOffsetToDuration",
+      "start": 146,
+      "end": 158,
+      "hint": 146,
+      "why": "相位换算成时长的定义处：sf = P − sfOffset，app = P + sfOffset − appOffset。"
+    }
+  ],
+  "classes": [
+    {
+      "name": "VsyncSchedule",
+      "file": "native/services/surfaceflinger/Scheduler/VsyncSchedule.cpp",
+      "tier": 0,
+      "side": "RT",
+      "role": "vsync 模型的封装：持 mHwVsyncLock，协调 Reactor 与 Predictor",
+      "members": [
+        "addResyncSample",
+        "addPresentFence",
+        "enableHardwareVsync"
+      ],
+      "fields": [
+        "mTracker",
+        "mPredictor",
+        "mController"
+      ]
+    },
+    {
+      "name": "VSyncReactor",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncReactor.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "校准器：周期确认、样本接受、过渡态管理",
+      "members": [
+        "addHwVsyncTimestamp",
+        "addPresentFence",
+        "periodConfirmed"
+      ],
+      "fields": [
+        "mMutex",
+        "mPeriodConfirmationInProgress",
+        "mMoreSamplesNeeded"
+      ]
+    },
+    {
+      "name": "VSyncPredictor",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "预测器：维护 vsync 网格，回答「下一拍是什么时候」",
+      "members": [
+        "nextAnticipatedVSyncTimeFrom",
+        "needsMoreSamples"
+      ],
+      "fields": [
+        "mRateMap",
+        "mMutex"
+      ]
+    },
+    {
+      "name": "VSyncDispatchTimerQueue",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "定时器：把 work/ready 折算成 wakeup 并武装 timerfd",
+      "members": [
+        "registerCallback",
+        "schedule",
+        "timerCallback"
+      ],
+      "fields": [
+        "mCallbacks",
+        "mIntendedWakeupTime"
+      ]
+    },
+    {
+      "name": "VSyncDispatchTimerQueueEntry",
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "一条注册：计算目标 vsync 与唤醒点",
+      "members": [
+        "schedule",
+        "executing",
+        "disarm"
+      ],
+      "fields": [
+        "mArmedInfo",
+        "mLastDispatchTime"
+      ]
+    },
+    {
+      "name": "EventThread",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "app 侧分发线程：连接管理、限流、生成 frame timeline",
+      "members": [
+        "threadMain",
+        "shouldConsumeEvent",
+        "dispatchEvent",
+        "setDuration"
+      ],
+      "fields": [
+        "mState",
+        "mVSyncState",
+        "mMutex"
+      ]
+    },
+    {
+      "name": "EventThreadConnection",
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "tier": 2,
+      "side": "RT",
+      "role": "一条 app 连接：持有 BitTube",
+      "members": [
+        "postEvent"
+      ],
+      "fields": [
+        "mChannel",
+        "vsyncRequest"
+      ]
+    },
+    {
+      "name": "MessageQueue",
+      "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+      "tier": 1,
+      "side": "RT",
+      "role": "sf 侧同一 dispatch 上的第二回调",
+      "members": [
+        "vsyncCallback",
+        "setDuration"
+      ],
+      "fields": [
+        "mVsync",
+        "mHandler"
+      ]
+    },
+    {
+      "name": "Scheduler",
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "tier": 0,
+      "side": "RT",
+      "role": "把相位配置下发给两条线，并在帧信号上驱动合成",
+      "members": [
+        "setVsyncConfig",
+        "onFrameSignal",
+        "isVsyncValid"
+      ],
+      "fields": [
+        "mDisplays",
+        "mVsyncModulator"
+      ]
+    },
+    {
+      "name": "Choreographer",
+      "file": "base/core/java/android/view/Choreographer.java",
+      "tier": 3,
+      "side": "UI",
+      "role": "app 侧消费：修 jitter 并按五类回调分发",
+      "members": [
+        "postVsyncCallback",
+        "doFrame",
+        "doCallbacks"
+      ],
+      "fields": [
+        "mCallbackQueues",
+        "mLastVsyncEventData"
+      ]
+    },
+    {
+      "name": "DisplayEventReceiver",
+      "file": "native/libs/gui/DisplayEventReceiver.cpp",
+      "tier": 3,
+      "side": "UI",
+      "role": "app 侧 native 收包端，持有 BitTube fd",
+      "members": [
+        "requestNextVsync",
+        "getEvents"
+      ],
+      "fields": [
+        "mReceiver"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "Scheduler",
+      "to": "VsyncSchedule",
+      "label": "addResyncSample",
+      "kind": "uses"
+    },
+    {
+      "from": "VsyncSchedule",
+      "to": "VSyncReactor",
+      "label": "样本",
+      "kind": "owns"
+    },
+    {
+      "from": "VsyncSchedule",
+      "to": "VSyncPredictor",
+      "label": "预测",
+      "kind": "owns"
+    },
+    {
+      "from": "VSyncDispatchTimerQueue",
+      "to": "VSyncPredictor",
+      "label": "nextAnticipatedVSyncTimeFrom",
+      "kind": "uses"
+    },
+    {
+      "from": "VSyncDispatchTimerQueue",
+      "to": "EventThreadConnection",
+      "label": "onVsync 回调",
+      "kind": "uses"
+    },
+    {
+      "from": "EventThread",
+      "to": "EventThreadConnection",
+      "label": "postEvent(BitTube)",
+      "kind": "owns"
+    },
+    {
+      "from": "EventThreadConnection",
+      "to": "DisplayEventReceiver",
+      "label": "BitTube fd",
+      "kind": "oneway"
+    },
+    {
+      "from": "DisplayEventReceiver",
+      "to": "Choreographer",
+      "label": "dispatchVsync",
+      "kind": "uses"
+    },
+    {
+      "from": "MessageQueue",
+      "to": "Scheduler",
+      "label": "dispatchFrame",
+      "kind": "uses"
+    }
+  ],
+  "architecture": {
+    "width": 1320,
+    "height": 560,
+    "groups": [
+      {
+        "id": "hal",
+        "label": "composer HAL（仓库外）",
+        "x": 24,
+        "y": 24,
+        "w": 220,
+        "h": 500,
+        "color": "#ff9f43"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger 进程",
+        "x": 270,
+        "y": 24,
+        "w": 720,
+        "h": 500,
+        "color": "#c792ea"
+      },
+      {
+        "id": "app",
+        "label": "app 进程",
+        "x": 1016,
+        "y": 24,
+        "w": 280,
+        "h": 500,
+        "color": "#7bd88f"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "panel",
+        "group": "hal",
+        "label": "面板 vsync",
+        "sub": "HAL 上报",
+        "x": 48,
+        "y": 130,
+        "w": 176,
+        "h": 64
+      },
+      {
+        "id": "hwc",
+        "group": "sf",
+        "label": "HWComposer::onVsync",
+        "sub": "去重",
+        "x": 300,
+        "y": 120,
+        "w": 300,
+        "h": 64
+      },
+      {
+        "id": "reactor",
+        "group": "sf",
+        "label": "VSyncReactor",
+        "sub": "周期确认 / 样本",
+        "x": 300,
+        "y": 210,
+        "w": 300,
+        "h": 64
+      },
+      {
+        "id": "predictor",
+        "group": "sf",
+        "label": "VSyncPredictor",
+        "sub": "vsync 网格",
+        "x": 300,
+        "y": 300,
+        "w": 300,
+        "h": 64
+      },
+      {
+        "id": "dispatch",
+        "group": "sf",
+        "label": "VSyncDispatchTimerQueue",
+        "sub": "timerfd 武装",
+        "x": 640,
+        "y": 210,
+        "w": 320,
+        "h": 64
+      },
+      {
+        "id": "eventthread",
+        "group": "sf",
+        "label": "EventThread(app)",
+        "sub": "限流 + timeline",
+        "x": 640,
+        "y": 300,
+        "w": 320,
+        "h": 64
+      },
+      {
+        "id": "mq",
+        "group": "sf",
+        "label": "MessageQueue(sf)",
+        "sub": "vsyncId + dispatchFrame",
+        "x": 640,
+        "y": 390,
+        "w": 320,
+        "h": 64
+      },
+      {
+        "id": "der",
+        "group": "app",
+        "label": "DisplayEventReceiver",
+        "sub": "BitTube",
+        "x": 1040,
+        "y": 210,
+        "w": 236,
+        "h": 64
+      },
+      {
+        "id": "choreo",
+        "group": "app",
+        "label": "Choreographer.doFrame",
+        "sub": "INPUT→ANIM→TRAVERSAL",
+        "x": 1040,
+        "y": 300,
+        "w": 236,
+        "h": 64
+      }
+    ],
+    "edges": [
+      {
+        "from": "panel",
+        "to": "hwc",
+        "label": "vsync 时间戳",
+        "kind": "call"
+      },
+      {
+        "from": "hwc",
+        "to": "reactor",
+        "label": "addResyncSample",
+        "kind": "call"
+      },
+      {
+        "from": "reactor",
+        "to": "predictor",
+        "label": "喂样本",
+        "kind": "call"
+      },
+      {
+        "from": "dispatch",
+        "to": "predictor",
+        "label": "nextAnticipated",
+        "kind": "call"
+      },
+      {
+        "from": "dispatch",
+        "to": "eventthread",
+        "label": "onVsync（timer 线程）",
+        "kind": "call"
+      },
+      {
+        "from": "dispatch",
+        "to": "mq",
+        "label": "sf 回调",
+        "kind": "call"
+      },
+      {
+        "from": "eventthread",
+        "to": "der",
+        "label": "BitTube 写",
+        "kind": "oneway"
+      },
+      {
+        "from": "der",
+        "to": "choreo",
+        "label": "dispatchVsync",
+        "kind": "call"
+      },
+      {
+        "from": "choreo",
+        "to": "dispatch",
+        "label": "requestNextVsync",
+        "kind": "oneway"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "f0",
+        "kind": "start",
+        "label": "HAL 上报 vsync",
+        "x": 530,
+        "y": 60
+      },
+      {
+        "id": "f1",
+        "kind": "decision",
+        "label": "时间戳重复？",
+        "x": 530,
+        "y": 160
+      },
+      {
+        "id": "f2",
+        "kind": "process",
+        "label": "丢弃",
+        "x": 180,
+        "y": 160
+      },
+      {
+        "id": "f3",
+        "kind": "decision",
+        "label": "周期已确认？",
+        "x": 530,
+        "y": 270
+      },
+      {
+        "id": "f4",
+        "kind": "process",
+        "label": "继续要样本",
+        "x": 880,
+        "y": 270
+      },
+      {
+        "id": "f5",
+        "kind": "process",
+        "label": "喂入 Predictor",
+        "x": 530,
+        "y": 380
+      },
+      {
+        "id": "f6",
+        "kind": "process",
+        "label": "schedule：算目标 vsync 与 wakeup",
+        "x": 530,
+        "y": 480
+      },
+      {
+        "id": "f7",
+        "kind": "decision",
+        "label": "定时器即将触发？",
+        "x": 530,
+        "y": 590
+      },
+      {
+        "id": "f8",
+        "kind": "process",
+        "label": "登记 pending workload",
+        "x": 180,
+        "y": 590
+      },
+      {
+        "id": "f9",
+        "kind": "process",
+        "label": "武装 timerfd",
+        "x": 530,
+        "y": 700
+      },
+      {
+        "id": "f10",
+        "kind": "process",
+        "label": "timerCallback 批量回调（app + sf）",
+        "x": 530,
+        "y": 800
+      },
+      {
+        "id": "f11",
+        "kind": "process",
+        "label": "EventThread 限流 → BitTube → doFrame",
+        "x": 530,
+        "y": 900
+      },
+      {
+        "id": "f12",
+        "kind": "end",
+        "label": "MessageQueue → onFrameSignal",
+        "x": 880,
+        "y": 900
+      }
+    ],
+    "edges": [
+      {
+        "from": "f0",
+        "to": "f1"
+      },
+      {
+        "from": "f1",
+        "to": "f2",
+        "label": "是"
+      },
+      {
+        "from": "f1",
+        "to": "f3",
+        "label": "否"
+      },
+      {
+        "from": "f3",
+        "to": "f4",
+        "label": "未确认"
+      },
+      {
+        "from": "f3",
+        "to": "f5",
+        "label": "已确认"
+      },
+      {
+        "from": "f5",
+        "to": "f6"
+      },
+      {
+        "from": "f6",
+        "to": "f7"
+      },
+      {
+        "from": "f7",
+        "to": "f8",
+        "label": "是"
+      },
+      {
+        "from": "f7",
+        "to": "f9",
+        "label": "否"
+      },
+      {
+        "from": "f9",
+        "to": "f10"
+      },
+      {
+        "from": "f10",
+        "to": "f11"
+      },
+      {
+        "from": "f10",
+        "to": "f12"
+      }
+    ]
+  },
+  "sequence": [
+    {
+      "step": "s01",
+      "from": "HW",
+      "to": "SF",
+      "label": "onComposerHalVsync",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "SF",
+      "to": "SF",
+      "label": "HWComposer::onVsync 去重",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "SF",
+      "to": "SF",
+      "label": "addResyncSample",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "SF",
+      "to": "SF",
+      "label": "Reactor：周期确认",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "SF",
+      "to": "SF",
+      "label": "addPresentFence（另一路）",
+      "kind": "call"
+    },
+    {
+      "step": "s06",
+      "from": "SF",
+      "to": "DSP",
+      "label": "predictor 给出下一拍",
+      "kind": "call"
+    },
+    {
+      "step": "s08",
+      "from": "SF",
+      "to": "ET",
+      "label": "setVsyncConfig(work/ready)",
+      "kind": "call"
+    },
+    {
+      "step": "s10",
+      "from": "DSP",
+      "to": "DSP",
+      "label": "schedule：算 wakeup/ready",
+      "kind": "call"
+    },
+    {
+      "step": "s11",
+      "from": "DSP",
+      "to": "ET",
+      "label": "timerCallback → onVsync",
+      "kind": "call"
+    },
+    {
+      "step": "s12",
+      "from": "ET",
+      "to": "ET",
+      "label": "threadMain 选路",
+      "kind": "call"
+    },
+    {
+      "step": "s13",
+      "from": "ET",
+      "to": "ET",
+      "label": "shouldConsumeEvent 限流",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "ET",
+      "to": "APP",
+      "label": "BitTube：frame timeline",
+      "kind": "oneway"
+    },
+    {
+      "step": "s15",
+      "from": "APP",
+      "to": "APP",
+      "label": "dispatchVsync → Choreographer",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "APP",
+      "to": "APP",
+      "label": "doFrame 五类回调",
+      "kind": "call"
+    },
+    {
+      "step": "s17",
+      "from": "ET",
+      "to": "SF",
+      "label": "MessageQueue::vsyncCallback（sf 相）",
+      "kind": "call"
+    },
+    {
+      "step": "s18",
+      "from": "SF",
+      "to": "SF",
+      "label": "onFrameSignal",
+      "kind": "call"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "step": "s11",
+  "title": "Output::present 的固定八步",
+  "tldr": "颜色 → 合成状态 → planner → 写 HWC → 颜色变换 → beginFrame → 问策略 → GPU 合成，最后 present。",
+  "why": "这段代码的价值在于「顺序即契约」：写 HWC 状态必须发生在 beginFrame 之前，否则状态会落到下一个 frame；问合成方式必须发生在 GPU 合成之前，否则不知道要不要画 client target；present 必须最后，否则 HWC 会用空状态 present。由于这些顺序没有类型系统保护，任何一次重构都可能悄悄破坏它，而症状往往是「偶发黑屏」或 HAL 报 BAD_VALUE——非常难查。因此把每一步的职责写清楚，是维护这份代码最省事的方式。",
+  "concepts": [
+    { "term": "beginFrame", "text": "告诉 HWC「本帧开始」；之后写入的状态属于同一个 frame。" },
+    { "term": "writeCompositionState", "text": "把每层状态写进 HWC，包括 buffer 与合成类型。" },
+    { "term": "canPredictCompositionStrategy", "text": "能否用上一拍的 HWC 结论提前并行的判定。" }
+  ],
+  "walk": [
+    { "call": "ftl::Future<std::monostate> Output::present(", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:450", "what": "入口；返回 future 以支持并发。" },
+    { "call": "writeCompositionState(refreshArgs);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:485", "what": "写状态必须在 beginFrame 之前。" },
+    { "call": "beginFrame();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:487", "what": "开启 HWC 的 frame。" },
+    { "call": "prepareFrame();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:498", "what": "问 HWC 要合成方式。" },
+    { "call": "finishFrame(std::move(result));", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:502", "what": "GPU 合成真正执行的地方。" },
+    { "call": "presentFrameAndReleaseLayers(flushEvenWhenDisabled);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:514", "what": "上屏并归还 buffer。" }
+  ],
+  "state": [
+    { "field": "outputState.strategyPrediction", "before": "上一拍的结果", "after": "本拍 DISABLED / SUCCESS", "note": "预测命中时省掉一次串行 HWC 往返。" }
+  ],
+  "threads": "SF 主线程；offload 时 presentFrameAndReleaseLayers 在 HwcAsyncWorker 上跑。",
+  "pitfalls": [
+    "调整八步顺序：最常见的是把 beginFrame 提前，导致状态落到下一个 frame。",
+    "以为 finishFrame 一定会画：没有任何 client 合成时它直接跳过。"
+  ],
+  "debug": [
+    "trace 里 present 下面的子切片顺序就是这八步。",
+    "没有 validate 切片说明走了 presentOrValidate 快路径。"
+  ],
+  "next": "第七步里 HWC 是怎样被问出合成方式的？见第 12 步。"
+}
